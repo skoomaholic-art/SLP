@@ -6,9 +6,14 @@ from bs4 import BeautifulSoup
 
 
 URL = "https://qazsporttv.kz/ru/program"
+CHANNEL = "Qazsport"
 
 TIME_PATTERN = re.compile(
     r"\b(?:[01]\d|2[0-3]):[0-5]\d\b"
+)
+
+DATE_PATTERN = re.compile(
+    r"\b(\d{2})\.(\d{2})\.(\d{4})\b"
 )
 
 
@@ -36,6 +41,26 @@ def clean_title(text, time_text):
     )
 
 
+def get_page_date(soup):
+    if soup.title:
+        page_title = soup.title.get_text(
+            strip=True
+        )
+
+        match = DATE_PATTERN.search(
+            page_title
+        )
+
+        if match:
+            day, month, year = match.groups()
+
+            return (
+                f"{year}-{month}-{day}"
+            )
+
+    return None
+
+
 async def get_qazsport_live_events():
     headers = {
         "User-Agent": "Mozilla/5.0"
@@ -58,10 +83,12 @@ async def get_qazsport_live_events():
         "html.parser"
     )
 
+    page_date = get_page_date(soup)
+
     live_events = []
     seen = set()
 
-    # 1. Обычные LIVE-события расписания
+    # Обычные LIVE-события
     for element in soup.find_all("a"):
         text = " ".join(
             element.stripped_strings
@@ -94,14 +121,15 @@ async def get_qazsport_live_events():
 
         live_events.append(
             {
+                "date": page_date,
                 "time": time_text,
-                "title": title,
+                "channel": CHANNEL,
+                "is_live": True,
+                "raw_title": title,
             }
         )
 
-    # 2. Отдельно ищем событие,
-    # которое Qazsport показывает как
-    # "СЕЙЧАС В ЭФИРЕ / LIVE"
+    # Событие "СЕЙЧАС В ЭФИРЕ"
     page_text = " ".join(
         soup.stripped_strings
     )
@@ -138,12 +166,14 @@ async def get_qazsport_live_events():
 
             live_events.append(
                 {
+                    "date": page_date,
                     "time": time_text,
-                    "title": title,
+                    "channel": CHANNEL,
+                    "is_live": True,
+                    "raw_title": title,
                 }
             )
 
-    # Сортируем события по времени
     live_events.sort(
         key=lambda event: tuple(
             map(
@@ -163,6 +193,7 @@ async def main():
         "Найдено LIVE-событий:",
         len(events)
     )
+
     print()
 
     for number, event in enumerate(
@@ -170,9 +201,12 @@ async def main():
         start=1
     ):
         print(
-            f"{number}. "
-            f"{event['time']} — "
-            f"{event['title']}"
+            f"{number}.\n"
+            f"Дата: {event['date']}\n"
+            f"Время: {event['time']}\n"
+            f"Канал: {event['channel']}\n"
+            f"LIVE: {event['is_live']}\n"
+            f"Название: {event['raw_title']}\n"
         )
 
 
