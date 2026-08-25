@@ -55,11 +55,11 @@ main_keyboard = InlineKeyboardMarkup(
 
 def format_event(event):
     return (
-        f"{event['date']}, {event['time']} – "
-        f"{event['sport']}. "
-        f"{event['tournament']}. "
-        f"{event['title']} | "
-        f"{event['channel']}"
+        f"{event.date}, {event.broadcast_start} – "
+        f"{event.sport}. "
+        f"{event.tournament}. "
+        f"{event.title} | "
+        f"{event.channel}"
     )
 
 
@@ -94,7 +94,7 @@ async def live_callback(callback: CallbackQuery):
     live_events = [
         event
         for event in EVENTS
-        if event["is_live"]
+        if event.is_live
     ]
 
     if not live_events:
