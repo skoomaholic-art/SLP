@@ -20,15 +20,31 @@ main_keyboard = InlineKeyboardMarkup(
     inline_keyboard=[
         [
             InlineKeyboardButton(
+                text="📅 Расписание",
+                callback_data="schedule"
+            ),
+            InlineKeyboardButton(
+                text="🔴 LIVE",
+                callback_data="live"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
                 text="📊 Статус",
                 callback_data="status"
-            )
+            ),
         ],
         [
             InlineKeyboardButton(
                 text="🌐 Проверка в интернете",
                 callback_data="internet_check"
-            )
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="👥 Команда",
+                callback_data="team"
+            ),
         ],
     ]
 )
@@ -40,6 +56,26 @@ async def start_command(message: Message):
         "SLP [Skoomaholic Live Parser] запущен ✅\n\n"
         "Выберите действие:",
         reply_markup=main_keyboard,
+    )
+
+
+@dp.callback_query(F.data == "schedule")
+async def schedule_callback(callback: CallbackQuery):
+    await callback.answer()
+
+    await callback.message.answer(
+        "📅 Расписание\n\n"
+        "Расписание спортивных LIVE-событий пока не сформировано."
+    )
+
+
+@dp.callback_query(F.data == "live")
+async def live_callback(callback: CallbackQuery):
+    await callback.answer()
+
+    await callback.message.answer(
+        "🔴 LIVE\n\n"
+        "Модуль текущих LIVE-событий пока не подключён."
     )
 
 
@@ -60,6 +96,20 @@ async def internet_check_callback(callback: CallbackQuery):
     await callback.message.answer(
         "🌐 Проверка в интернете\n\n"
         "Модуль проверки событий пока не подключён."
+    )
+
+
+@dp.callback_query(F.data == "team")
+async def team_callback(callback: CallbackQuery):
+    await callback.answer()
+
+    await callback.message.answer(
+        "👥 Команда\n\n"
+        "Редактор\n"
+        "Промо-продюсер\n"
+        "Переводчик\n"
+        "Дизайнер\n\n"
+        "Роли пользователей пока не настроены."
     )
 
 
