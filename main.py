@@ -91,6 +91,24 @@ def get_verification_result(event):
     )
 
 
+def build_verification_keyboard():
+    buttons = []
+
+    for index, event in enumerate(EVENTS):
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{event.broadcast_start} — {event.title}",
+                    callback_data=f"verify_{index}"
+                )
+            ]
+        )
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=buttons
+    )
+
+
 @dp.message(Command("start"))
 async def start_command(message: Message):
     await message.answer(
@@ -158,7 +176,22 @@ async def status_callback(callback: CallbackQuery):
 async def internet_check_callback(callback: CallbackQuery):
     await callback.answer()
 
-    event = EVENTS[0]
+    await callback.message.answer(
+        "🌐 Проверка в интернете\n\n"
+        "Выберите событие для проверки:",
+        reply_markup=build_verification_keyboard(),
+    )
+
+
+@dp.callback_query(F.data.startswith("verify_"))
+async def verify_event_callback(callback: CallbackQuery):
+    await callback.answer()
+
+    event_index = int(
+        callback.data.split("_")[1]
+    )
+
+    event = EVENTS[event_index]
 
     verification_result = get_verification_result(event)
 
