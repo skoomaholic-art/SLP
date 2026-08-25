@@ -63,6 +63,34 @@ def format_event(event):
     )
 
 
+def get_verification_result(event):
+    difference = event.time_difference_minutes
+
+    if difference is None:
+        return (
+            "⚪ Не проверено\n"
+            "Нет данных для сравнения времени."
+        )
+
+    if difference <= 10:
+        return (
+            "✅ Подтверждено\n"
+            "Расхождение допустимое. "
+            "Вероятно, телеканал начинает эфир заранее."
+        )
+
+    if difference <= 20:
+        return (
+            "🟡 Требуется дополнительная проверка\n"
+            "Время отличается больше чем на 10 минут."
+        )
+
+    return (
+        "⚠️ Обнаружено существенное расхождение\n"
+        "Необходимо проверить дату, время и само событие."
+    )
+
+
 @dp.message(Command("start"))
 async def start_command(message: Message):
     await message.answer(
@@ -130,9 +158,20 @@ async def status_callback(callback: CallbackQuery):
 async def internet_check_callback(callback: CallbackQuery):
     await callback.answer()
 
+    event = EVENTS[0]
+
+    verification_result = get_verification_result(event)
+
     await callback.message.answer(
-        "🌐 Проверка в интернете\n\n"
-        "Модуль проверки событий пока не подключён."
+        "🌐 Проверка события\n\n"
+        f"{event.title}\n"
+        f"{event.sport}. {event.tournament}\n\n"
+        f"📺 Канал: {event.channel}\n"
+        f"📅 Дата: {event.date}\n"
+        f"🕐 Эфир телеканала: {event.broadcast_start}\n"
+        f"🏁 Официальный старт: {event.event_start}\n"
+        f"⏱ Разница: {event.time_difference_minutes} минут\n\n"
+        f"{verification_result}"
     )
 
 
