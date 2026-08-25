@@ -10,43 +10,13 @@ from aiogram.types import (
     Message,
 )
 
+from events import EVENTS
+
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-
-
-# Пока это тестовые события.
-# Позже этот список будет автоматически заполнять парсер.
-EVENTS = [
-    {
-        "date": "25 августа",
-        "time": "18:55",
-        "sport": "Хоккей",
-        "tournament": "Кубок Республики Казахстан. Финал",
-        "title": "Торпедо – Сарыарқа",
-        "channel": "Qazsport",
-        "is_live": True,
-    },
-    {
-        "date": "25 августа",
-        "time": "21:00",
-        "sport": "Теннис",
-        "tournament": "US Open",
-        "title": "Квалификация",
-        "channel": "Eurosport 1",
-        "is_live": False,
-    },
-    {
-        "date": "25 августа",
-        "time": "23:00",
-        "sport": "Футбол",
-        "tournament": "Ла Лига",
-        "title": "Валенсия – Бетис",
-        "channel": "Setanta Sports 1",
-        "is_live": True,
-    },
-]
 
 
 main_keyboard = InlineKeyboardMarkup(
