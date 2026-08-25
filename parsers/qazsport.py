@@ -73,6 +73,85 @@ def get_page_date(soup):
     ).date()
 
 
+def parse_qazsport_title(raw_title):
+    # Сначала отделяем вид спорта
+    if ". " in raw_title:
+        sport, remainder = raw_title.split(
+            ". ",
+            1
+        )
+    else:
+        return {
+            "sport": "",
+            "tournament": "",
+            "title": raw_title,
+        }
+
+    sport = sport.strip()
+    remainder = remainder.strip()
+
+    remainder_lower = remainder.casefold()
+
+    # Отдельное правило для QJ League
+    qj_prefix = "qj league"
+
+    if remainder_lower.startswith(
+        qj_prefix
+    ):
+        event_title = remainder[
+            len(qj_prefix):
+        ].strip(" .-–—")
+
+        return {
+            "sport": sport,
+            "tournament": "QJ League",
+            "title": event_title,
+        }
+
+    # Маркеры окончания названия турнира
+    tournament_markers = [
+        "Плей-офф кезеңі",
+        "іріктеу турнирі",
+        "Финал",
+        "(Әйелдер)",
+    ]
+
+    for marker in tournament_markers:
+        marker_position = remainder.find(
+            marker
+        )
+
+        if marker_position == -1:
+            continue
+
+        tournament_end = (
+            marker_position
+            + len(marker)
+        )
+
+        tournament = remainder[
+            :tournament_end
+        ].strip(" .")
+
+        event_title = remainder[
+            tournament_end:
+        ].strip(" .-–—")
+
+        return {
+            "sport": sport,
+            "tournament": tournament,
+            "title": event_title,
+        }
+
+    # Если правило неизвестно,
+    # данные всё равно не теряем
+    return {
+        "sport": sport,
+        "tournament": "",
+        "title": remainder,
+    }
+
+
 def find_current_live(soup):
     page_text = " ".join(
         soup.stripped_strings
@@ -138,7 +217,7 @@ async def get_qazsport_schedule():
     day_offset = 0
     previous_minutes = None
 
-    # Сначала собираем ВСЮ обычную сетку Qazsport
+    # Собираем всю сетку телеканала
     for element in soup.find_all("a"):
         text = " ".join(
             element.stripped_strings
@@ -157,8 +236,7 @@ async def get_qazsport_schedule():
             time_text
         )
 
-        # Если после 23:xx пошло 00:xx / 01:xx / 02:xx,
-        # значит наступил следующий календарный день.
+        # Переход через полночь
         if (
             previous_minutes is not None
             and current_minutes < previous_minutes
@@ -198,9 +276,6 @@ async def get_qazsport_schedule():
                 "channel": CHANNEL,
                 "is_live": is_live,
                 "raw_title": raw_title,
-
-                # Внутреннее число,
-                # чтобы правильно сортировать после полуночи.
                 "schedule_offset": (
                     current_minutes
                     + day_offset * 1440
@@ -210,8 +285,7 @@ async def get_qazsport_schedule():
 
         previous_minutes = current_minutes
 
-    # Отдельно добавляем блок "СЕЙЧАС В ЭФИРЕ",
-    # потому что Qazsport оформляет его иначе.
+    # Событие "СЕЙЧАС В ЭФИРЕ"
     current_live = find_current_live(
         soup
     )
@@ -292,16 +366,13 @@ async def get_qazsport_schedule():
                 }
             )
 
-    # Теперь ставим "СЕЙЧАС В ЭФИРЕ"
-    # на правильное место между остальными передачами.
     schedule.sort(
         key=lambda event:
         event["schedule_offset"]
     )
 
-    # Для каждого элемента берём начало
-    # следующей программы как ориентир
-    # окончания текущего эфирного слота.
+    # Следующая программа =
+    # ориентир окончания эфирного слота
     for index, event in enumerate(
         schedule
     ):
@@ -343,6 +414,21 @@ async def get_qazsport_schedule():
                 "end_confidence"
             ] = "unknown"
 
+    # Разбираем LIVE-записи
+    for event in schedule:
+        if not event["is_live"]:
+            continue
+
+        parsed = parse_qazsport_title(
+            event["raw_title"]
+        )
+
+        event["sport"] = parsed["sport"]
+        event["tournament"] = parsed[
+            "tournament"
+        ]
+        event["title"] = parsed["title"]
+
     return schedule
 
 
@@ -354,11 +440,6 @@ async def main():
         for event in schedule
         if event["is_live"]
     ]
-
-    print(
-        "Всего строк в сетке:",
-        len(schedule)
-    )
 
     print(
         "LIVE-событий:",
@@ -375,12 +456,15 @@ async def main():
             f"{number}.\n"
             f"Дата: {event['date']}\n"
             f"Начало эфира: {event['time']}\n"
-            f"Ориентир окончания эфира: "
+            f"Окончание эфира: "
             f"{event['estimated_broadcast_end_date']} "
             f"{event['estimated_broadcast_end']}\n"
+            f"Вид спорта: {event['sport']}\n"
+            f"Турнир: {event['tournament']}\n"
+            f"Событие: {event['title']}\n"
             f"Канал: {event['channel']}\n"
             f"LIVE: {event['is_live']}\n"
-            f"Название: {event['raw_title']}\n"
+            f"Исходник: {event['raw_title']}\n"
             f"Метод окончания: "
             f"{event['end_estimation_method']}\n"
         )
