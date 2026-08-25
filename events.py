@@ -12,7 +12,6 @@ EVENTS = [
         is_live=True,
         event_start="19:00",
         verification_status="confirmed",
-        time_difference_minutes=5,
     ),
 
     SportEvent(
@@ -25,7 +24,6 @@ EVENTS = [
         is_live=False,
         event_start="21:00",
         verification_status="confirmed",
-        time_difference_minutes=0,
     ),
 
     SportEvent(
@@ -38,6 +36,5 @@ EVENTS = [
         is_live=True,
         event_start="23:05",
         verification_status="confirmed",
-        time_difference_minutes=5,
     ),
 ]
