@@ -16,6 +16,39 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 
+# Пока это тестовые события.
+# Позже этот список будет автоматически заполнять парсер.
+EVENTS = [
+    {
+        "date": "25 августа",
+        "time": "18:55",
+        "sport": "Хоккей",
+        "tournament": "Кубок Республики Казахстан. Финал",
+        "title": "Торпедо – Сарыарқа",
+        "channel": "Qazsport",
+        "is_live": True,
+    },
+    {
+        "date": "25 августа",
+        "time": "21:00",
+        "sport": "Теннис",
+        "tournament": "US Open",
+        "title": "Квалификация",
+        "channel": "Eurosport 1",
+        "is_live": False,
+    },
+    {
+        "date": "25 августа",
+        "time": "23:00",
+        "sport": "Футбол",
+        "tournament": "Ла Лига",
+        "title": "Валенсия – Бетис",
+        "channel": "Setanta Sports 1",
+        "is_live": True,
+    },
+]
+
+
 main_keyboard = InlineKeyboardMarkup(
     inline_keyboard=[
         [
@@ -50,6 +83,16 @@ main_keyboard = InlineKeyboardMarkup(
 )
 
 
+def format_event(event):
+    return (
+        f"{event['date']}, {event['time']} – "
+        f"{event['sport']}. "
+        f"{event['tournament']}. "
+        f"{event['title']} | "
+        f"{event['channel']}"
+    )
+
+
 @dp.message(Command("start"))
 async def start_command(message: Message):
     await message.answer(
@@ -63,9 +106,14 @@ async def start_command(message: Message):
 async def schedule_callback(callback: CallbackQuery):
     await callback.answer()
 
+    schedule_text = "\n\n".join(
+        format_event(event)
+        for event in EVENTS
+    )
+
     await callback.message.answer(
         "📅 Расписание\n\n"
-        "Расписание спортивных LIVE-событий пока не сформировано."
+        + schedule_text
     )
 
 
@@ -73,9 +121,27 @@ async def schedule_callback(callback: CallbackQuery):
 async def live_callback(callback: CallbackQuery):
     await callback.answer()
 
+    live_events = [
+        event
+        for event in EVENTS
+        if event["is_live"]
+    ]
+
+    if not live_events:
+        await callback.message.answer(
+            "🔴 LIVE\n\n"
+            "Сейчас LIVE-событий нет."
+        )
+        return
+
+    live_text = "\n\n".join(
+        format_event(event)
+        for event in live_events
+    )
+
     await callback.message.answer(
-        "🔴 LIVE\n\n"
-        "Модуль текущих LIVE-событий пока не подключён."
+        "🔴 LIVE-события\n\n"
+        + live_text
     )
 
 
@@ -85,7 +151,8 @@ async def status_callback(callback: CallbackQuery):
 
     await callback.message.answer(
         "📊 Статус расписания\n\n"
-        "Стадия: тестирование системы 🛠"
+        "Стадия: тестирование системы 🛠\n"
+        f"Событий в расписании: {len(EVENTS)}"
     )
 
 
