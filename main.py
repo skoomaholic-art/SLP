@@ -13,6 +13,7 @@ from aiogram.types import (
 )
 
 from parsers.qazsport import get_qazsport_schedule
+from verifiers.web_search import verify_event
 
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -85,19 +86,19 @@ def format_date(date_text):
 
 
 def get_event_datetimes(event):
-    end_date = event[
-        "estimated_broadcast_end_date"
-    ]
-
-    end_time = event[
-        "estimated_broadcast_end"
-    ]
-
     start_datetime = datetime.strptime(
         f"{event['date']} {event['time']}",
         "%Y-%m-%d %H:%M"
     ).replace(
         tzinfo=KZ_TIMEZONE
+    )
+
+    end_date = event.get(
+        "estimated_broadcast_end_date"
+    )
+
+    end_time = event.get(
+        "estimated_broadcast_end"
     )
 
     if not end_date or not end_time:
@@ -162,32 +163,45 @@ def is_event_live_now(event):
     )
 
 
+def get_end_text(event):
+    end_date = event.get(
+        "estimated_broadcast_end_date"
+    )
+
+    end_time = event.get(
+        "estimated_broadcast_end"
+    )
+
+    if not end_date or not end_time:
+        return "не определено"
+
+    if end_date == event["date"]:
+        return end_time
+
+    return (
+        f"{format_date(end_date)}, "
+        f"{end_time}"
+    )
+
+
 def format_qazsport_event(event):
     date_text = format_date(
         event["date"]
     )
 
-    end_date = event[
-        "estimated_broadcast_end_date"
-    ]
-
-    end_time = event[
-        "estimated_broadcast_end"
-    ]
-
-    if end_date and end_time:
-        if end_date == event["date"]:
-            end_text = end_time
-        else:
-            end_text = (
-                f"{format_date(end_date)}, "
-                f"{end_time}"
-            )
-    else:
-        end_text = "не определено"
-
-    status_text = get_event_status_text(
+    end_text = get_end_text(
         event
+    )
+
+    status_text = (
+        get_event_status_text(
+            event
+        )
+    )
+
+    sport = event.get(
+        "sport",
+        ""
     )
 
     tournament = event.get(
@@ -195,20 +209,37 @@ def format_qazsport_event(event):
         ""
     )
 
-    tournament_text = (
-        f"{tournament}. "
-        if tournament
-        else ""
+    title = event.get(
+        "title",
+        event.get(
+            "raw_title",
+            ""
+        )
     )
+
+    if sport:
+        sport_text = (
+            f"{sport}. "
+        )
+    else:
+        sport_text = ""
+
+    if tournament:
+        tournament_text = (
+            f"{tournament}. "
+        )
+    else:
+        tournament_text = ""
 
     return (
         f"{status_text}\n"
         f"{date_text}, {event['time']} – "
-        f"{event['sport']}. "
+        f"{sport_text}"
         f"{tournament_text}"
-        f"{event['title']} | "
+        f"{title} | "
         f"{event['channel']}\n"
-        f"↳ Ориентировочно до: {end_text}"
+        f"↳ Ориентировочно до: "
+        f"{end_text}"
     )
 
 
@@ -220,15 +251,23 @@ def remove_duplicates(events):
         event_key = (
             event["date"],
             event["time"],
-            event.get("title"),
+            event.get(
+                "raw_title",
+                event.get("title")
+            ),
             event["channel"],
         )
 
         if event_key in seen:
             continue
 
-        seen.add(event_key)
-        result.append(event)
+        seen.add(
+            event_key
+        )
+
+        result.append(
+            event
+        )
 
     return result
 
@@ -238,20 +277,22 @@ async def get_current_live_events():
         KZ_TIMEZONE
     )
 
-    today = now.date()
-
     yesterday = (
-        today
+        now.date()
         - timedelta(days=1)
     )
 
+    # ВАЖНО:
+    # Сегодня берём именно текущую страницу Qazsport.
+    # Не передаём сегодняшнюю дату в URL.
     today_schedule = (
         await get_qazsport_schedule(
-            today,
             include_current_live=True
         )
     )
 
+    # Вчерашнюю страницу используем отдельно,
+    # чтобы корректно ловить LIVE после полуночи.
     yesterday_schedule = (
         await get_qazsport_schedule(
             yesterday,
@@ -264,18 +305,31 @@ async def get_current_live_events():
         + today_schedule
     )
 
-    combined_schedule = remove_duplicates(
-        combined_schedule
+    combined_schedule = (
+        remove_duplicates(
+            combined_schedule
+        )
     )
 
-    return [
-        event
-        for event in combined_schedule
-        if (
-            event["is_live"]
-            and is_event_live_now(event)
+    current_live_events = []
+
+    for event in combined_schedule:
+        if not event.get(
+            "is_live",
+            False
+        ):
+            continue
+
+        if not is_event_live_now(
+            event
+        ):
+            continue
+
+        current_live_events.append(
+            event
         )
-    ]
+
+    return current_live_events
 
 
 def build_verification_keyboard(
@@ -286,12 +340,20 @@ def build_verification_keyboard(
     for index, event in enumerate(
         live_events
     ):
+        title = event.get(
+            "title",
+            event.get(
+                "raw_title",
+                ""
+            )
+        )
+
         buttons.append(
             [
                 InlineKeyboardButton(
                     text=(
                         f"{event['time']} — "
-                        f"{event['title']}"
+                        f"{title}"
                     ),
                     callback_data=(
                         f"verify_qazsport_{index}"
@@ -305,12 +367,15 @@ def build_verification_keyboard(
     )
 
 
-@dp.message(Command("start"))
+@dp.message(
+    Command("start")
+)
 async def start_command(
     message: Message
 ):
     await message.answer(
-        "SLP [Skoomaholic Live Parser] запущен ✅\n\n"
+        "SLP [Skoomaholic Live Parser] "
+        "запущен ✅\n\n"
         "Выберите действие:",
         reply_markup=main_keyboard,
     )
@@ -326,36 +391,52 @@ async def schedule_callback(
 
     loading_message = (
         await callback.message.answer(
-            "⏳ Загружаю расписание Qazsport..."
+            "⏳ Загружаю расписание "
+            "Qazsport..."
         )
     )
 
     try:
         schedule = (
-            await get_qazsport_schedule()
+            await get_qazsport_schedule(
+                include_current_live=True
+            )
         )
 
         live_events = [
             event
             for event in schedule
-            if event["is_live"]
+            if event.get(
+                "is_live",
+                False
+            )
         ]
 
         if not live_events:
-            await loading_message.edit_text(
-                "📅 Расписание Qazsport\n\n"
-                "LIVE-событий не найдено."
+            await (
+                loading_message
+                .edit_text(
+                    "📅 Расписание Qazsport\n\n"
+                    "LIVE-событий не найдено."
+                )
             )
+
             return
 
         schedule_text = "\n\n".join(
-            format_qazsport_event(event)
+            format_qazsport_event(
+                event
+            )
             for event in live_events
         )
 
-        current_time = datetime.now(
-            KZ_TIMEZONE
-        ).strftime("%H:%M")
+        current_time = (
+            datetime.now(
+                KZ_TIMEZONE
+            ).strftime(
+                "%H:%M"
+            )
+        )
 
         await loading_message.edit_text(
             "📅 LIVE-расписание Qazsport\n"
@@ -396,22 +477,33 @@ async def live_callback(
             await get_current_live_events()
         )
 
-        current_time = datetime.now(
-            KZ_TIMEZONE
-        ).strftime("%H:%M")
+        current_time = (
+            datetime.now(
+                KZ_TIMEZONE
+            ).strftime(
+                "%H:%M"
+            )
+        )
 
         if not current_live_events:
-            await loading_message.edit_text(
-                "🔴 Сейчас LIVE\n\n"
-                f"Текущее время: "
-                f"{current_time} (UTC+5)\n\n"
-                "На Qazsport сейчас "
-                "LIVE-событий нет."
+            await (
+                loading_message
+                .edit_text(
+                    "🔴 Сейчас LIVE\n\n"
+                    f"Текущее время: "
+                    f"{current_time} "
+                    f"(UTC+5)\n\n"
+                    "На Qazsport сейчас "
+                    "LIVE-событий нет."
+                )
             )
+
             return
 
         live_text = "\n\n".join(
-            format_qazsport_event(event)
+            format_qazsport_event(
+                event
+            )
             for event
             in current_live_events
         )
@@ -419,7 +511,8 @@ async def live_callback(
         await loading_message.edit_text(
             "🔴 Сейчас LIVE\n\n"
             f"Текущее время: "
-            f"{current_time} (UTC+5)\n\n"
+            f"{current_time} "
+            f"(UTC+5)\n\n"
             + live_text
         )
 
@@ -431,7 +524,8 @@ async def live_callback(
 
         await loading_message.edit_text(
             "❌ Не удалось проверить "
-            "текущие LIVE-события Qazsport."
+            "текущие LIVE-события "
+            "Qazsport."
         )
 
 
@@ -452,20 +546,29 @@ async def internet_check_callback(
 
     try:
         schedule = (
-            await get_qazsport_schedule()
+            await get_qazsport_schedule(
+                include_current_live=True
+            )
         )
 
         live_events = [
             event
             for event in schedule
-            if event["is_live"]
+            if event.get(
+                "is_live",
+                False
+            )
         ]
 
         if not live_events:
-            await loading_message.edit_text(
-                "🌐 Проверка в интернете\n\n"
-                "Событий для проверки нет."
+            await (
+                loading_message
+                .edit_text(
+                    "🌐 Проверка в интернете\n\n"
+                    "Событий для проверки нет."
+                )
             )
+
             return
 
         keyboard = (
@@ -505,72 +608,185 @@ async def verify_qazsport_callback(
 
     try:
         event_index = int(
-            callback.data.split("_")[-1]
+            callback.data.split(
+                "_"
+            )[-1]
         )
 
         schedule = (
-            await get_qazsport_schedule()
+            await get_qazsport_schedule(
+                include_current_live=True
+            )
         )
 
         live_events = [
             event
             for event in schedule
-            if event["is_live"]
+            if event.get(
+                "is_live",
+                False
+            )
         ]
 
         if event_index >= len(
             live_events
         ):
             await callback.message.answer(
-                "⚠️ Расписание уже изменилось.\n"
+                "⚠️ Расписание уже "
+                "изменилось.\n"
                 "Откройте проверку заново."
             )
+
             return
 
         event = live_events[
             event_index
         ]
 
-        end_date = event[
-            "estimated_broadcast_end_date"
-        ]
-
-        end_time = event[
-            "estimated_broadcast_end"
-        ]
-
-        if end_date and end_time:
-            end_text = (
-                f"{format_date(end_date)}, "
-                f"{end_time}"
+        title = event.get(
+            "title",
+            event.get(
+                "raw_title",
+                ""
             )
-        else:
-            end_text = "не определено"
+        )
+
+        sport = event.get(
+            "sport",
+            ""
+        )
 
         tournament = event.get(
             "tournament",
             ""
         )
 
-        await callback.message.answer(
-            "🌐 Событие для интернет-проверки\n\n"
-            f"🏟 {event['title']}\n\n"
+        end_text = get_end_text(
+            event
+        )
+
+        loading_message = (
+            await callback.message.answer(
+                "🌐 Интернет-проверка\n\n"
+                f"🏟 {title}\n\n"
+                "⏳ Ищу событие "
+                "во внешних источниках..."
+            )
+        )
+
+        verification = (
+            await asyncio.to_thread(
+                verify_event,
+                event,
+            )
+        )
+
+        if not verification[
+            "found"
+        ]:
+            await loading_message.edit_text(
+                "🌐 Интернет-проверка\n\n"
+                f"🏟 {title}\n\n"
+                f"🏅 Вид спорта: "
+                f"{sport or 'не определён'}\n"
+                f"🏆 Турнир: "
+                f"{tournament or 'не определён'}\n"
+                f"📅 Дата: "
+                f"{format_date(event['date'])}\n"
+                f"🕐 Начало эфира Qazsport: "
+                f"{event['time']}\n"
+                f"🏁 Ориентировочно до: "
+                f"{end_text}\n"
+                f"📺 Канал: "
+                f"{event['channel']}\n\n"
+                "❌ Не удалось определить "
+                "время события по найденным "
+                "внешним источникам.\n\n"
+                f"🔎 Результатов поиска: "
+                f"{verification['search_results_count']}\n"
+                f"✅ Подходящих по событию: "
+                f"{verification['matching_results_count']}"
+            )
+
+            return
+
+        difference = verification.get(
+            "difference_minutes"
+        )
+
+        if difference is None:
+            difference_text = (
+                "не определена"
+            )
+        else:
+            difference_text = (
+                f"{abs(difference)} мин."
+            )
+
+        time_status = (
+            verification.get(
+                "time_status",
+                {},
+            )
+        )
+
+        sources = verification.get(
+            "sources",
+            [],
+        )
+
+        if sources:
+            sources_text = "\n".join(
+                (
+                    f"• "
+                    f"{source['source_name']} — "
+                    f"{source['time']} MSK"
+                )
+                for source
+                in sources[:5]
+            )
+        else:
+            sources_text = "• нет"
+
+        await loading_message.edit_text(
+            "🌐 Интернет-проверка\n\n"
+            f"🏟 {title}\n\n"
             f"🏅 Вид спорта: "
-            f"{event['sport']}\n"
+            f"{sport or 'не определён'}\n"
             f"🏆 Турнир: "
             f"{tournament or 'не определён'}\n"
-            f"📅 Дата: "
+            f"📅 Дата Qazsport: "
             f"{format_date(event['date'])}\n"
-            f"🕐 Начало эфира: "
+            f"🕐 Начало эфира Qazsport: "
             f"{event['time']}\n"
-            f"📺 Канал: "
-            f"{event['channel']}\n"
             f"🏁 Ориентировочно до: "
-            f"{end_text}\n\n"
-            "⚠️ Внешняя независимая "
-            "сверка пока не подключена.\n"
-            "Сейчас это реальные данные "
-            "парсера Qazsport."
+            f"{end_text}\n"
+            f"📺 Канал: "
+            f"{event['channel']}\n\n"
+            "🌍 Внешние источники\n"
+            f"🕐 Время события: "
+            f"{verification['external_time_kz']} "
+            f"(UTC+5)\n"
+            f"📅 Дата события: "
+            f"{verification['external_date_kz']}\n"
+            f"🔎 Найдено результатов: "
+            f"{verification['search_results_count']}\n"
+            f"🎯 Подходят к событию: "
+            f"{verification['matching_results_count']}\n"
+            f"📚 Независимых организаций: "
+            f"{verification['source_count']}\n"
+            f"⚖️ Вес доверия: "
+            f"{verification['total_weight']}\n"
+            f"📊 Уверенность: "
+            f"{verification['confidence']['label']}\n"
+            f"ℹ️ "
+            f"{verification['confidence']['reason']}\n\n"
+            f"⏱ Разница с эфиром: "
+            f"{difference_text}\n"
+            f"{time_status.get('label', '')}\n"
+            f"{time_status.get('description', '')}\n\n"
+            "Источники:\n"
+            f"{sources_text}"
         )
 
     except Exception as error:
@@ -597,7 +813,8 @@ async def status_callback(
         "📊 Статус SLP\n\n"
         "✅ Telegram-бот работает\n"
         "✅ Qazsport подключён\n"
-        "✅ Реальное расписание загружается\n"
+        "✅ Реальное расписание "
+        "загружается\n"
         "✅ LIVE-фильтрация работает\n"
         "✅ UTC+5 учитывается\n"
         "✅ Переход через 00:00 работает\n"
@@ -605,10 +822,14 @@ async def status_callback(
         "00:00 учитывается\n"
         "✅ Окончание эфирного "
         "слота рассчитывается\n"
-        "✅ Реальные события доступны "
-        "для проверки\n\n"
-        "Стадия: подготовка "
-        "интернет-сверки 🛠"
+        "✅ Русская нормализация "
+        "Qazsport подключена\n"
+        "✅ Турниры УЕФА "
+        "распознаются\n"
+        "✅ Интернет-сверка "
+        "подключена\n\n"
+        "Стадия: финальная проверка "
+        "текущего этапа 🛠"
     )
 
 
@@ -637,8 +858,12 @@ async def main():
         "Ожидаю сообщения в Telegram..."
     )
 
-    await dp.start_polling(bot)
+    await dp.start_polling(
+        bot
+    )
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(
+        main()
+    )
