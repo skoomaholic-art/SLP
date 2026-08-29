@@ -1,51 +1,28 @@
-from dataclasses import dataclass
+from __future__ import annotations
+
+from typing import NotRequired, TypedDict
 
 
-@dataclass
-class SportEvent:
+class SportEvent(TypedDict):
+    """Единый формат спортивного события внутри SLP."""
+
+    source: str
+    source_url: str
+    channel: str
     date: str
-    broadcast_start: str
-
+    time: str
     sport: str
     tournament: str
     title: str
-    channel: str
-
     is_live: bool
+    raw_title: str
 
-    event_start: str | None = None
-    verification_status: str = "not_checked"
+    estimated_broadcast_end_date: str | None
+    estimated_broadcast_end: str | None
+    end_estimation_method: str | None
+    end_confidence: str
 
-    @property
-    def time_difference_minutes(self):
-        if self.event_start is None:
-            return None
-
-        broadcast_hour, broadcast_minute = map(
-            int,
-            self.broadcast_start.split(":")
-        )
-
-        event_hour, event_minute = map(
-            int,
-            self.event_start.split(":")
-        )
-
-        broadcast_total = (
-            broadcast_hour * 60
-            + broadcast_minute
-        )
-
-        event_total = (
-            event_hour * 60
-            + event_minute
-        )
-
-        difference = abs(
-            event_total - broadcast_total
-        )
-
-        return min(
-            difference,
-            1440 - difference
-        )
+    raw_sport: NotRequired[str]
+    raw_tournament: NotRequired[str]
+    raw_event_title: NotRequired[str]
+    schedule_offset: NotRequired[int]

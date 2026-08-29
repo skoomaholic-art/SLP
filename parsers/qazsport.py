@@ -5,9 +5,12 @@ from datetime import datetime, timedelta
 import aiohttp
 from bs4 import BeautifulSoup
 
+from services.event_contract import build_sport_event
+
 
 BASE_URL = "https://qazsporttv.kz/ru/program"
 CHANNEL = "Qazsport"
+SOURCE = "qazsport"
 
 TIME_PATTERN = re.compile(
     r"\b(?:[01]\d|2[0-3]):[0-5]\d\b"
@@ -26,6 +29,8 @@ SPORT_PREFIXES = {
     "Теннис": "Теннис",
     "Бокс": "Бокс",
     "Биатлон": "Биатлон",
+    "Дзюдо": "Дзюдо",
+    "Judo": "Дзюдо",
     "Шаңғы спорты": "Лыжный спорт",
     "Жеңіл атлетика": "Лёгкая атлетика",
 }
@@ -116,6 +121,10 @@ RU_REPLACEMENTS = [
         "Тайланд",
         "Таиланд",
     ),
+    (
+        "Қайрат",
+        "Кайрат",
+    ),
 ]
 
 
@@ -123,7 +132,11 @@ def normalize_russian_text(text):
     if not text:
         return ""
 
-    result = text
+    result = (
+        text
+        .replace("1\\4", "1/4")
+        .replace("1\\2", "1/2")
+    )
 
     for source, replacement in RU_REPLACEMENTS:
         result = result.replace(
@@ -368,6 +381,34 @@ def parse_qazsport_title(
             "raw_tournament": (
                 "УЕФА Конференциялар Лигасы"
             ),
+            "raw_event_title": remainder,
+        }
+
+    # Дзюдо — Grand Slam
+    if (
+        "grand slam" in remainder_lower
+        and (
+            sport == "Дзюдо"
+            or "дзюдо" in remainder_lower
+            or "judo" in remainder_lower
+        )
+    ):
+        raw_event_title = re.sub(
+            r"(?i)\b(?:дзюдо|judo)\b",
+            "",
+            remainder,
+        ).strip(" .-–—")
+
+        normalized_title = normalize_russian_text(
+            raw_event_title
+        )
+
+        return {
+            "sport": "Дзюдо",
+            "tournament": "Grand Slam",
+            "title": normalized_title or "Grand Slam",
+            "raw_sport": raw_sport or "Дзюдо",
+            "raw_tournament": "Grand Slam",
             "raw_event_title": remainder,
         }
 
@@ -853,7 +894,14 @@ async def get_qazsport_schedule(
             "title"
         ]
 
-    return schedule
+    return [
+        build_sport_event(
+            event,
+            source=SOURCE,
+            source_url=url,
+        )
+        for event in schedule
+    ]
 
 
 async def main():
