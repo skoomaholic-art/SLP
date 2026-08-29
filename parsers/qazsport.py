@@ -110,6 +110,30 @@ RU_REPLACEMENTS = [
         "Казахстан",
     ),
     (
+        "Казахстан чемпионаты",
+        "Чемпионат Казахстана",
+    ),
+    (
+        "Қазақстан чемпионаты",
+        "Чемпионат Казахстана",
+    ),
+    (
+        "Іріктеу",
+        "Отборочный этап",
+    ),
+    (
+        "іріктеу",
+        "Отборочный этап",
+    ),
+    (
+        "1/2 финал",
+        "1/2 финала",
+    ),
+    (
+        "1/4 финал",
+        "1/4 финала",
+    ),
+    (
         "Мальдив аралдары",
         "Мальдивы",
     ),
@@ -196,6 +220,29 @@ def extract_sport_and_remainder(
                 source_name,
                 russian_name,
                 remainder,
+            )
+
+    return "", "", text
+
+
+def extract_trailing_sport(raw_title):
+    text = raw_title.strip()
+
+    for source_name, russian_name in sorted(
+        SPORT_PREFIXES.items(),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    ):
+        pattern = re.compile(
+            rf"^(.*?)\s+{re.escape(source_name)}$",
+            flags=re.IGNORECASE,
+        )
+        match = pattern.match(text)
+        if match:
+            return (
+                source_name,
+                russian_name,
+                match.group(1).strip(" .-–—"),
             )
 
     return "", "", text
@@ -291,6 +338,18 @@ def parse_qazsport_title(
         raw_title
     )
 
+    if not sport:
+        (
+            trailing_raw_sport,
+            trailing_sport,
+            trailing_remainder,
+        ) = extract_trailing_sport(raw_title)
+
+        if trailing_sport:
+            raw_sport = trailing_raw_sport
+            sport = trailing_sport
+            remainder = trailing_remainder
+
     remainder_lower = (
         remainder.casefold()
     )
@@ -381,6 +440,28 @@ def parse_qazsport_title(
             "raw_tournament": (
                 "УЕФА Конференциялар Лигасы"
             ),
+            "raw_event_title": remainder,
+        }
+
+    normalized_remainder = normalize_russian_text(remainder)
+
+    if normalized_remainder.casefold().startswith(
+        "чемпионат казахстана"
+    ):
+        parts = [
+            part.strip()
+            for part in normalized_remainder.split(".")
+            if part.strip()
+        ]
+        tournament = parts[0] if parts else "Чемпионат Казахстана"
+        title = ". ".join(parts[1:]).strip() or tournament
+
+        return {
+            "sport": sport,
+            "tournament": tournament,
+            "title": title,
+            "raw_sport": raw_sport,
+            "raw_tournament": remainder,
             "raw_event_title": remainder,
         }
 

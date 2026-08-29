@@ -2010,6 +2010,13 @@ def confidence_result(
 # СРАВНЕНИЕ С ЭФИРОМ
 # =========================================================
 
+MAX_ACCEPTABLE_EXTERNAL_DIFF_MINUTES = 30
+
+
+def is_plausible_external_time_difference(difference_minutes):
+    return abs(difference_minutes) <= MAX_ACCEPTABLE_EXTERNAL_DIFF_MINUTES
+
+
 def time_status(
     difference_minutes,
 ):
@@ -2250,7 +2257,7 @@ def verify_event(event):
     ]
 
     # Только здесь, после независимого выбора внешнего времени,
-    # сравниваем его с эфиром Qazsport.
+    # сравниваем его с эфирным расписанием источника.
     broadcast = broadcast_datetime(
         event
     )
@@ -2262,6 +2269,33 @@ def verify_event(event):
         ).total_seconds()
         / 60
     )
+
+    # Внешнее время с расхождением больше 30 минут
+    # считаем нерелевантным кандидатом. Оно не должно
+    # участвовать в доверии и не показывается пользователю
+    # как подтверждение времени конкретного эфира.
+    if not is_plausible_external_time_difference(
+        difference_minutes
+    ):
+        return {
+            **base_result,
+            "found": False,
+            "time_rejected": True,
+            "rejected_external_date_kz": (
+                external_datetime.strftime("%Y-%m-%d")
+            ),
+            "rejected_external_time_kz": (
+                external_datetime.strftime("%H:%M")
+            ),
+            "rejected_difference_minutes": difference_minutes,
+            "message": (
+                "Событие найдено, но найденное внешнее время "
+                "отброшено из-за расхождения более 30 минут."
+            ),
+            "source_count": 0,
+            "total_weight": 0,
+            "sources": [],
+        }
 
     source_count = len(
         sources

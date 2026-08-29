@@ -31,6 +31,13 @@ LIVE_MARKERS = (
     "ТIКЕЛЕЙ ЭФИР",
 )
 
+REPLAY_MARKERS = (
+    "ПОВТОР",
+    "ЗАПИСЬ",
+    "REPLAY",
+    "АРХИВ",
+)
+
 SPORT_PREFIXES = {
     "ФУТБОЛ": "Футбол",
     "ВОЛЕЙБОЛ": "Волейбол",
@@ -74,6 +81,17 @@ TEXT_REPLACEMENTS = (
     ("Қазақстан", "Казахстан"),
 )
 
+RU_PHRASE_REPLACEMENTS = (
+    (r"\bАТ ЖАРЫСЫ МАУСЫМЫ\b", "Сезон конных скачек"),
+    (r"\bҚАЗАҚСТАН ЧЕМПИОНАТЫ\b", "Чемпионат Казахстана"),
+    (r"\bКАЗАХСТАН ЧЕМПИОНАТЫ\b", "Чемпионат Казахстана"),
+    (r"\b[ІI]Р[ІI]КТЕУ КЕЗЕҢ[ІI]\b", "Отборочный этап"),
+    (r"\b[ІI]Р[ІI]КТЕУ\b", "Отборочный этап"),
+    (r"\bБІРІНШІ МАТЧ\b", "Первый матч"),
+    (r"\bАЛМАТЫДАН\b", "Алматы"),
+    (r"\bШЫМКЕНТТЕН\b", "Шымкент"),
+)
+
 
 def time_to_minutes(value: str) -> int:
     hour, minute = map(int, value.split(":"))
@@ -86,6 +104,14 @@ def normalize_text(value: str) -> str:
     for source, replacement in TEXT_REPLACEMENTS:
         result = result.replace(source, replacement)
 
+    for pattern, replacement in RU_PHRASE_REPLACEMENTS:
+        result = re.sub(
+            pattern,
+            replacement,
+            result,
+            flags=re.IGNORECASE,
+        )
+
     result = re.sub(r"\s+", " ", result)
     result = re.sub(r"\s*\.\s*", ". ", result)
     return result.strip(" .-–—")
@@ -94,6 +120,15 @@ def normalize_text(value: str) -> str:
 def has_live_marker(value: str) -> bool:
     upper = str(value or "").upper()
     return any(marker in upper for marker in LIVE_MARKERS)
+
+
+def has_replay_marker(value: str) -> bool:
+    upper = str(value or "").upper()
+    return any(marker in upper for marker in REPLAY_MARKERS)
+
+
+def is_direct_broadcast(value: str) -> bool:
+    return has_live_marker(value) and not has_replay_marker(value)
 
 
 def strip_live_marker(value: str) -> str:
@@ -155,6 +190,18 @@ def parse_sportplus_title(raw_title: str) -> dict[str, str]:
         for segment in re.split(r"\s*\.\s*", remainder)
         if segment.strip()
     ]
+
+    if (
+        sport == "Конный спорт"
+        and segments
+        and segments[0].casefold().startswith("сезон конных скачек")
+    ):
+        return {
+            "sport": sport,
+            "tournament": normalize_text(segments[0]),
+            "title": normalize_text(remainder),
+            "raw_event_title": normalize_text(remainder),
+        }
 
     match_index = None
     for index, segment in enumerate(segments):
@@ -402,7 +449,7 @@ def parse_sportplus_html(
     for index, program in enumerate(programs):
         raw_title = program["raw_title"]
         parsed = parse_sportplus_title(raw_title)
-        direct = has_live_marker(raw_title)
+        direct = is_direct_broadcast(raw_title)
 
         # В SLP нужны именно спортивные прямые трансляции.
         # Прямые студийные программы без распознанного вида спорта исключаем.

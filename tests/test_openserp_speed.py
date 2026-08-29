@@ -123,6 +123,20 @@ class OpenSerpSpeedTests(unittest.TestCase):
             web_search.FALLBACK_SEARCH_ENGINES,
         )
 
+    def test_external_time_over_30_minutes_is_rejected(self):
+        self.assertTrue(
+            web_search.is_plausible_external_time_difference(30)
+        )
+        self.assertTrue(
+            web_search.is_plausible_external_time_difference(-30)
+        )
+        self.assertFalse(
+            web_search.is_plausible_external_time_difference(31)
+        )
+        self.assertFalse(
+            web_search.is_plausible_external_time_difference(-31)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,6 +4,7 @@ from datetime import date
 from parsers.sportplus import (
     BASE_URL,
     _extract_headers,
+    is_direct_broadcast,
     parse_sportplus_html,
     parse_sportplus_title,
     strip_live_marker,
@@ -125,6 +126,28 @@ class SportPlusParserTests(unittest.TestCase):
             "MEDIA BASKET ALMATY. ПОЛУФИНАЛЫ. ПРЯМАЯ ТРАНСЛЯЦИЯ ИЗ АЛМАТЫ"
         )
         self.assertEqual(parsed["sport"], "Баскетбол")
+
+    def test_kazakh_horse_racing_title_is_displayed_in_russian(self):
+        parsed = parse_sportplus_title(
+            "АТ СПОРТЫ. АТ ЖАРЫСЫ МАУСЫМЫ 2026. АЛМАТЫДАН. "
+            "ПРЯМАЯ ТРАНСЛЯЦИЯ"
+        )
+        self.assertEqual(parsed["sport"], "Конный спорт")
+        self.assertEqual(
+            parsed["tournament"],
+            "Сезон конных скачек 2026",
+        )
+        self.assertEqual(
+            parsed["title"],
+            "Сезон конных скачек 2026. Алматы",
+        )
+
+    def test_replay_marker_overrides_live_marker(self):
+        self.assertFalse(
+            is_direct_broadcast(
+                "ФУТБОЛ. ТЕСТ. ПРЯМАЯ ТРАНСЛЯЦИЯ. ПОВТОР"
+            )
+        )
 
 
 if __name__ == "__main__":

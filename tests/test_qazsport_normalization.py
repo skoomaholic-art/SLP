@@ -21,13 +21,13 @@ class QazsportNormalizationTests(unittest.TestCase):
         )
         self.assertEqual(
             event["title"],
-            "1/4 финал Индонезия - Иран",
+            "1/4 финала Индонезия - Иран",
         )
 
     def test_half_final_backslash_is_normalized(self):
         self.assertEqual(
             normalize_russian_text("1\\2 финал"),
-            "1/2 финал",
+            "1/2 финала",
         )
 
     def test_kairat_is_normalized(self):
