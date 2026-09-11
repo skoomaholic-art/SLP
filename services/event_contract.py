@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
@@ -114,6 +114,19 @@ def build_sport_event(
 
     normalized["start_time"] = _build_start_time(normalized)
     normalized["end_time"] = _build_end_time(normalized)
+
+    # Old adapters sometimes represented a cross-midnight end as the same
+    # calendar date with an earlier clock time. Preserve that behaviour while
+    # keeping explicit aware datetimes strict: only legacy date/time pairs are
+    # eligible for the one-day rollover repair.
+    if (
+        normalized["end_time"] is not None
+        and normalized["end_time"] <= normalized["start_time"]
+        and not isinstance(event.get("end_time"), datetime)
+        and event.get("estimated_broadcast_end_date") is not None
+    ):
+        normalized["end_time"] += timedelta(days=1)
+
     normalized["timezone"] = TIMEZONE_NAME
     normalized["is_live_broadcast"] = bool(
         normalized.get(
