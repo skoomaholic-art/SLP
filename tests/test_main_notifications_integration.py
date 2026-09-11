@@ -25,7 +25,8 @@ class MainNotificationsIntegrationTests(unittest.TestCase):
 
         self.assertTrue(
             {
-                "build_change_messages",
+                "format_schedule_change",
+                "stable_event_identity",
                 "build_schedule_snapshot",
                 "diff_schedule_snapshots",
                 "get_previous_snapshot",
@@ -113,7 +114,7 @@ class MainNotificationsIntegrationTests(unittest.TestCase):
     def test_details_show_live_evidence(self):
         self.assertIn('📡 Основание LIVE:', self.source)
         self.assertIn(
-            'официальная пометка прямого эфира Sport+',
+            'LIVE-пометка в EPG провайдера',
             self.source,
         )
 

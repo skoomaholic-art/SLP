@@ -6,11 +6,13 @@ import aiohttp
 from bs4 import BeautifulSoup
 
 from services.event_contract import build_sport_event
+from services.live_evidence import classify_live_evidence, extract_asset_hints
 
 
 BASE_URL = "https://qazsporttv.kz/ru/program"
 CHANNEL = "Qazsport"
 SOURCE = "qazsport"
+LIVE_ASSET_PATTERNS: tuple[str, ...] = ()
 
 TIME_PATTERN = re.compile(
     r"\b(?:[01]\d|2[0-3]):[0-5]\d\b"
@@ -149,6 +151,18 @@ RU_REPLACEMENTS = [
         "Қайрат",
         "Кайрат",
     ),
+    (
+        "Жапония",
+        "Япония",
+    ),
+    (
+        "Үндістан",
+        "Индия",
+    ),
+    (
+        "Жазғы Азия ойындары",
+        "Летние Азиатские игры",
+    ),
 ]
 
 
@@ -246,6 +260,26 @@ def extract_trailing_sport(raw_title):
             )
 
     return "", "", text
+
+
+def extract_embedded_sport(raw_title):
+    text = raw_title.strip()
+    for source_name, russian_name in sorted(
+        SPORT_PREFIXES.items(), key=lambda item: len(item[0]), reverse=True
+    ):
+        pattern = re.compile(
+            rf"^(?P<tournament>.+?)\.\s*{re.escape(source_name)}\s+(?P<title>.+)$",
+            flags=re.IGNORECASE,
+        )
+        match = pattern.match(text)
+        if match:
+            return (
+                source_name,
+                russian_name,
+                match.group("tournament").strip(" .-–—"),
+                match.group("title").strip(" .-–—"),
+            )
+    return "", "", "", text
 
 
 def build_url(target_date=None):
@@ -349,6 +383,18 @@ def parse_qazsport_title(
             raw_sport = trailing_raw_sport
             sport = trailing_sport
             remainder = trailing_remainder
+
+    if not sport:
+        embedded_raw_sport, embedded_sport, embedded_tournament, embedded_title = extract_embedded_sport(raw_title)
+        if embedded_sport:
+            return {
+                "sport": embedded_sport,
+                "tournament": normalize_russian_text(embedded_tournament),
+                "title": normalize_russian_text(embedded_title),
+                "raw_sport": embedded_raw_sport,
+                "raw_tournament": embedded_tournament,
+                "raw_event_title": embedded_title,
+            }
 
     remainder_lower = (
         remainder.casefold()
@@ -734,10 +780,12 @@ async def get_qazsport_schedule(
             time_text,
         )
 
-        is_live = (
-            "LIVE"
-            in text.upper()
+        live_evidence = classify_live_evidence(
+            text,
+            asset_hints=extract_asset_hints(element),
+            live_asset_patterns=LIVE_ASSET_PATTERNS,
         )
+        is_live = live_evidence.is_live
 
         event_key = (
             event_date.isoformat(),
@@ -763,6 +811,10 @@ async def get_qazsport_schedule(
                 "time": time_text,
                 "channel": CHANNEL,
                 "is_live": is_live,
+                "live_state": live_evidence.state,
+                "live_evidence_method": live_evidence.method,
+                "live_evidence_value": live_evidence.value,
+                "live_evidence_confidence": live_evidence.confidence,
                 "raw_title": raw_title,
                 "schedule_offset": (
                     current_minutes
@@ -773,6 +825,11 @@ async def get_qazsport_schedule(
 
         previous_minutes = (
             current_minutes
+        )
+
+    if not schedule:
+        raise RuntimeError(
+            "Qazsport: дата страницы определена, но строки телепрограммы не распознаны"
         )
 
     if include_current_live:
@@ -876,6 +933,10 @@ async def get_qazsport_schedule(
                     ),
                     "channel": CHANNEL,
                     "is_live": True,
+                    "live_state": "live",
+                    "live_evidence_method": "official_current_live_banner",
+                    "live_evidence_value": "LIVE",
+                    "live_evidence_confidence": "high",
                     "raw_title": (
                         current_live[
                             "raw_title"

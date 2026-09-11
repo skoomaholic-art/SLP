@@ -9,6 +9,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 
 from services.event_contract import build_sport_event
+from services.live_evidence import LIVE_TEXT_MARKERS, classify_live_evidence
 
 
 BASE_URL = "https://sportplustv.kz/ru/tvguide"
@@ -24,19 +25,7 @@ DAY_RE = re.compile(
     flags=re.IGNORECASE,
 )
 
-LIVE_MARKERS = (
-    "ПРЯМАЯ ТРАНСЛЯЦИЯ",
-    "ПРЯМОЙ ЭФИР",
-    "ТІКЕЛЕЙ ЭФИР",
-    "ТIКЕЛЕЙ ЭФИР",
-)
-
-REPLAY_MARKERS = (
-    "ПОВТОР",
-    "ЗАПИСЬ",
-    "REPLAY",
-    "АРХИВ",
-)
+LIVE_ASSET_PATTERNS: tuple[str, ...] = ()
 
 SPORT_PREFIXES = {
     "ФУТБОЛ": "Футбол",
@@ -117,25 +106,15 @@ def normalize_text(value: str) -> str:
     return result.strip(" .-–—")
 
 
-def has_live_marker(value: str) -> bool:
-    upper = str(value or "").upper()
-    return any(marker in upper for marker in LIVE_MARKERS)
-
-
-def has_replay_marker(value: str) -> bool:
-    upper = str(value or "").upper()
-    return any(marker in upper for marker in REPLAY_MARKERS)
-
-
 def is_direct_broadcast(value: str) -> bool:
-    return has_live_marker(value) and not has_replay_marker(value)
+    return classify_live_evidence(value).is_live
 
 
 def strip_live_marker(value: str) -> str:
     text = str(value or "")
     marker_pattern = "|".join(
         re.escape(marker)
-        for marker in LIVE_MARKERS
+        for marker in LIVE_TEXT_MARKERS
     )
 
     text = re.sub(
@@ -449,7 +428,8 @@ def parse_sportplus_html(
     for index, program in enumerate(programs):
         raw_title = program["raw_title"]
         parsed = parse_sportplus_title(raw_title)
-        direct = is_direct_broadcast(raw_title)
+        live_evidence = classify_live_evidence(raw_title, live_asset_patterns=LIVE_ASSET_PATTERNS)
+        direct = live_evidence.is_live
 
         # В SLP нужны именно спортивные прямые трансляции.
         # Прямые студийные программы без распознанного вида спорта исключаем.
@@ -473,6 +453,10 @@ def parse_sportplus_html(
             "time": program["time"],
             "channel": CHANNEL,
             "is_live": True,
+            "live_state": live_evidence.state,
+            "live_evidence_method": live_evidence.method,
+            "live_evidence_value": live_evidence.value,
+            "live_evidence_confidence": live_evidence.confidence,
             "raw_title": raw_title,
             "sport": parsed["sport"],
             "tournament": parsed["tournament"],
@@ -498,27 +482,28 @@ def parse_sportplus_html(
     return result
 
 
-async def get_sportplus_schedule(
-    target_date: date | datetime | str | None = None,
-) -> list[dict]:
+async def fetch_sportplus_html() -> str:
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Accept-Language": "ru-RU,ru;q=0.9",
     }
     timeout = aiohttp.ClientTimeout(total=20)
 
-    async with aiohttp.ClientSession(
-        headers=headers,
-        timeout=timeout,
-    ) as session:
+    async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
         async with session.get(BASE_URL) as response:
             response.raise_for_status()
             html = await response.text()
 
-    return parse_sportplus_html(
-        html,
-        target_date=target_date,
-    )
+    if not html.strip():
+        raise RuntimeError("Sport+ Qazaqstan: получен пустой HTML")
+    return html
+
+
+async def get_sportplus_schedule(
+    target_date: date | datetime | str | None = None,
+) -> list[dict]:
+    html = await fetch_sportplus_html()
+    return parse_sportplus_html(html, target_date=target_date)
 
 
 async def main() -> None:

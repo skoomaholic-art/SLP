@@ -84,6 +84,67 @@ class OpenSerpExtractTests(unittest.TestCase):
             web_search.matches_event(correct, event)
         )
 
+    def test_generic_event_requires_sport_and_exact_date_context(self):
+        event = {
+            "date": "2026-09-11",
+            "time": "20:00",
+            "title": "Grand Slam",
+            "tournament": "Grand Slam",
+            "sport": "Дзюдо",
+        }
+        correct = {
+            "title": "Judo Grand Slam",
+            "snippet": "11 September 2026 start time 20:00",
+        }
+        wrong_sport = {
+            "title": "Tennis Grand Slam",
+            "snippet": "11 September 2026 start time 20:00",
+        }
+        wrong_date = {
+            "title": "Judo Grand Slam",
+            "snippet": "12 September 2026 start time 20:00",
+        }
+        self.assertTrue(web_search.matches_event(correct, event))
+        self.assertFalse(web_search.matches_event(wrong_sport, event))
+        self.assertFalse(web_search.matches_event(wrong_date, event))
+
+    def test_first_party_broadcast_source_is_not_independent(self):
+        event = {
+            "source_url": "https://qazsporttv.kz/ru/program",
+            "title": "Кайрат - Астана",
+            "tournament": "КПЛ",
+            "sport": "Футбол",
+        }
+        own = {
+            "url": "https://qazsporttv.kz/ru/program/2026-09-11",
+            "title": "Кайрат - Астана",
+        }
+        independent = {
+            "url": "https://uefa.com/example",
+            "title": "Кайрат - Астана",
+        }
+        self.assertTrue(web_search.is_first_party_result(own, event))
+        self.assertFalse(web_search.is_first_party_result(independent, event))
+
+    def test_total_search_outage_is_reported_as_technical_error(self):
+        event = {
+            "date": "2026-09-11",
+            "time": "20:00",
+            "title": "Кайрат - Астана",
+            "tournament": "КПЛ",
+            "sport": "Футбол",
+            "source_url": "https://qazsporttv.kz/ru/program",
+        }
+        with patch.object(
+            web_search,
+            "openserp_search",
+            side_effect=RuntimeError("offline"),
+        ) as search_mock:
+            result = web_search.verify_event(event)
+        self.assertFalse(result["found"])
+        self.assertEqual(result["verification_error"], "search_unavailable")
+        self.assertEqual(search_mock.call_count, 1)
+
     def test_page_context_beats_broadcast_nearest_time(self):
         event = {
             "date": "2026-08-29",

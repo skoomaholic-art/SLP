@@ -27,9 +27,11 @@ MSK_TIMEZONE = ZoneInfo("Europe/Moscow")
 OPENSERP_HOST = "127.0.0.1"
 OPENSERP_PORT = 7000
 
+_USER_OPENSERP_BIN = os.path.expanduser("~/go/bin/openserp")
 OPENSERP_BIN = (
     os.getenv("OPENSERP_BIN")
     or shutil.which("openserp")
+    or (_USER_OPENSERP_BIN if os.path.exists(_USER_OPENSERP_BIN) else None)
     or "/go/bin/openserp"
 )
 
@@ -42,8 +44,8 @@ FALLBACK_SEARCH_ENGINES = (
     "baidu",
 )
 
-OPENSERP_PRIMARY_TIMEOUT = 35
-OPENSERP_FALLBACK_TIMEOUT = 25
+OPENSERP_PRIMARY_TIMEOUT = 10
+OPENSERP_FALLBACK_TIMEOUT = 7
 OPENSERP_RESULT_LIMIT = 10
 OPENSERP_EXTRACT_LIMIT = 5
 OPENSERP_EXTRACT_TIMEOUT = 45
@@ -162,6 +164,7 @@ OFFICIAL_DOMAINS = {
     "pflmma.com",
     "nba.com",
     "nhl.com",
+    "ijf.org",
 }
 
 
@@ -315,6 +318,27 @@ def get_base_domain(domain):
         )
 
     return domain
+
+
+def is_first_party_result(result, event):
+    source_url = str(event.get("source_url") or "").strip()
+    if not source_url:
+        return False
+
+    result_url = str(
+        result.get("url")
+        or result.get("link")
+        or ""
+    ).strip()
+    if not result_url:
+        return False
+
+    source_domain = get_base_domain(get_domain(source_url))
+    result_domain = get_base_domain(get_domain(result_url))
+    return (
+        source_domain not in {"", "unknown"}
+        and result_domain == source_domain
+    )
 
 
 def get_source_weight(url):
@@ -846,6 +870,65 @@ def tournament_matches_text(event, text):
     )
 
 
+MONTH_NAMES_FOR_MATCHING = {
+    1: ("january", "jan", "января"),
+    2: ("february", "feb", "февраля"),
+    3: ("march", "mar", "марта"),
+    4: ("april", "apr", "апреля"),
+    5: ("may", "мая"),
+    6: ("june", "jun", "июня"),
+    7: ("july", "jul", "июля"),
+    8: ("august", "aug", "августа"),
+    9: ("september", "sep", "sept", "сентября"),
+    10: ("october", "oct", "октября"),
+    11: ("november", "nov", "ноября"),
+    12: ("december", "dec", "декабря"),
+}
+
+
+def event_date_matches_text(event, raw_text):
+    value = str(event.get("date") or "").strip()
+    try:
+        event_date = datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        return False
+
+    text = str(raw_text or "").casefold()
+    compact = re.sub(r"\s+", " ", text)
+    numeric = (
+        event_date.strftime("%Y-%m-%d"),
+        event_date.strftime("%d.%m.%Y"),
+        event_date.strftime("%d/%m/%Y"),
+    )
+    if any(item in compact for item in numeric):
+        return True
+
+    year = str(event_date.year)
+    day = str(event_date.day)
+    for month_name in MONTH_NAMES_FOR_MATCHING[event_date.month]:
+        patterns = (
+            f"{day} {month_name} {year}",
+            f"{month_name} {day} {year}",
+            f"{month_name} {day}, {year}",
+        )
+        if any(pattern in compact for pattern in patterns):
+            return True
+    return False
+
+
+def generic_context_matches(event, raw_text):
+    sport = str(event.get("sport") or "").strip()
+    if not sport or not event_date_matches_text(event, raw_text):
+        return False
+
+    text = normalize(raw_text)
+    sport_variants = {
+        normalize(sport),
+        normalize(englishize(sport)),
+    }
+    return any(variant and variant in text for variant in sport_variants)
+
+
 # =========================================================
 # СОВПАДЕНИЕ СОБЫТИЯ
 # =========================================================
@@ -943,6 +1026,7 @@ def matches_event(
     return (
         required > 0
         and matched >= required
+        and generic_context_matches(event, raw_text)
     )
 
 
@@ -954,9 +1038,9 @@ def select_results_for_extraction(
     matching = [
         result
         for result in results
-        if matches_event(
-            result,
-            event,
+        if (
+            not is_first_party_result(result, event)
+            and matches_event(result, event)
         )
     ]
 
@@ -1706,6 +1790,8 @@ def collect_candidates(
     matching_count = 0
 
     for result in results:
+        if is_first_party_result(result, event):
+            continue
         if not matches_event(
             result,
             event,
@@ -2067,6 +2153,8 @@ def verify_event(event):
 
     all_results = []
     search_meta = []
+    search_errors = []
+    primary_search_ok = False
 
     # Основной быстрый поиск: Bing + DuckDuckGo.
     try:
@@ -2075,6 +2163,7 @@ def verify_event(event):
             engines=PRIMARY_SEARCH_ENGINES,
             timeout=OPENSERP_PRIMARY_TIMEOUT,
         )
+        primary_search_ok = True
         all_results.extend(results)
         search_meta.append(
             {
@@ -2087,6 +2176,7 @@ def verify_event(event):
             "OpenSERP search error:",
             repr(error),
         )
+        search_errors.append(repr(error))
 
     all_results = dedupe_results(
         all_results
@@ -2102,7 +2192,8 @@ def verify_event(event):
     # Baidu только как резерв, когда основные движки
     # вообще не нашли релевантных страниц события.
     if (
-        not snippet_candidates
+        primary_search_ok
+        and not snippet_candidates
         and matching_count == 0
     ):
         try:
@@ -2123,6 +2214,7 @@ def verify_event(event):
                 "OpenSERP fallback error:",
                 repr(error),
             )
+            search_errors.append(repr(error))
 
         all_results = dedupe_results(
             all_results
@@ -2209,6 +2301,9 @@ def verify_event(event):
             verification_method
         ),
     }
+    if search_errors and not search_meta:
+        base_result["verification_error"] = "search_unavailable"
+        base_result["search_errors"] = search_errors
 
     if extraction_error:
         base_result[

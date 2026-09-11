@@ -13,6 +13,7 @@ from services.time_logic import KZ_TIMEZONE, get_scheduled_datetimes
 STATE_VERSION = 1
 DEFAULT_STATE_PATH = Path(__file__).resolve().parents[1] / "slp_state.json"
 END_CHANGE_THRESHOLD_MINUTES = 15
+MAX_IDENTITY_PAIR_DISTANCE_MINUTES = 12 * 60
 
 
 def _event_title(event: dict) -> str:
@@ -101,7 +102,12 @@ def _bucket_by_identity(snapshot: dict) -> dict[str, list[dict]]:
     return result
 
 
-def _pair_same_identity(old_events: list[dict], new_events: list[dict]) -> tuple[list[tuple[dict, dict]], list[dict], list[dict]]:
+def _pair_same_identity(
+    old_events: list[dict],
+    new_events: list[dict],
+    *,
+    max_pair_distance_minutes: int = MAX_IDENTITY_PAIR_DISTANCE_MINUTES,
+) -> tuple[list[tuple[dict, dict]], list[dict], list[dict]]:
     remaining_new = list(new_events)
     pairs: list[tuple[dict, dict]] = []
     removed: list[dict] = []
@@ -118,6 +124,13 @@ def _pair_same_identity(old_events: list[dict], new_events: list[dict]) -> tuple
                 (_anchor_start(remaining_new[index]) - old_start).total_seconds()
             ),
         )
+        best_new = remaining_new[best_index]
+        difference_minutes = abs(
+            (_anchor_start(best_new) - old_start).total_seconds()
+        ) / 60
+        if difference_minutes > max_pair_distance_minutes:
+            removed.append(old)
+            continue
         pairs.append((old, remaining_new.pop(best_index)))
 
     return pairs, removed, remaining_new
@@ -240,6 +253,7 @@ def diff_schedule_snapshots(
     new_snapshot: dict,
     *,
     end_threshold_minutes: int = END_CHANGE_THRESHOLD_MINUTES,
+    max_identity_pair_distance_minutes: int = MAX_IDENTITY_PAIR_DISTANCE_MINUTES,
     now: datetime | None = None,
 ) -> list[dict]:
     if now is None:
@@ -257,7 +271,11 @@ def diff_schedule_snapshots(
     for identity in identities:
         old_events = old_buckets.get(identity, [])
         new_events = new_buckets.get(identity, [])
-        pairs, removed, added = _pair_same_identity(old_events, new_events)
+        pairs, removed, added = _pair_same_identity(
+            old_events,
+            new_events,
+            max_pair_distance_minutes=max_identity_pair_distance_minutes,
+        )
 
         for old, new in pairs:
             updated = _updated_change(

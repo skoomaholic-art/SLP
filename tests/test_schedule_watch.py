@@ -79,7 +79,8 @@ class ScheduleWatchTests(unittest.TestCase):
     def test_missing_event_is_removed(self):
         old = build_schedule_snapshot([event()])
         new = build_schedule_snapshot([])
-        changes = diff_schedule_snapshots(old, new)
+        now = datetime(2026, 8, 29, 19, 0, tzinfo=ZoneInfo("Asia/Almaty"))
+        changes = diff_schedule_snapshots(old, new, now=now)
         self.assertEqual([item["type"] for item in changes], ["removed"])
 
     def test_finished_event_expiration_does_not_send_removed_alert(self):
@@ -132,6 +133,13 @@ class ScheduleWatchTests(unittest.TestCase):
         self.assertEqual(len(messages), 1)
         self.assertIn("Матч 1", messages[0])
         self.assertIn("Матч 2", messages[0])
+
+    def test_same_generic_identity_next_day_is_not_paired_as_reschedule(self):
+        old = build_schedule_snapshot([event(title="Grand Slam", sport="Дзюдо", tournament="Grand Slam")])
+        new = build_schedule_snapshot([event(date="2026-08-30", time="18:50", end="21:00", title="Grand Slam", sport="Дзюдо", tournament="Grand Slam")])
+        now = datetime(2026, 8, 29, 19, 0, tzinfo=ZoneInfo("Asia/Almaty"))
+        changes = diff_schedule_snapshots(old, new, now=now)
+        self.assertEqual({item["type"] for item in changes}, {"removed", "added"})
 
     def test_subscription_and_snapshot_persist(self):
         with tempfile.TemporaryDirectory() as tmp:
