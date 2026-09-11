@@ -11,7 +11,7 @@ from parsers.qazsport import get_qazsport_schedule
 from parsers.sportplus import BASE_URL as SPORTPLUS_URL
 from parsers.sportplus import parse_sportplus_html
 from services.event_status import KZ_TIMEZONE
-from services.event_store import upsert_events
+from services.event_store import save_complete_snapshot, upsert_events
 from services.schedule_merge import merge_source_schedules
 
 
@@ -37,7 +37,25 @@ def _date_range(start: date, end: date) -> list[date]:
     return [start + timedelta(days=offset) for offset in range(count + 1)]
 
 
-async def _load_qazsport_day(target: date, today: date) -> tuple[date, list[dict], Exception | None]:
+def calculate_actual_horizon(
+    events: list[dict],
+    *,
+    today: date,
+    minimum_horizon: date,
+) -> date:
+    live_dates = [
+        event["start_time"].astimezone(KZ_TIMEZONE).date()
+        for event in events
+        if bool(event.get("is_live_broadcast", False))
+        and event["start_time"].astimezone(KZ_TIMEZONE).date() >= today
+    ]
+    return max([minimum_horizon, *live_dates])
+
+
+async def _load_qazsport_day(
+    target: date,
+    today: date,
+) -> tuple[date, list[dict], Exception | None]:
     try:
         events = await get_qazsport_schedule(
             target,
@@ -48,7 +66,10 @@ async def _load_qazsport_day(target: date, today: date) -> tuple[date, list[dict
         return target, [], error
 
 
-async def _load_sportplus_days(days: list[date], reference: date) -> tuple[list[dict], Exception | None]:
+async def _load_sportplus_days(
+    days: list[date],
+    reference: date,
+) -> tuple[list[dict], Exception | None]:
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Accept-Language": "ru-RU,ru;q=0.9",
@@ -88,6 +109,10 @@ async def refresh_schedule(
     Required range is yesterday (for cross-midnight live events) through the
     nearest Monday. A bounded discovery window is probed beyond Monday so the
     final horizon expands to the furthest already-published LIVE broadcast.
+
+    A new active SQLite snapshot is created only when all required sources are
+    healthy. Partial data is stored for diagnosis without replacing the last
+    complete snapshot.
     """
     current = now or datetime.now(KZ_TIMEZONE)
     if current.tzinfo is None or current.utcoffset() is None:
@@ -120,14 +145,11 @@ async def refresh_schedule(
         errors.append(f"Sport+ Qazaqstan: {sportplus_error!r}")
 
     merged = merge_source_schedules(qaz_events, sportplus_events)
-
-    live_dates = [
-        event["start_time"].astimezone(KZ_TIMEZONE).date()
-        for event in merged
-        if bool(event.get("is_live_broadcast", False))
-        and event["start_time"].astimezone(KZ_TIMEZONE).date() >= today
-    ]
-    actual_horizon = max([required_end, *live_dates])
+    actual_horizon = calculate_actual_horizon(
+        merged,
+        today=today,
+        minimum_horizon=required_end,
+    )
 
     operational = [
         event
@@ -137,13 +159,19 @@ async def refresh_schedule(
         <= actual_horizon
     ]
 
-    upsert_events(operational)
+    if errors:
+        upsert_events(operational)
+    else:
+        save_complete_snapshot(operational)
+
     LOGGER.info(
-        "Schedule refresh: events=%d live_marked=%d required_end=%s actual_horizon=%s errors=%d",
+        "Schedule refresh: events=%d live_marked=%d required_end=%s "
+        "actual_horizon=%s complete_snapshot=%s errors=%d",
         len(operational),
         sum(1 for event in operational if event.get("is_live_broadcast")),
         required_end,
         actual_horizon,
+        not errors,
         len(errors),
     )
     return operational, errors, actual_horizon
