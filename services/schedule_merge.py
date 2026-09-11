@@ -4,6 +4,8 @@ import re
 from datetime import datetime
 from typing import Iterable
 
+from services.event_status import KZ_TIMEZONE
+
 
 KAZAKH_MATCH_REPLACEMENTS = str.maketrans(
     {
@@ -26,12 +28,7 @@ MATCH_ALIASES = {
 
 
 def normalize_match_text(value: str) -> str:
-    """Normalize event text only for matching/deduplication.
-
-    The displayed title is never changed here. This normalization exists so
-    small source differences such as Қайрат/Kairat punctuation/case do not
-    create false duplicate events in the merged schedule.
-    """
+    """Normalize event text only for matching/deduplication."""
     text = str(value or "").casefold().translate(KAZAKH_MATCH_REPLACEMENTS)
     text = re.sub(r"\([^)]*\)", " ", text)
     text = text.replace("–", "-").replace("—", "-")
@@ -58,17 +55,23 @@ def _event_title(event: dict) -> str:
 
 
 def _event_datetime(event: dict) -> datetime:
+    value = event.get("start_time")
+    if isinstance(value, datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("SportEvent start_time must be timezone-aware")
+        return value.astimezone(KZ_TIMEZONE)
+
+    # Compatibility path for old test fixtures/adapters only.
     return datetime.strptime(
         f"{event.get('date', '')} {event.get('time', '')}",
         "%Y-%m-%d %H:%M",
-    )
+    ).replace(tzinfo=KZ_TIMEZONE)
 
 
-def exact_broadcast_key(event: dict) -> tuple[str, str, str, str]:
+def exact_broadcast_key(event: dict) -> tuple[str, str, str]:
     """Identity of one TV broadcast, not of the sporting event itself."""
     return (
-        str(event.get("date") or ""),
-        str(event.get("time") or ""),
+        _event_datetime(event).isoformat(),
         normalize_match_text(str(event.get("channel") or "")),
         normalize_match_text(_event_title(event)),
     )
@@ -77,11 +80,10 @@ def exact_broadcast_key(event: dict) -> tuple[str, str, str, str]:
 def deduplicate_broadcasts(events: Iterable[dict]) -> list[dict]:
     """Remove only true duplicate broadcasts.
 
-    The same match on two different TV channels is deliberately preserved:
-    those are two operationally different broadcasts.
+    The same match on two different TV channels is deliberately preserved.
     """
     result: list[dict] = []
-    seen: set[tuple[str, str, str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
 
     for event in events:
         key = exact_broadcast_key(event)
@@ -97,8 +99,7 @@ def sort_schedule_events(events: Iterable[dict]) -> list[dict]:
     return sorted(
         events,
         key=lambda event: (
-            str(event.get("date") or ""),
-            str(event.get("time") or ""),
+            _event_datetime(event),
             str(event.get("channel") or ""),
         ),
     )
@@ -110,11 +111,7 @@ def same_sporting_event(
     *,
     max_start_difference_minutes: int = 30,
 ) -> bool:
-    """Return True when two broadcasts look like the same sports event.
-
-    This is intentionally conservative. Different channels may be grouped for
-    display, but they remain separate SportEvent dictionaries internally.
-    """
+    """Return True when two broadcasts look like the same sports event."""
     if str(first.get("channel") or "") == str(second.get("channel") or ""):
         return False
 
@@ -164,8 +161,7 @@ def group_simulcasts(
 ) -> list[list[dict]]:
     """Group same-event broadcasts for compact Telegram presentation.
 
-    No SportEvent is destroyed or merged. A group is only a view layer, so
-    each channel keeps its own start/end/status and internet verification.
+    No SportEvent is destroyed or merged. Grouping is a view-layer operation.
     """
     ordered = sort_schedule_events(events)
     groups: list[list[dict]] = []
@@ -178,17 +174,14 @@ def group_simulcasts(
                 same_sporting_event(
                     event,
                     existing,
-                    max_start_difference_minutes=(
-                        max_start_difference_minutes
-                    ),
+                    max_start_difference_minutes=max_start_difference_minutes,
                 )
                 for existing in group
             ):
                 group.append(event)
                 group.sort(
                     key=lambda item: (
-                        str(item.get("date") or ""),
-                        str(item.get("time") or ""),
+                        _event_datetime(item),
                         str(item.get("channel") or ""),
                     )
                 )
@@ -198,17 +191,12 @@ def group_simulcasts(
         if not placed:
             groups.append([event])
 
-    groups.sort(
-        key=lambda group: (
-            str(group[0].get("date") or ""),
-            str(group[0].get("time") or ""),
-        )
-    )
+    groups.sort(key=lambda group: _event_datetime(group[0]))
     return groups
 
 
 def merge_source_schedules(*schedules: Iterable[dict]) -> list[dict]:
-    """Flatten source schedules into one deduplicated UTC+5-ready list."""
+    """Flatten source schedules into one deduplicated aware-datetime list."""
     combined: list[dict] = []
 
     for schedule in schedules:
