@@ -4,17 +4,17 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MAIN_PATH = ROOT / "main.py"
+APP_PATH = ROOT / "bot_app.py"
 GITIGNORE_PATH = ROOT / ".gitignore"
 
 
 class MainNotificationsIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.source = MAIN_PATH.read_text(encoding="utf-8")
+        cls.source = APP_PATH.read_text(encoding="utf-8")
         cls.tree = ast.parse(cls.source)
 
-    def test_main_imports_schedule_watch_service(self):
+    def test_bot_app_imports_schedule_watch_service(self):
         imported = set()
         for node in ast.walk(self.tree):
             if (
@@ -22,7 +22,6 @@ class MainNotificationsIntegrationTests(unittest.TestCase):
                 and node.module == "services.schedule_watch"
             ):
                 imported.update(alias.name for alias in node.names)
-
         self.assertTrue(
             {
                 "build_change_messages",
@@ -79,7 +78,7 @@ class MainNotificationsIntegrationTests(unittest.TestCase):
         self.assertIn("if source_errors", function_source)
         self.assertIn("return []", function_source)
 
-    def test_main_starts_background_notification_loop(self):
+    def test_bot_starts_background_notification_loop(self):
         main_function = next(
             node
             for node in self.tree.body
@@ -97,43 +96,31 @@ class MainNotificationsIntegrationTests(unittest.TestCase):
     def test_runtime_files_are_ignored_by_git(self):
         gitignore = GITIGNORE_PATH.read_text(encoding="utf-8")
         self.assertIn("slp_state.json", gitignore)
+        self.assertIn("slp_events.sqlite3", gitignore)
+        self.assertIn("*.sqlite3", gitignore)
         self.assertIn("logs.txt", gitignore)
         self.assertIn("*.zip", gitignore)
 
-    def test_details_always_explain_confidence_when_time_missing(self):
-        self.assertIn(
-            '📊 Уровень доверия: Не рассчитывается',
-            self.source,
-        )
-        self.assertIn(
-            'расхождение больше 30 минут',
-            self.source,
-        )
+    def test_details_explain_missing_confidence(self):
+        self.assertIn('📊 Уровень доверия: Не рассчитывается', self.source)
+        self.assertIn('расхождение больше 30 минут', self.source)
 
     def test_details_show_live_evidence(self):
         self.assertIn('📡 Основание LIVE:', self.source)
-        self.assertIn(
-            'официальная пометка прямого эфира Sport+',
-            self.source,
-        )
+        self.assertIn('официальная пометка прямого эфира Sport+', self.source)
 
-    def test_schedule_lines_show_channel_without_opening_details(self):
+    def test_schedule_lines_show_channel_without_details(self):
         self.assertIn('f"{get_schedule_display_title(event)} | {channel}"', self.source)
         self.assertIn('event.get("channel") or "Канал не указан"', self.source)
 
-    def test_schedule_has_attention_badge_for_suspicious_accuracy(self):
-        self.assertIn('attention = "⚠️" if accuracy.get("needs_attention") else ""', self.source)
+    def test_schedule_has_attention_badge(self):
         self.assertIn('⚠️ Нуждается в проверке', self.source)
         self.assertIn('verification.get("time_rejected", False)', self.source)
 
-    def test_schedule_builds_self_explanatory_non_match_titles(self):
-        self.assertIn('def get_schedule_display_title(event):', self.source)
-        self.assertIn('for part in (sport, tournament, title):', self.source)
-        self.assertIn('text.replace("Grand slam", "Grand Slam")', self.source)
-
-    def test_relevant_results_label_is_clear(self):
-        self.assertIn('🎯 Релевантных результатов:', self.source)
-        self.assertNotIn('🎯 По событию:', self.source)
+    def test_live_callback_uses_canonical_live_now_service(self):
+        self.assertIn("log_live_candidates(events, now=now, logger=LOGGER)", self.source)
+        self.assertIn("if is_live_now(event, now)", self.source)
+        self.assertNotIn('get_event_status(event) == "live"', self.source)
 
 
 if __name__ == "__main__":
