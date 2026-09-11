@@ -32,6 +32,21 @@ class TelegramNavigationTests(unittest.TestCase):
         for callback in ("schedule", "live", "export_schedule", "status", "menu"):
             self.assertIn(f'callback_data="{callback}"', source)
         self.assertIn('callback_data=f"schedule_ch:{channel}"', source)
+        self.assertIn('callback_data="schedule_all"', source)
+
+
+    def test_all_schedule_list_has_required_fields_and_bottom_navigation(self):
+        builder = self.function_source("build_all_schedule_messages")
+        self.assertIn('event.get("date")', builder)
+        self.assertIn('event.get("time")', builder)
+        self.assertIn('event.get("sport")', builder)
+        self.assertIn('event.get("tournament")', builder)
+        self.assertIn("get_schedule_display_title(event)", builder)
+        self.assertIn('event.get("channel")', builder)
+        self.assertIn("get_all_list_status(event)", builder)
+        keyboard = self.function_source("build_all_schedule_keyboard")
+        for callback in ("schedule", "schedule_all", "live", "export_schedule", "menu"):
+            self.assertIn(f'callback_data="{callback}"', keyboard)
 
     def test_channel_schedule_keeps_navigation_at_bottom(self):
         source = self.function_source("build_channel_schedule_keyboard")

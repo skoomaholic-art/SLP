@@ -173,6 +173,43 @@ class OpenSerpExtractTests(unittest.TestCase):
             "23:30",
         )
 
+    def test_sportsdb_api_candidate_normalizes_cyrillic_match_and_utc(self):
+        import json
+
+        payload = {
+            "event": [{
+                "idEvent": "2527760",
+                "strEvent": "Beşiktaş vs Erzurumspor",
+                "dateEvent": "2026-09-11",
+                "strTime": "17:00:00",
+                "strLeague": "Turkish Super Lig",
+                "strSport": "Soccer",
+                "strStatus": "NS",
+            }]
+        }
+
+        class Response:
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def read(self):
+                return json.dumps(payload).encode("utf-8")
+
+        event = {
+            "date": "2026-09-11",
+            "time": "21:55",
+            "title": "БЕШИКТАШ – ЭРЗУРУМСПОР",
+            "sport": "Футбол",
+        }
+        with patch.object(web_search.urllib.request, "urlopen", return_value=Response()):
+            candidate = web_search.sportsdb_candidate(event)
+
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate["dt_kz"].strftime("%H:%M"), "22:00")
+        self.assertEqual(candidate["weight"], 60)
+        self.assertEqual(candidate["engine"], "direct_api")
+
     def test_batch_payload_uses_native_openserp_endpoint(self):
         response = [
             {

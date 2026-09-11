@@ -61,6 +61,10 @@ class OpenSerpSpeedTests(unittest.TestCase):
 
         with patch.object(
             web_search,
+            "sportsdb_candidate",
+            return_value=None,
+        ), patch.object(
+            web_search,
             "openserp_search",
             return_value=(
                 [{"url": "https://example.com/event"}],
@@ -95,6 +99,10 @@ class OpenSerpSpeedTests(unittest.TestCase):
         }
 
         with patch.object(
+            web_search,
+            "sportsdb_candidate",
+            return_value=None,
+        ), patch.object(
             web_search,
             "openserp_search",
             side_effect=[([], {}), ([], {})],

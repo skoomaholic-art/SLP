@@ -424,13 +424,13 @@ def build_schedule_text(events):
 
     lines = [
         "📅 Расписание",
-        f"{now.day} {MONTHS[now.month]} {now.year} · {channel_label} · {len(events)} спортивных программ",
+        f"{now.day} {MONTHS[now.month]} {now.year} · {channel_label} · {len(events)} LIVE-событий",
         "",
     ]
 
     for channel, channel_events in grouped.items():
         preview = _channel_preview(channel_events)
-        lines.append(f"📡 {channel} · {len(channel_events)} программ")
+        lines.append(f"📡 {channel} · {len(channel_events)} LIVE-событий")
         if preview:
             lines.append(
                 f"{get_schedule_status_badge(preview)} {get_time_window_text(preview)} · "
@@ -441,15 +441,60 @@ def build_schedule_text(events):
     lines.extend([
         "Нажмите канал ниже, чтобы открыть его полное расписание.",
         "",
-        "Статус: 🔴 подтверждённый LIVE · 🟡 подтверждённый LIVE позже · 📺 программа EPG · ⚪ завершено · ⚠️ проверить время",
+        "Статус: 🔴 LIVE · 🟡 СКОРО · ⚪ ПРОШЛО · ⚠️ Нуждается в проверке",
     ])
     return "\n".join(lines)
+
+
+def get_all_list_status(event):
+    status = get_event_status(event)
+    if status == "finished":
+        return "ПРОШЛО"
+    if status == "upcoming":
+        return "СКОРО"
+    return "LIVE"
+
+
+def build_all_schedule_messages(events):
+    ordered = sorted(
+        events,
+        key=lambda event: (
+            event.get("date", ""),
+            event.get("time", ""),
+            (event.get("channel") or "").casefold(),
+            get_event_title(event).casefold(),
+        ),
+    )
+    blocks = []
+    for event in ordered:
+        date_text = str(event.get("date") or "—")
+        try:
+            date_text = datetime.strptime(date_text, "%Y-%m-%d").strftime("%d.%m.%Y")
+        except ValueError:
+            pass
+        blocks.append(
+            " · ".join([
+                date_text,
+                str(event.get("time") or "—"),
+                str(event.get("sport") or "—"),
+                str(event.get("tournament") or "—"),
+                get_schedule_display_title(event),
+                str(event.get("channel") or "—"),
+                get_all_list_status(event),
+            ])
+        )
+    title = f"📋 Все события · {len(ordered)}"
+    if not blocks:
+        return [f"{title}\n\nСобытий нет."]
+    messages = split_messages(blocks, title, limit=3800)
+    messages[-1] += "\n\nСтатус: ПРОШЛО · СКОРО · LIVE"
+    return messages
 
 
 def build_channel_schedule_messages(events, channel):
     selected = [event for event in events if event.get("channel") == channel]
     selected.sort(key=lambda event: (event.get("date", ""), event.get("time", ""), get_event_title(event)))
-    title = f"📺 {channel} · {len(selected)} программ"
+    title = f"📺 {channel} · {len(selected)} LIVE-событий"
     if not selected:
         return [f"{title}\n\nСобытий нет."]
     blocks = [
@@ -458,8 +503,7 @@ def build_channel_schedule_messages(events, channel):
     ]
     messages = split_messages(blocks, title, limit=3800)
     messages[-1] += (
-        "\n\nСтатус: 🔴 подтверждённый LIVE · 🟡 подтверждённый LIVE позже "
-        "· 📺 программа EPG · ⚪ завершено"
+        "\n\nСтатус: 🔴 LIVE · 🟡 СКОРО · ⚪ ПРОШЛО"
     )
     return messages
 
@@ -546,7 +590,12 @@ def build_live_text(events):
 
 def build_schedule_keyboard(events, chat_id=None):
     channels = unique_channels(events)
-    rows = []
+    rows = [[
+        InlineKeyboardButton(
+            text="📋 Показать все одним списком",
+            callback_data="schedule_all",
+        )
+    ]]
     for index in range(0, len(channels), 2):
         row = [
             InlineKeyboardButton(
@@ -569,6 +618,23 @@ def build_schedule_keyboard(events, chat_id=None):
         [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def build_all_schedule_keyboard(chat_id=None):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="⬅️ Все каналы", callback_data="schedule"),
+                InlineKeyboardButton(text="🔄 Обновить", callback_data="schedule_all"),
+            ],
+            [
+                InlineKeyboardButton(text="🔴 LIVE", callback_data="live"),
+                InlineKeyboardButton(text="📥 XLSX", callback_data="export_schedule"),
+            ],
+            [_notification_button(chat_id)],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+        ]
+    )
 
 
 def build_channel_schedule_keyboard(channel, chat_id=None):
@@ -647,7 +713,7 @@ async def load_schedule_events(
     loaded = await load_source_schedules()
     today_events = [
         event for event in loaded.today
-        if is_user_event(event)
+        if is_user_event(event) and is_confirmed_direct_event(event)
     ]
     yesterday_events = [
         event for event in loaded.yesterday
@@ -1133,6 +1199,31 @@ async def schedule_callback(callback: CallbackQuery):
         )
         await loading.edit_text(
             "❌ Не удалось загрузить расписание.",
+            reply_markup=build_aux_keyboard(callback.message.chat.id),
+        )
+
+
+@dp.callback_query(F.data == "schedule_all")
+async def schedule_all_callback(callback: CallbackQuery):
+    await callback.answer()
+    loading = await callback.message.answer("⏳ Формирую общий список...")
+    try:
+        events = await load_schedule_events()
+        messages = build_all_schedule_messages(events)
+        keyboard = build_all_schedule_keyboard(callback.message.chat.id)
+        await loading.edit_text(
+            messages[0],
+            reply_markup=keyboard if len(messages) == 1 else None,
+        )
+        for index, text in enumerate(messages[1:], start=1):
+            await callback.message.answer(
+                text,
+                reply_markup=keyboard if index == len(messages) - 1 else None,
+            )
+    except Exception as error:
+        print("Ошибка общего списка расписания:", repr(error))
+        await loading.edit_text(
+            "❌ Не удалось сформировать общий список.",
             reply_markup=build_aux_keyboard(callback.message.chat.id),
         )
 

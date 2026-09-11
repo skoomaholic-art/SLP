@@ -11,6 +11,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import unicodedata
 
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
@@ -186,6 +187,7 @@ MAJOR_MEDIA = {
 
 
 SPORT_DATABASES = {
+    "thesportsdb.com",
     "sofascore.com",
     "flashscore.com",
     "livesport.com",
@@ -796,6 +798,108 @@ def event_kind(event):
         return "DRAW"
 
     return "GENERIC"
+
+
+THESPORTSDB_API_BASE = "https://www.thesportsdb.com/api/v1/json/123"
+THESPORTSDB_TIMEOUT = 6
+
+_CYRILLIC_LATIN = str.maketrans({
+    "а":"a","б":"b","в":"v","г":"g","д":"d","е":"e","ё":"e","ж":"zh",
+    "з":"z","и":"i","й":"i","к":"k","л":"l","м":"m","н":"n","о":"o",
+    "п":"p","р":"r","с":"s","т":"t","у":"u","ф":"f","х":"kh","ц":"ts",
+    "ч":"ch","ш":"sh","щ":"shch","ъ":"","ы":"y","ь":"","э":"e","ю":"yu","я":"ya",
+})
+
+SPORTSDB_NAME_ALIASES = {
+    "бешикташ": "Besiktas",
+    "эрзурумспор": "Erzurumspor",
+}
+
+
+def _sportsdb_participant_name(value):
+    normalized = normalize(kazakh_to_russian_chars(value))
+    if normalized in SPORTSDB_NAME_ALIASES:
+        return SPORTSDB_NAME_ALIASES[normalized]
+    translated = englishize(kazakh_to_russian_chars(value))
+    if translated != kazakh_to_russian_chars(value):
+        return translated
+    return " ".join(
+        kazakh_to_russian_chars(value).casefold().translate(_CYRILLIC_LATIN).split()
+    ).title()
+
+
+def _sportsdb_fold(value):
+    decomposed = unicodedata.normalize("NFKD", str(value or ""))
+    ascii_text = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return normalize(ascii_text)
+
+
+def _sportsdb_row_matches(title, left, right):
+    participants = extract_participants(title)
+    if len(participants) != 2:
+        return False
+    expected = (_sportsdb_fold(left), _sportsdb_fold(right))
+    actual = tuple(_sportsdb_fold(value) for value in participants)
+    return actual == expected or actual == expected[::-1]
+
+
+def sportsdb_candidate(event):
+    if event_kind(event) != "MATCH":
+        return None
+    participants = extract_participants(get_event_title_text(event))
+    if len(participants) != 2:
+        return None
+    left, right = [_sportsdb_participant_name(value) for value in participants]
+    if not left or not right:
+        return None
+    query = f"{left}_vs_{right}".replace(" ", "_")
+    params = urllib.parse.urlencode({"e": query, "d": event["date"]})
+    url = f"{THESPORTSDB_API_BASE}/searchevents.php?{params}"
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "SLP/1.1", "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=THESPORTSDB_TIMEOUT) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    rows = payload.get("event") or payload.get("events") or []
+    for row in rows:
+        result = {
+            "title": str(row.get("strEvent") or ""),
+            "snippet": " ".join(
+                str(row.get(key) or "")
+                for key in ("strLeague", "strSport", "strStatus")
+            ),
+        }
+        if not _sportsdb_row_matches(result["title"], left, right):
+            continue
+        date_text = str(row.get("dateEvent") or "").strip()
+        time_text = str(row.get("strTime") or "").strip()
+        if not date_text or not time_text:
+            continue
+        try:
+            external_utc = datetime.fromisoformat(
+                f"{date_text}T{time_text}"
+            ).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        dt_kz = external_utc.astimezone(KZ_TIMEZONE)
+        event_id = str(row.get("idEvent") or "").strip()
+        source_url = (
+            f"https://www.thesportsdb.com/event/{event_id}"
+            if event_id else "https://www.thesportsdb.com/"
+        )
+        return {
+            "dt_kz": dt_kz,
+            "original_time": f"{external_utc:%H:%M} UTC",
+            "explicit": True,
+            "context_score": 250,
+            "url": source_url,
+            "source_name": "TheSportsDB API",
+            "organization": "thesportsdb.com",
+            "weight": get_source_weight(source_url),
+            "engine": "direct_api",
+        }
+    return None
 
 
 GENERIC_TOURNAMENT_WORDS = {
@@ -2155,6 +2259,16 @@ def verify_event(event):
     search_meta = []
     search_errors = []
     primary_search_ok = False
+    direct_candidates = []
+    direct_api_error = None
+
+    try:
+        direct_candidate = sportsdb_candidate(event)
+        if direct_candidate:
+            direct_candidates.append(direct_candidate)
+    except Exception as error:
+        direct_api_error = repr(error)
+        print("TheSportsDB API error:", direct_api_error)
 
     # Основной быстрый поиск: Bing + DuckDuckGo.
     try:
@@ -2272,15 +2386,22 @@ def verify_event(event):
     # Извлечённые страницы имеют приоритет.
     # Сниппет остаётся только fallback при ошибке extraction.
     if page_candidates:
-        candidates = page_candidates
-        verification_method = "page_extract"
-    else:
-        candidates = snippet_candidates
+        candidates = page_candidates + direct_candidates
         verification_method = (
-            "search_snippet"
-            if snippet_candidates
-            else "none"
+            "page_extract+direct_api"
+            if direct_candidates
+            else "page_extract"
         )
+    else:
+        candidates = snippet_candidates + direct_candidates
+        if snippet_candidates and direct_candidates:
+            verification_method = "search_snippet+direct_api"
+        elif snippet_candidates:
+            verification_method = "search_snippet"
+        elif direct_candidates:
+            verification_method = "direct_api"
+        else:
+            verification_method = "none"
 
     base_result = {
         "queries": queries,
@@ -2300,10 +2421,14 @@ def verify_event(event):
         "verification_method": (
             verification_method
         ),
+        "direct_api_source_count": len(direct_candidates),
     }
+    if direct_api_error:
+        base_result["direct_api_error"] = direct_api_error
     if search_errors and not search_meta:
-        base_result["verification_error"] = "search_unavailable"
         base_result["search_errors"] = search_errors
+        if not direct_candidates:
+            base_result["verification_error"] = "search_unavailable"
 
     if extraction_error:
         base_result[

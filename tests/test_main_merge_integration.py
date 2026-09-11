@@ -67,7 +67,7 @@ class MainMergeIntegrationTests(unittest.TestCase):
         self.assertIn("_events_by_channel", schedule_calls)
         self.assertIn("group_simulcasts", live_calls)
 
-    def test_general_schedule_does_not_require_live_evidence(self):
+    def test_general_schedule_requires_live_evidence(self):
         function = next(
             node for node in self.tree.body
             if isinstance(node, ast.AsyncFunctionDef)
@@ -76,7 +76,7 @@ class MainMergeIntegrationTests(unittest.TestCase):
         source = ast.get_source_segment(self.source, function) or ""
         today_block = source.split("today_events = [", 1)[1].split("yesterday_events = [", 1)[0]
         self.assertIn("is_user_event(event)", today_block)
-        self.assertNotIn("event_is_official_live(event)", today_block)
+        self.assertIn("is_confirmed_direct_event(event)", today_block)
 
     def test_old_duplicate_helpers_are_removed(self):
         defined = {
