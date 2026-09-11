@@ -18,6 +18,9 @@ from services.schedule_watch import (
 )
 
 
+KZ = ZoneInfo("Asia/Almaty")
+
+
 def event(
     *,
     channel="Qazsport",
@@ -76,16 +79,17 @@ class ScheduleWatchTests(unittest.TestCase):
         changes = diff_schedule_snapshots(old, new)
         self.assertEqual([item["type"] for item in changes], ["added"])
 
-    def test_missing_event_is_removed(self):
+    def test_missing_event_is_removed_while_still_relevant(self):
         old = build_schedule_snapshot([event()])
         new = build_schedule_snapshot([])
-        changes = diff_schedule_snapshots(old, new)
+        now = datetime(2026, 8, 29, 19, 0, tzinfo=KZ)
+        changes = diff_schedule_snapshots(old, new, now=now)
         self.assertEqual([item["type"] for item in changes], ["removed"])
 
     def test_finished_event_expiration_does_not_send_removed_alert(self):
         old = build_schedule_snapshot([event(time="18:50", end="21:00")])
         new = build_schedule_snapshot([])
-        now = datetime(2026, 8, 29, 22, 0, tzinfo=ZoneInfo("Asia/Almaty"))
+        now = datetime(2026, 8, 29, 22, 0, tzinfo=KZ)
         changes = diff_schedule_snapshots(old, new, now=now)
         self.assertEqual(changes, [])
 
