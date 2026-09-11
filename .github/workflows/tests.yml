@@ -27,46 +27,50 @@ jobs:
         run: python -m pip install -r requirements.txt
 
       - name: baseline
-        run: python tests/test_baseline.py
+        run: python -m unittest discover -s tests -p 'test_baseline.py' -v
       - name: event contract
         if: always()
-        run: python tests/test_event_contract.py
+        run: python -m unittest discover -s tests -p 'test_event_contract.py' -v
       - name: event status
         if: always()
-        run: python tests/test_event_status.py
+        run: python -m unittest discover -s tests -p 'test_event_status.py' -v
       - name: event store
         if: always()
-        run: python tests/test_event_store.py
+        run: python -m unittest discover -s tests -p 'test_event_store.py' -v
       - name: main merge integration
         if: always()
-        run: python tests/test_main_merge_integration.py
+        run: python -m unittest discover -s tests -p 'test_main_merge_integration.py' -v
       - name: notification integration
         if: always()
-        run: python tests/test_main_notifications_integration.py
+        run: python -m unittest discover -s tests -p 'test_main_notifications_integration.py' -v
       - name: OpenSERP extract
         if: always()
-        run: python tests/test_openserp_extract.py
+        run: python -m unittest discover -s tests -p 'test_openserp_extract.py' -v
       - name: OpenSERP speed
         if: always()
-        run: python tests/test_openserp_speed.py
+        run: python -m unittest discover -s tests -p 'test_openserp_speed.py' -v
       - name: Qazsport normalization
         if: always()
-        run: python tests/test_qazsport_normalization.py
+        run: python -m unittest discover -s tests -p 'test_qazsport_normalization.py' -v
       - name: compact schedule view
         if: always()
-        run: python tests/test_schedule_compact_view.py
+        run: python -m unittest discover -s tests -p 'test_schedule_compact_view.py' -v
       - name: schedule loader
         if: always()
-        run: python tests/test_schedule_loader.py
+        run: python -m unittest discover -s tests -p 'test_schedule_loader.py' -v
       - name: schedule merge
         if: always()
-        run: python tests/test_schedule_merge.py
+        run: python -m unittest discover -s tests -p 'test_schedule_merge.py' -v
       - name: schedule watch
         if: always()
-        run: python tests/test_schedule_watch.py
+        run: python -m unittest discover -s tests -p 'test_schedule_watch.py' -v
       - name: SportPlus
         if: always()
-        run: python tests/test_sportplus.py
+        run: python -m unittest discover -s tests -p 'test_sportplus.py' -v
       - name: time logic
         if: always()
-        run: python tests/test_time_logic.py
+        run: python -m unittest discover -s tests -p 'test_time_logic.py' -v
+
+      - name: Full suite
+        if: success()
+        run: python -m unittest discover -s tests -v
