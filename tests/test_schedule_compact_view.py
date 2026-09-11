@@ -4,11 +4,11 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-MAIN_PATH = PROJECT_ROOT / "main.py"
+APP_PATH = PROJECT_ROOT / "bot_app.py"
 
 
 def function_source(name: str) -> str:
-    source = MAIN_PATH.read_text(encoding="utf-8")
+    source = APP_PATH.read_text(encoding="utf-8")
     tree = ast.parse(source)
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
@@ -32,9 +32,13 @@ class ScheduleCompactViewTests(unittest.TestCase):
         self.assertIn("| {channel}", source)
 
     def test_attention_legend_remains_in_schedule(self):
-        source = MAIN_PATH.read_text(encoding="utf-8")
+        source = APP_PATH.read_text(encoding="utf-8")
         self.assertIn("⚠️ Нуждается в проверке", source)
-        self.assertIn("Step 71.2 · Parser v1 RC", source)
+
+    def test_live_text_names_almaty_timezone(self):
+        source = function_source("build_live_text")
+        self.assertIn("Asia/Almaty", source)
+        self.assertIn("UTC+5", source)
 
 
 if __name__ == "__main__":
