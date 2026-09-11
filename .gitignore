@@ -24,6 +24,8 @@ Thumbs.db
 # SLP runtime state and local diagnostics
 slp_state.json
 slp_state.json.tmp
+slp_events.sqlite3
+*.sqlite3
 logs.txt
 *.log
 
