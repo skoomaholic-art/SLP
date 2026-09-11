@@ -26,5 +26,47 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
-      - name: Run unit tests
-        run: python -m unittest discover -s tests -v
+      - name: baseline
+        run: python tests/test_baseline.py
+      - name: event contract
+        if: always()
+        run: python tests/test_event_contract.py
+      - name: event status
+        if: always()
+        run: python tests/test_event_status.py
+      - name: event store
+        if: always()
+        run: python tests/test_event_store.py
+      - name: main merge integration
+        if: always()
+        run: python tests/test_main_merge_integration.py
+      - name: notification integration
+        if: always()
+        run: python tests/test_main_notifications_integration.py
+      - name: OpenSERP extract
+        if: always()
+        run: python tests/test_openserp_extract.py
+      - name: OpenSERP speed
+        if: always()
+        run: python tests/test_openserp_speed.py
+      - name: Qazsport normalization
+        if: always()
+        run: python tests/test_qazsport_normalization.py
+      - name: compact schedule view
+        if: always()
+        run: python tests/test_schedule_compact_view.py
+      - name: schedule loader
+        if: always()
+        run: python tests/test_schedule_loader.py
+      - name: schedule merge
+        if: always()
+        run: python tests/test_schedule_merge.py
+      - name: schedule watch
+        if: always()
+        run: python tests/test_schedule_watch.py
+      - name: SportPlus
+        if: always()
+        run: python tests/test_sportplus.py
+      - name: time logic
+        if: always()
+        run: python tests/test_time_logic.py
