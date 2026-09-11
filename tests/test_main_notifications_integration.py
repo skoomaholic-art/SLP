@@ -124,7 +124,7 @@ class MainNotificationsIntegrationTests(unittest.TestCase):
 
     def test_schedule_has_attention_badge_for_suspicious_accuracy(self):
         self.assertIn('attention = "⚠️" if accuracy.get("needs_attention") else ""', self.source)
-        self.assertIn('⚠️ Нуждается в проверке', self.source)
+        self.assertIn('⚠️ проверить время', self.source)
         self.assertIn('verification.get("time_rejected", False)', self.source)
 
     def test_schedule_builds_self_explanatory_non_match_titles(self):

@@ -205,23 +205,49 @@ def get_event_id(event):
 # Интернет-проверка не может менять LIVE / SOON / OVER.
 # =========================================================
 
+def is_confirmed_direct_event(event):
+    return event_is_official_live(event)
+
+
+def get_confirmed_live_events(events):
+    return [
+        event for event in events
+        if is_confirmed_direct_event(event)
+        and get_event_status(event) == "live"
+    ]
+
+
 def get_status_icon(event):
     status = get_event_status(event)
 
-    if status == "live":
-        return "🔴"
-    if status == "upcoming":
-        return "🟡"
-    return "⚪"
+    if is_confirmed_direct_event(event):
+        if status == "live":
+            return "🔴"
+        if status == "upcoming":
+            return "🟡"
+        return "⚪"
+
+    # Обычная программа EPG: мы знаем, что она стоит в эфирной сетке,
+    # но не имеем права объявлять её прямой трансляцией без LIVE evidence.
+    if status == "finished":
+        return "⚪"
+    return "📺"
 
 
 def get_status_name(event):
     status = get_event_status(event)
 
+    if is_confirmed_direct_event(event):
+        if status == "live":
+            return "LIVE"
+        if status == "upcoming":
+            return "SOON"
+        return "OVER"
+
     if status == "live":
-        return "LIVE"
+        return "ON AIR"
     if status == "upcoming":
-        return "SOON"
+        return "SCHEDULED"
     return "OVER"
 
 
@@ -360,10 +386,34 @@ def compact_simulcast_block(group):
     return "\n".join(lines)
 
 
+def _events_by_channel(events):
+    grouped = {}
+    for event in events:
+        channel = event.get("channel") or "Канал не указан"
+        grouped.setdefault(channel, []).append(event)
+    for channel_events in grouped.values():
+        channel_events.sort(
+            key=lambda event: (event.get("date", ""), event.get("time", ""), get_event_title(event))
+        )
+    return dict(sorted(grouped.items(), key=lambda item: item[0].casefold()))
+
+
+def _channel_preview(channel_events):
+    current = next(
+        (event for event in channel_events if get_event_status(event) == "live"),
+        None,
+    )
+    upcoming = next(
+        (event for event in channel_events if get_event_status(event) == "upcoming"),
+        None,
+    )
+    return current or upcoming or (channel_events[-1] if channel_events else None)
+
+
 def build_schedule_text(events):
     now = datetime.now(KZ_TIMEZONE)
-    channels = unique_channels(events)
-    channel_count = len(channels)
+    grouped = _events_by_channel(events)
+    channel_count = len(grouped)
 
     if channel_count == 1:
         channel_label = "1 канал"
@@ -372,26 +422,46 @@ def build_schedule_text(events):
     else:
         channel_label = f"{channel_count} каналов"
 
-    header = (
-        "📅 Расписание\n"
-        f"{now.day} {MONTHS[now.month]} {now.year} · {channel_label}"
+    lines = [
+        "📅 Расписание",
+        f"{now.day} {MONTHS[now.month]} {now.year} · {channel_label} · {len(events)} спортивных программ",
+        "",
+    ]
+
+    for channel, channel_events in grouped.items():
+        preview = _channel_preview(channel_events)
+        lines.append(f"📡 {channel} · {len(channel_events)} программ")
+        if preview:
+            lines.append(
+                f"{get_schedule_status_badge(preview)} {get_time_window_text(preview)} · "
+                f"{get_schedule_display_title(preview)}"
+            )
+        lines.append("")
+
+    lines.extend([
+        "Нажмите канал ниже, чтобы открыть его полное расписание.",
+        "",
+        "Статус: 🔴 подтверждённый LIVE · 🟡 подтверждённый LIVE позже · 📺 программа EPG · ⚪ завершено · ⚠️ проверить время",
+    ])
+    return "\n".join(lines)
+
+
+def build_channel_schedule_messages(events, channel):
+    selected = [event for event in events if event.get("channel") == channel]
+    selected.sort(key=lambda event: (event.get("date", ""), event.get("time", ""), get_event_title(event)))
+    title = f"📺 {channel} · {len(selected)} программ"
+    if not selected:
+        return [f"{title}\n\nСобытий нет."]
+    blocks = [
+        compact_event_line(event).rsplit(" | ", 1)[0]
+        for event in selected
+    ]
+    messages = split_messages(blocks, title, limit=3800)
+    messages[-1] += (
+        "\n\nСтатус: 🔴 подтверждённый LIVE · 🟡 подтверждённый LIVE позже "
+        "· 📺 программа EPG · ⚪ завершено"
     )
-
-    groups = group_simulcasts(events)
-
-    if groups:
-        event_text = "\n\n".join(
-            compact_simulcast_block(group)
-            for group in groups
-        )
-    else:
-        event_text = "Событий нет."
-
-    return (
-        f"{header}\n\n"
-        f"{event_text}\n\n"
-        "Статус: 🔴 LIVE · 🟡 SOON · ⚪ OVER · ⚠️ Нуждается в проверке"
-    )
+    return messages
 
 
 def _export_sources_text(verification):
@@ -474,21 +544,45 @@ def build_live_text(events):
     return f"{header}\n\n{event_text}"
 
 
-def build_schedule_keyboard(chat_id=None):
+def build_schedule_keyboard(events, chat_id=None):
+    channels = unique_channels(events)
+    rows = []
+    for index in range(0, len(channels), 2):
+        row = [
+            InlineKeyboardButton(
+                text=f"📺 {channel}",
+                callback_data=f"schedule_ch:{channel}",
+            )
+            for channel in channels[index:index + 2]
+        ]
+        rows.append(row)
+    rows.extend([
+        [
+            InlineKeyboardButton(text="🔄 Обновить", callback_data="schedule"),
+            InlineKeyboardButton(text="🔴 LIVE", callback_data="live"),
+        ],
+        [
+            InlineKeyboardButton(text="📥 XLSX", callback_data="export_schedule"),
+            InlineKeyboardButton(text="📊 Статус", callback_data="status"),
+        ],
+        [_notification_button(chat_id)],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def build_channel_schedule_keyboard(channel, chat_id=None):
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="🔎 Подробнее", callback_data="details_schedule"),
-                InlineKeyboardButton(text="🔄 Обновить", callback_data="schedule"),
+                InlineKeyboardButton(text="⬅️ Все каналы", callback_data="schedule"),
+                InlineKeyboardButton(text="🔄 Обновить", callback_data=f"schedule_ch:{channel}"),
             ],
             [
                 InlineKeyboardButton(text="🔴 LIVE", callback_data="live"),
                 InlineKeyboardButton(text="📥 XLSX", callback_data="export_schedule"),
             ],
-            [
-                _notification_button(chat_id),
-                InlineKeyboardButton(text="📊 Статус", callback_data="status"),
-            ],
+            [_notification_button(chat_id)],
             [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu")],
         ]
     )
@@ -553,7 +647,7 @@ async def load_schedule_events(
     loaded = await load_source_schedules()
     today_events = [
         event for event in loaded.today
-        if event_is_official_live(event) and is_user_event(event)
+        if is_user_event(event)
     ]
     yesterday_events = [
         event for event in loaded.yesterday
@@ -671,18 +765,14 @@ async def background_verify_and_refresh(
     message,
     view_type,
 ):
-    await verify_events(events)
+    await verify_events([event for event in events if is_confirmed_direct_event(event)])
 
     try:
         if view_type == "schedule":
             text = build_schedule_text(events)
-            keyboard = build_schedule_keyboard(message.chat.id)
+            keyboard = build_schedule_keyboard(events, message.chat.id)
         else:
-            live_events = [
-                event
-                for event in events
-                if get_event_status(event) == "live"
-            ]
+            live_events = get_confirmed_live_events(events)
             text = build_live_text(live_events)
             keyboard = build_live_keyboard(message.chat.id)
 
@@ -752,7 +842,8 @@ async def check_schedule_changes_once():
         )
         return []
 
-    current_snapshot = build_schedule_snapshot(events)
+    watched_events = [event for event in events if is_confirmed_direct_event(event)]
+    current_snapshot = build_schedule_snapshot(watched_events)
     previous_snapshot = get_previous_snapshot()
 
     if previous_snapshot is None:
@@ -974,7 +1065,7 @@ async def show_details(
         "⏳ Формирую подробный список..."
     )
 
-    await verify_events(events)
+    await verify_events([event for event in events if is_confirmed_direct_event(event)])
 
     blocks = [
         build_detailed_event(event, number)
@@ -1024,7 +1115,7 @@ async def schedule_callback(callback: CallbackQuery):
 
         await loading.edit_text(
             build_schedule_text(events),
-            reply_markup=build_schedule_keyboard(callback.message.chat.id),
+            reply_markup=build_schedule_keyboard(events, callback.message.chat.id),
         )
 
         asyncio.create_task(
@@ -1046,6 +1137,32 @@ async def schedule_callback(callback: CallbackQuery):
         )
 
 
+@dp.callback_query(F.data.startswith("schedule_ch:"))
+async def schedule_channel_callback(callback: CallbackQuery):
+    await callback.answer()
+    channel = callback.data.split(":", 1)[1]
+    loading = await callback.message.answer("⏳ Загружаю канал...")
+    try:
+        events = await load_schedule_events()
+        messages = build_channel_schedule_messages(events, channel)
+        keyboard = build_channel_schedule_keyboard(channel, callback.message.chat.id)
+        await loading.edit_text(
+            messages[0],
+            reply_markup=keyboard if len(messages) == 1 else None,
+        )
+        for index, text in enumerate(messages[1:], start=1):
+            await callback.message.answer(
+                text,
+                reply_markup=keyboard if index == len(messages) - 1 else None,
+            )
+    except Exception as error:
+        print("Ошибка расписания канала:", repr(error))
+        await loading.edit_text(
+            "❌ Не удалось загрузить расписание канала.",
+            reply_markup=build_aux_keyboard(callback.message.chat.id),
+        )
+
+
 # =========================================================
 # LIVE
 # =========================================================
@@ -1061,11 +1178,7 @@ async def live_callback(callback: CallbackQuery):
     try:
         all_events = await load_schedule_events()
 
-        live_events = [
-            event
-            for event in all_events
-            if get_event_status(event) == "live"
-        ]
+        live_events = get_confirmed_live_events(all_events)
 
         await loading.edit_text(
             build_live_text(live_events),
@@ -1105,10 +1218,7 @@ async def details_schedule_callback(callback: CallbackQuery):
 @dp.callback_query(F.data == "details_live")
 async def details_live_callback(callback: CallbackQuery):
     await callback.answer()
-    events = [
-        event for event in await load_schedule_events()
-        if get_event_status(event) == "live"
-    ]
+    events = get_confirmed_live_events(await load_schedule_events())
     await show_details(callback, events, "🔎 Подробно LIVE")
 
 
@@ -1122,7 +1232,7 @@ async def watch_detail_callback(callback: CallbackQuery):
     identity = callback.data.split(":", 1)[1]
     events = [
         event for event in await load_schedule_events(force_refresh=True)
-        if stable_event_identity(event) == identity
+        if is_confirmed_direct_event(event) and stable_event_identity(event) == identity
     ]
     if not events:
         await callback.message.answer(
@@ -1166,7 +1276,7 @@ async def export_schedule_callback(callback: CallbackQuery):
     loading = await callback.message.answer("⏳ Формирую XLSX...")
     try:
         events = await load_schedule_events()
-        await verify_events(events)
+        await verify_events([event for event in events if is_confirmed_direct_event(event)])
         payload = build_schedule_workbook(build_export_rows(events))
         stamp = datetime.now(KZ_TIMEZONE).strftime("%Y-%m-%d_%H-%M")
         document = BufferedInputFile(payload, filename=f"SLP_schedule_{stamp}.xlsx")

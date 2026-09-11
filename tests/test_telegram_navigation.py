@@ -29,8 +29,21 @@ class TelegramNavigationTests(unittest.TestCase):
 
     def test_schedule_result_keeps_navigation_at_bottom(self):
         source = self.function_source("build_schedule_keyboard")
-        for callback in ("details_schedule", "schedule", "live", "export_schedule", "menu"):
+        for callback in ("schedule", "live", "export_schedule", "status", "menu"):
             self.assertIn(f'callback_data="{callback}"', source)
+        self.assertIn('callback_data=f"schedule_ch:{channel}"', source)
+
+    def test_channel_schedule_keeps_navigation_at_bottom(self):
+        source = self.function_source("build_channel_schedule_keyboard")
+        self.assertIn('callback_data="schedule"', source)
+        self.assertIn('callback_data=f"schedule_ch:{channel}"', source)
+        self.assertIn('callback_data="live"', source)
+        self.assertIn('callback_data="menu"', source)
+
+    def test_live_filter_requires_official_evidence(self):
+        source = self.function_source("get_confirmed_live_events")
+        self.assertIn("is_confirmed_direct_event(event)", source)
+        self.assertIn('get_event_status(event) == "live"', source)
 
     def test_live_result_keeps_navigation_at_bottom(self):
         source = self.function_source("build_live_keyboard")

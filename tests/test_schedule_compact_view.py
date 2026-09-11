@@ -33,7 +33,7 @@ class ScheduleCompactViewTests(unittest.TestCase):
 
     def test_attention_legend_remains_in_schedule(self):
         source = MAIN_PATH.read_text(encoding="utf-8")
-        self.assertIn("⚠️ Нуждается в проверке", source)
+        self.assertIn("⚠️ проверить время", source)
         self.assertIn('callback_data="menu"', source)
 
 
