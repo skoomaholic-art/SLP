@@ -9,9 +9,10 @@ from typing import Awaitable, Callable
 
 from agents.qa_agent import ParserQAAgent, QAResult
 from agents.source_agent import SourceAssessment, SourceHealthAgent
-from parsers.qazsport import get_qazsport_schedule
+from parsers.qazsport_complete import get_qazsport_schedule_complete
 from parsers.sportplus_cached import get_sportplus_schedule_cached
-from parsers.tvguide_cached import LOOKAHEAD_DAYS as TVGUIDE_LOOKAHEAD_DAYS, get_tvguide_schedule
+from parsers.tvguide_cached import LOOKAHEAD_DAYS as TVGUIDE_LOOKAHEAD_DAYS
+from parsers.tvguide_broadcast import get_tvguide_schedule_with_evidence
 from services.schedule_merge import merge_source_schedules
 from services.time_logic import KZ_TIMEZONE, get_event_status
 from storage.database import SLPDatabase
@@ -71,7 +72,7 @@ class RefreshResult:
 
 async def _default_qazsport_loader(target_date: date) -> list[dict]:
     today = datetime.now(KZ_TIMEZONE).date()
-    events = await get_qazsport_schedule(
+    events = await get_qazsport_schedule_complete(
         target_date,
         include_current_live=(target_date == today),
     )
@@ -90,7 +91,7 @@ async def _default_sportplus_loader(target_date: date) -> list[dict]:
 
 
 async def _default_tvguide_loader(target_date: date) -> list[dict]:
-    return await get_tvguide_schedule(target_date)
+    return await get_tvguide_schedule_with_evidence(target_date)
 
 
 def _is_user_event(event: dict) -> bool:
@@ -259,10 +260,6 @@ class ParserOrchestrator:
                 used_fallback=used_fallback,
             )
 
-        # An empty result is assessed as a source anomaly, not rewritten as a
-        # synthetic network exception. This preserves the existing collapse
-        # guard: after a healthy baseline, zero events => blocked + last-good
-        # fallback, while real transport/parser exceptions remain status=error.
         assessment: SourceAssessment = self.source_agent.assess(
             source=source,
             scope_date=scope_date,
