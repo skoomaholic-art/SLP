@@ -156,7 +156,7 @@ def apply_page_live_markers(
             _mark_direct(
                 event,
                 time_text,
-                method="official_live_page_marker",
+                method="qazsport_page_live_text",
                 confidence="medium",
             )
 
