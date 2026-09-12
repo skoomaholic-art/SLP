@@ -7,6 +7,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 
 from parsers.championat import get_championat_calendar
+from parsers.championat_future import get_championat_future_calendar
 from parsers.tvplus import fetch_tvplus_schedules
 from services.time_logic import KZ_TIMEZONE, get_scheduled_datetimes
 from verifiers.championat_calendar import (
@@ -17,8 +18,6 @@ from verifiers.championat_calendar import (
 logger = logging.getLogger(__name__)
 SOURCE = "tvguide"
 LOOKAHEAD_DAYS = 7
-# Backwards-compatible public constant used by tests/diagnostics. Championat
-# matching itself is local and therefore not limited to a per-request web window.
 RECONCILE_LOOKAHEAD_HOURS = LOOKAHEAD_DAYS * 24
 CACHE_TTL_SECONDS = 180.0
 OFFICIAL_FALLBACK_LOOKAHEAD_HOURS = 36
@@ -27,100 +26,29 @@ OFFICIAL_FALLBACK_MAX_PER_REFRESH = 20
 OFFICIAL_FALLBACK_CONCURRENCY = 4
 
 _REPLAY_MARKERS = (
-    "повтор",
-    "replay",
-    "rerun",
-    "re-run",
-    "архив",
-    "archive",
-    "catch-up",
-    "обзор",
-    "review",
-    "highlights",
-    "лучшее",
-    "итоги",
-    "дневник",
-    "журнал",
-    "классика",
-    "classic",
-    "превью",
-    "preview",
-    "документальный",
-    "новости",
-    "студия",
-    "ток-шоу",
-    "программа",
-    "sport review",
-    "подробно",
-    "трансферы",
-    "best of",
-    "road to",
-    "история",
-    "легенды",
+    "повтор", "replay", "rerun", "re-run", "архив", "archive", "catch-up",
+    "обзор", "review", "highlights", "лучшее", "итоги", "дневник", "журнал",
+    "классика", "classic", "превью", "preview", "документальный", "новости",
+    "студия", "ток-шоу", "программа", "sport review", "подробно", "трансферы",
+    "best of", "road to", "история", "легенды",
 )
 _EVENT_MARKERS = (
-    "чемпионат",
-    "лига",
-    "кубок",
-    "турнир",
-    "гран-при",
-    "grand prix",
-    "ufc",
-    "khl",
-    "кхл",
-    "финал",
-    "полуфинал",
-    "четвертьфинал",
-    "1/4",
-    "1/2",
-    "теннис",
-    "снукер",
-    "футбол",
-    "хоккей",
-    "баскетбол",
-    "волейбол",
-    "бокс",
-    "mma",
-    "мма",
-    "мотоспорт",
-    "формула-1",
-    "formula 1",
-    "гонк",
-    "дзюдо",
-    "борьб",
-    "биатлон",
-    "атлетик",
-    "гимнастик",
-    "wrc",
-    "wec",
-    "бейсбол",
+    "чемпионат", "лига", "кубок", "турнир", "гран-при", "grand prix", "ufc",
+    "khl", "кхл", "финал", "полуфинал", "четвертьфинал", "1/4", "1/2",
+    "теннис", "снукер", "футбол", "хоккей", "баскетбол", "волейбол", "бокс",
+    "mma", "мма", "мотоспорт", "формула-1", "formula 1", "гонк", "дзюдо",
+    "борьб", "биатлон", "атлетик", "гимнастик", "wrc", "wec", "бейсбол",
 )
 _SPORT_HINTS = (
-    ("футбол", "Футбол"),
-    ("хоккей", "Хоккей"),
-    ("кхл", "Хоккей"),
-    ("khl", "Хоккей"),
-    ("теннис", "Теннис"),
-    ("снукер", "Снукер"),
-    ("баскетбол", "Баскетбол"),
-    ("волейбол", "Волейбол"),
-    ("ufc", "MMA"),
-    ("mma", "MMA"),
-    ("мма", "MMA"),
-    ("бокс", "Бокс"),
-    ("мотоспорт", "Мотоспорт"),
-    ("формула-1", "Автоспорт"),
-    ("formula 1", "Автоспорт"),
-    ("гран-при", "Автоспорт"),
-    ("grand prix", "Автоспорт"),
-    ("wrc", "Автоспорт"),
-    ("wec", "Автоспорт"),
-    ("дзюдо", "Дзюдо"),
-    ("борьб", "Борьба"),
-    ("бейсбол", "Бейсбол"),
+    ("футбол", "Футбол"), ("хоккей", "Хоккей"), ("кхл", "Хоккей"),
+    ("khl", "Хоккей"), ("теннис", "Теннис"), ("снукер", "Снукер"),
+    ("баскетбол", "Баскетбол"), ("волейбол", "Волейбол"), ("ufc", "MMA"),
+    ("mma", "MMA"), ("мма", "MMA"), ("бокс", "Бокс"),
+    ("мотоспорт", "Мотоспорт"), ("формула-1", "Автоспорт"),
+    ("formula 1", "Автоспорт"), ("гран-при", "Автоспорт"),
+    ("grand prix", "Автоспорт"), ("wrc", "Автоспорт"), ("wec", "Автоспорт"),
+    ("дзюдо", "Дзюдо"), ("борьб", "Борьба"), ("бейсбол", "Бейсбол"),
 )
-# Compact en/em dash is common in Championat widgets; plain hyphen only counts
-# as a match separator when surrounded by spaces so club names stay intact.
 _MATCH_RE = re.compile(
     r"(?:\s+-\s+|\s*[–—]\s*|\s+(?:vs\.?|v\.)\s+)",
     re.I,
@@ -157,11 +85,7 @@ def _infer_tournament_and_title(event: dict) -> None:
     title = " ".join(str(event.get("title") or "").split())
     if ". " not in title:
         return
-    parts = [
-        part.strip(" .,-–—")
-        for part in title.split(". ")
-        if part.strip()
-    ]
+    parts = [part.strip(" .,-–—") for part in title.split(". ") if part.strip()]
     if len(parts) < 2:
         return
     tail = parts[-1]
@@ -173,8 +97,7 @@ def _infer_tournament_and_title(event: dict) -> None:
 
 def _utc_clock_to_kz(date_text: str, time_text: str) -> datetime:
     source_dt = datetime.strptime(
-        f"{date_text} {time_text}",
-        "%Y-%m-%d %H:%M",
+        f"{date_text} {time_text}", "%Y-%m-%d %H:%M"
     ).replace(tzinfo=timezone.utc)
     return source_dt.astimezone(KZ_TIMEZONE)
 
@@ -220,17 +143,11 @@ def infer_direct_event(
     _infer_tournament_and_title(item)
 
     text = _text(item)
-    identity = (
-        str(item.get("channel") or ""),
-        " ".join(text.split()),
-    )
+    identity = (str(item.get("channel") or ""), " ".join(text.split()))
     years = {int(value) for value in _YEAR_RE.findall(text)}
     replay = any(marker in text for marker in _REPLAY_MARKERS)
     stale_year = bool(years and target_date.year not in years)
-    event_like = bool(
-        _MATCH_RE.search(text)
-        or any(marker in text for marker in _EVENT_MARKERS)
-    )
+    event_like = bool(_MATCH_RE.search(text) or any(marker in text for marker in _EVENT_MARKERS))
     repeated = identity in seen
     seen.add(identity)
 
@@ -238,22 +155,17 @@ def infer_direct_event(
     provider_claimed_live = bool(
         item.get("is_live_broadcast", item.get("is_live", False))
         and item.get("live_state") == "live"
-        and method
-        in {
-            "provider_live_text",
-            "provider_live_asset",
-            "official_live_text",
-            "official_live_asset",
+        and method in {
+            "provider_live_text", "provider_live_asset",
+            "official_live_text", "official_live_asset",
         }
     )
 
-    # EPG says only what the channel schedules. It never proves a real LIVE.
+    # Provider EPG only says what the channel schedules; it never proves LIVE.
     item["provider_claimed_live"] = provider_claimed_live
     item["is_live_broadcast"] = False
     item["is_live"] = False
-    item["is_sport_event"] = bool(
-        event_like and not replay and not stale_year and not repeated
-    )
+    item["is_sport_event"] = bool(event_like and not replay and not stale_year and not repeated)
 
     if replay:
         item["live_state"] = "not_live"
@@ -275,8 +187,7 @@ def infer_direct_event(
         item["live_evidence_method"] = (
             "provider_live_unverified"
             if provider_claimed_live
-            else "provider_epg_sport_candidate"
-            if event_like
+            else "provider_epg_sport_candidate" if event_like
             else "provider_epg_only"
         )
         item["live_evidence_confidence"] = "low"
@@ -285,9 +196,7 @@ def infer_direct_event(
     return item
 
 
-def _normalize_by_date(
-    raw_by_date: dict[date, list[dict]],
-) -> dict[date, list[dict]]:
+def _normalize_by_date(raw_by_date: dict[date, list[dict]]) -> dict[date, list[dict]]:
     seen: set[tuple[str, str]] = set()
     result: dict[date, list[dict]] = {}
     for source_date in sorted(raw_by_date):
@@ -301,11 +210,7 @@ def _normalize_by_date(
         for event in events:
             corrected = normalize_provider_timezone(event)
             local_date = date.fromisoformat(str(corrected["date"]))
-            normalized = infer_direct_event(
-                corrected,
-                target_date=local_date,
-                seen=seen,
-            )
+            normalized = infer_direct_event(corrected, target_date=local_date, seen=seen)
             result.setdefault(local_date, []).append(normalized)
 
     for target_date in result:
@@ -326,11 +231,7 @@ def _verification_key(event: dict) -> str:
             str(event.get("date") or ""),
             str(event.get("time") or ""),
             " ".join(
-                str(
-                    event.get("raw_title")
-                    or event.get("title")
-                    or ""
-                )
+                str(event.get("raw_title") or event.get("title") or "")
                 .casefold()
                 .split()
             ),
@@ -350,21 +251,15 @@ def _cache_ttl(result: dict) -> float:
 def apply_reconciliation_result(event: dict, result: dict) -> dict:
     item = dict(event)
     state = str(result.get("state") or "unknown")
-    verification_source = str(
-        result.get("verification_source") or "external"
-    )
+    verification_source = str(result.get("verification_source") or "external")
     item["reconciliation_state"] = state
-    item["reconciliation_checked_at"] = datetime.now(KZ_TIMEZONE).isoformat(
-        timespec="seconds"
-    )
+    item["reconciliation_checked_at"] = datetime.now(KZ_TIMEZONE).isoformat(timespec="seconds")
     item["reconciliation_sources"] = result.get("sources") or []
     item["reconciliation_verification_source"] = verification_source
     if result.get("external_time_kz"):
         item["reconciliation_external_time"] = result["external_time_kz"]
     if result.get("difference_minutes") is not None:
-        item["reconciliation_difference_minutes"] = int(
-            result["difference_minutes"]
-        )
+        item["reconciliation_difference_minutes"] = int(result["difference_minutes"])
 
     if state == "confirmed_direct":
         item["is_live_broadcast"] = True
@@ -373,13 +268,10 @@ def apply_reconciliation_result(event: dict, result: dict) -> dict:
         item["live_state"] = "live"
         item["live_evidence_method"] = (
             "championat_schedule_match"
-            if verification_source
-            in {"championat.com", "championat_calendar"}
+            if verification_source in {"championat.com", "championat_calendar"}
             else "official_schedule_match"
         )
-        item["live_evidence_value"] = (
-            "real-event schedule matched TV slot"
-        )
+        item["live_evidence_value"] = "real-event schedule matched TV slot"
         item["live_evidence_confidence"] = "high"
     elif state == "mismatch":
         item["is_live_broadcast"] = False
@@ -388,8 +280,7 @@ def apply_reconciliation_result(event: dict, result: dict) -> dict:
         item["live_state"] = "not_live"
         item["live_evidence_method"] = "external_schedule_mismatch"
         item["live_evidence_value"] = str(
-            result.get("reason")
-            or "real-event time/date differs from TV slot"
+            result.get("reason") or "real-event time/date differs from TV slot"
         )
         item["live_evidence_confidence"] = "high"
     else:
@@ -402,11 +293,26 @@ def apply_reconciliation_result(event: dict, result: dict) -> dict:
     return item
 
 
-async def _reconcile_external(
-    by_date: dict[date, list[dict]],
-) -> dict[date, list[dict]]:
+def _calendar_candidates(by_date: dict[date, list[dict]]) -> list[dict]:
+    return [
+        event
+        for events in by_date.values()
+        for event in events
+        if event.get("is_sport_event")
+    ]
+
+
+async def _reconcile_external(by_date: dict[date, list[dict]]) -> dict[date, list[dict]]:
     now = datetime.now(KZ_TIMEZONE)
-    calendar = await get_championat_calendar(now.date())
+    current_calendar = await get_championat_calendar(now.date())
+    candidates = _calendar_candidates(by_date)
+    future_calendar = await get_championat_future_calendar(
+        candidates,
+        anchor=now.date(),
+        lookahead_days=LOOKAHEAD_DAYS,
+    )
+    calendar_events = [*current_calendar.events, *future_calendar.events]
+
     fallback_start = now - timedelta(hours=OFFICIAL_FALLBACK_LOOKBACK_HOURS)
     fallback_end = now + timedelta(hours=OFFICIAL_FALLBACK_LOOKAHEAD_HOURS)
     semaphore = asyncio.Semaphore(OFFICIAL_FALLBACK_CONCURRENCY)
@@ -423,21 +329,15 @@ async def _reconcile_external(
                 continue
 
             local_checked += 1
-            result = match_championat_calendar(event, calendar.events)
+            result = match_championat_calendar(event, calendar_events)
             state = str(result.get("state") or "unknown")
             if state == "confirmed_direct":
                 local_confirmed += 1
-                by_date[scope_date][index] = apply_reconciliation_result(
-                    event,
-                    result,
-                )
+                by_date[scope_date][index] = apply_reconciliation_result(event, result)
                 continue
             if state == "mismatch":
                 local_mismatch += 1
-                by_date[scope_date][index] = apply_reconciliation_result(
-                    event,
-                    result,
-                )
+                by_date[scope_date][index] = apply_reconciliation_result(event, result)
                 continue
 
             local_unknown += 1
@@ -445,45 +345,30 @@ async def _reconcile_external(
             key = _verification_key(event)
             cached = _fallback_cache.get(key)
             if cached and cached[0] > time.monotonic():
-                by_date[scope_date][index] = apply_reconciliation_result(
-                    event,
-                    cached[1],
-                )
+                by_date[scope_date][index] = apply_reconciliation_result(event, cached[1])
                 continue
 
             if fallback_start <= start <= fallback_end:
                 fallback_candidates.append((scope_date, index, event, key))
             else:
                 pending = apply_reconciliation_result(event, result)
-                pending["reconciliation_state"] = (
-                    "pending_official_fallback"
-                )
+                pending["reconciliation_state"] = "pending_official_fallback"
                 by_date[scope_date][index] = pending
 
     async def verify_one(entry: tuple[date, int, dict, str]):
         scope_date, index, event, key = entry
         async with semaphore:
-            result = await asyncio.to_thread(
-                verify_official_fallback,
-                event,
-            )
-        _fallback_cache[key] = (
-            time.monotonic() + _cache_ttl(result),
-            result,
-        )
+            result = await asyncio.to_thread(verify_official_fallback, event)
+        _fallback_cache[key] = (time.monotonic() + _cache_ttl(result), result)
         return scope_date, index, apply_reconciliation_result(event, result)
 
     selected = fallback_candidates[:OFFICIAL_FALLBACK_MAX_PER_REFRESH]
     if selected:
-        verified = await asyncio.gather(
-            *(verify_one(entry) for entry in selected)
-        )
+        verified = await asyncio.gather(*(verify_one(entry) for entry in selected))
         for scope_date, index, event in verified:
             by_date[scope_date][index] = event
 
-    for scope_date, index, event, _ in fallback_candidates[
-        OFFICIAL_FALLBACK_MAX_PER_REFRESH:
-    ]:
+    for scope_date, index, event, _ in fallback_candidates[OFFICIAL_FALLBACK_MAX_PER_REFRESH:]:
         pending = apply_reconciliation_result(
             event,
             {
@@ -512,14 +397,15 @@ async def _reconcile_external(
         1
         for events in by_date.values()
         for event in events
-        if str(event.get("reconciliation_state") or "").startswith(
-            "pending"
-        )
+        if str(event.get("reconciliation_state") or "").startswith("pending")
     )
     logger.info(
-        "tvguide reconciliation championat_events=%d championat_errors=%d local_checked=%d local_confirmed=%d local_mismatch=%d local_unknown=%d official_fallback_checked=%d confirmed=%d replay_or_mismatch=%d pending=%d",
-        len(calendar.events),
-        len(calendar.errors),
+        "tvguide reconciliation current_championat_events=%d future_championat_events=%d future_dates=%s championat_errors=%d future_errors=%d local_checked=%d local_confirmed=%d local_mismatch=%d local_unknown=%d official_fallback_checked=%d confirmed=%d replay_or_mismatch=%d pending=%d",
+        len(current_calendar.events),
+        len(future_calendar.events),
+        future_calendar.fetched_dates,
+        len(current_calendar.errors),
+        len(future_calendar.errors),
         local_checked,
         local_confirmed,
         local_mismatch,
@@ -529,20 +415,16 @@ async def _reconcile_external(
         replays,
         pending,
     )
-    if calendar.errors:
-        logger.warning(
-            "championat calendar partial errors=%s",
-            calendar.errors[:20],
-        )
+    if current_calendar.errors:
+        logger.warning("championat calendar partial errors=%s", current_calendar.errors[:20])
+    if future_calendar.errors:
+        logger.warning("championat future partial errors=%s", future_calendar.errors[:20])
     return by_date
 
 
 async def _refresh_cache(anchor: date) -> None:
     global _cache_anchor, _cache_by_date, _cache_expires_at
-    dates = [
-        anchor + timedelta(days=offset)
-        for offset in range(-2, LOOKAHEAD_DAYS + 1)
-    ]
+    dates = [anchor + timedelta(days=offset) for offset in range(-2, LOOKAHEAD_DAYS + 1)]
     loaded = await fetch_tvplus_schedules(dates)
     total = sum(len(items) for items in loaded.by_date.values())
     if not total:
@@ -591,10 +473,7 @@ async def get_tvguide_schedule(
     elif isinstance(target_date, date):
         requested = target_date
     else:
-        requested = datetime.strptime(
-            str(target_date),
-            "%Y-%m-%d",
-        ).date()
+        requested = datetime.strptime(str(target_date), "%Y-%m-%d").date()
 
     anchor = datetime.now(KZ_TIMEZONE).date()
     async with _cache_lock:
@@ -604,7 +483,4 @@ async def get_tvguide_schedule(
             or requested not in _cache_by_date
         ):
             await _refresh_cache(anchor)
-        return [
-            dict(event)
-            for event in _cache_by_date.get(requested, [])
-        ]
+        return [dict(event) for event in _cache_by_date.get(requested, [])]

@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime
 
 from parsers.championat import get_championat_calendar
+from parsers.championat_future import get_championat_future_calendar
 from parsers.qazsport_complete import get_qazsport_schedule_complete
 from parsers.sportplus_cached import (
     get_sportplus_available_dates,
@@ -41,6 +42,33 @@ async def main() -> None:
             f"Championat match center returned no events; errors={championat.errors[:5]}"
         )
 
+    future = await get_championat_future_calendar(
+        [
+            {
+                "sport": "Футбол",
+                "tournament": "Альфа-Банк Российская Премьер-лига",
+                "title": "future calendar smoke",
+            },
+            {
+                "sport": "Хоккей",
+                "tournament": "Фонбет Чемпионат КХЛ",
+                "title": "future calendar smoke",
+            },
+        ],
+        anchor=today,
+        lookahead_days=7,
+    )
+    if not future.events:
+        raise RuntimeError(
+            "Championat future tournament calendars returned no events; "
+            f"errors={future.errors[:8]}"
+        )
+    if not any(str(event.get("date") or "") > today.isoformat() for event in future.events):
+        raise RuntimeError(
+            "Championat future tournament calendars contain no future date; "
+            f"dates={future.fetched_dates} errors={future.errors[:8]}"
+        )
+
     sources = {
         "Qazsport": qazsport,
         "Sport+ Qazaqstan": sportplus,
@@ -67,13 +95,20 @@ async def main() -> None:
         )
 
     today_rows = sum(
-        1 for event in championat.events
+        1
+        for event in championat.events
         if str(event.get("date") or "") == today.isoformat()
     )
     print(
         "Championat: "
         f"events={len(championat.events)} today={today_rows} "
         f"dates={len(championat.fetched_dates)} errors={len(championat.errors)} "
+        "source_timezone=Europe/Moscow timezone=Asia/Almaty"
+    )
+    print(
+        "Championat future: "
+        f"events={len(future.events)} dates={future.fetched_dates} "
+        f"tournaments={len(future.tournament_urls)} errors={len(future.errors)} "
         "source_timezone=Europe/Moscow timezone=Asia/Almaty"
     )
 
