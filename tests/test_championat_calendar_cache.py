@@ -1,7 +1,7 @@
 import unittest
 from datetime import date
 
-from parsers.championat import parse_match_center_html
+from parsers.championat import parse_match_center_html, parse_match_center_text
 from verifiers.championat_calendar import match_championat_calendar
 
 
@@ -19,6 +19,19 @@ HTML = """
   <span>Не начался</span>
 </div>
 </body></html>
+"""
+
+READER_TEXT = """
+Футбол
+Альфа-Банк Российская Премьер-лига. 8-й тур
+* 18:30 Динамо М–Оренбург Не начался
+* 20:45 ЦСКА – Рубин Не начался
+Хоккей
+OLIMPBET МХЛ — регулярный чемпионат
+* 17:00 СКА-1946–Тайфун 2 : 0 Перерыв
+Автоспорт
+WRC 2026. Ралли Чили
+* 21:08 Ралли Чили. Спецучасток 10 Не началось
 """
 
 
@@ -45,6 +58,25 @@ class ChampionatCalendarParserTests(unittest.TestCase):
         self.assertEqual(hockey["timezone"], "Asia/Almaty")
         self.assertEqual(hockey["source_timezone"], "Europe/Moscow")
 
+    def test_reader_accepts_compact_en_dash_without_splitting_hyphenated_team(self):
+        rows = parse_match_center_text(READER_TEXT, date(2026, 9, 13))
+        titles = {row["title"] for row in rows}
+        self.assertIn("Динамо М–Оренбург", titles)
+        self.assertIn("ЦСКА – Рубин", titles)
+        self.assertIn("СКА-1946–Тайфун", titles)
+
+    def test_reader_keeps_non_head_to_head_motorsport_stage(self):
+        rows = parse_match_center_text(READER_TEXT, date(2026, 9, 13))
+        event = next(row for row in rows if "Спецучасток 10" in row["title"])
+        self.assertEqual(event["sport"], "Автоспорт")
+        self.assertEqual(event["tournament"], "WRC 2026. Ралли Чили")
+
+    def test_reader_time_is_converted_from_moscow_to_almaty(self):
+        rows = parse_match_center_text(READER_TEXT, date(2026, 9, 13))
+        football = next(row for row in rows if row["title"] == "Динамо М–Оренбург")
+        self.assertEqual(football["time"], "20:30")
+        self.assertEqual(football["timezone"], "Asia/Almaty")
+
     def test_local_match_confirms_tv_preshow(self):
         rows = parse_match_center_html(HTML, date(2026, 9, 13))
         result = match_championat_calendar(epg(), rows)
@@ -64,7 +96,10 @@ class ChampionatCalendarParserTests(unittest.TestCase):
     def test_missing_championat_event_stays_unknown(self):
         rows = parse_match_center_html(HTML, date(2026, 9, 13))
         result = match_championat_calendar(
-            epg(title="Локальный турнир неизвестной лиги", raw_title="Локальный турнир неизвестной лиги"),
+            epg(
+                title="Локальный турнир неизвестной лиги",
+                raw_title="Локальный турнир неизвестной лиги",
+            ),
             rows,
         )
         self.assertEqual(result["state"], "unknown")
