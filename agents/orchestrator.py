@@ -250,16 +250,10 @@ class ParserOrchestrator:
                 used_fallback=used_fallback,
             )
 
-        # Qazsport returns the full TV grid, so an empty current/yesterday grid is
-        # never a legitimate "no live sport today" answer.
-        if (
-            error is None
-            and required
-            and source == "qazsport"
-            and not fresh_events
-        ):
-            error = RuntimeError("Qazsport returned an empty TV schedule")
-
+        # An empty result is assessed as a source anomaly, not rewritten as a
+        # synthetic network exception. This preserves the existing collapse
+        # guard: after a healthy baseline, zero events => blocked + last-good
+        # fallback, while real transport/parser exceptions remain status=error.
         assessment: SourceAssessment = self.source_agent.assess(
             source=source,
             scope_date=scope_date,
