@@ -6,7 +6,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import date, datetime
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from zoneinfo import ZoneInfo
 
 import aiohttp
@@ -17,6 +17,7 @@ from services.time_logic import KZ_TIMEZONE
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://www.championat.com"
+PRIMARY_MATCH_CENTER = "/stat/?from=rasp"
 MSK_TIMEZONE = ZoneInfo("Europe/Moscow")
 CACHE_TTL_SECONDS = 300.0
 DEFAULT_LOOKBACK_DAYS = 2
@@ -24,18 +25,33 @@ DEFAULT_LOOKAHEAD_DAYS = 7
 REQUEST_TIMEOUT_SECONDS = 20
 REQUEST_CONCURRENCY = 5
 
-SPORT_PAGES = {
-    "Футбол": "/stat/football/",
-    "Хоккей": "/stat/hockey/",
-    "Теннис": "/stat/tennis/",
-    "Баскетбол": "/stat/basketball/",
-    "Волейбол": "/stat/volleyball/",
-    "Автоспорт": "/stat/auto/",
-    "MMA": "/stat/boxing/",
-    "Биатлон": "/stat/biathlon/",
-    "Лыжи": "/stat/ski/",
-    "Фигурное катание": "/stat/figureskating/",
-    "Прочее": "/stat/other/",
+# Section homepages expose a compact server-rendered Match Center and do not
+# require the /stat/* route. They are a fallback when /stat is redirected to
+# SberID for datacenter traffic.
+SECTION_PAGES = {
+    "Футбол": "/football/",
+    "Хоккей": "/hockey/",
+    "Теннис": "/tennis/",
+    "Баскетбол": "/basketball/",
+    "Волейбол": "/volleyball/",
+    "Автоспорт": "/auto/",
+    "MMA": "/boxing/",
+    "Биатлон": "/biathlon/",
+    "Лыжи": "/ski/",
+    "Фигурное катание": "/figureskating/",
+}
+_SPORT_BY_PATH = {
+    "football": "Футбол",
+    "hockey": "Хоккей",
+    "tennis": "Теннис",
+    "basketball": "Баскетбол",
+    "volleyball": "Волейбол",
+    "auto": "Автоспорт",
+    "boxing": "MMA",
+    "biathlon": "Биатлон",
+    "ski": "Лыжи",
+    "figureskating": "Фигурное катание",
+    "other": "Прочее",
 }
 
 _DATE_TIME_RE = re.compile(r"(?<!\d)(\d{1,2})[.]([01]?\d)[.](20\d{2})\s+(\d{1,2}):(\d{2})(?!\d)")
@@ -61,8 +77,13 @@ _cache_expires_at = 0.0
 _cache_result = ChampionatCalendar(events=[], errors=[], fetched_dates=[])
 
 
-def build_match_center_url(sport_path: str) -> str:
-    return urljoin(f"{BASE_URL}/", sport_path.lstrip("/"))
+def build_match_center_url(path: str) -> str:
+    return urljoin(f"{BASE_URL}/", path.lstrip("/"))
+
+
+def _sport_from_url(url: str, fallback: str = "") -> str:
+    parts = [part.casefold() for part in urlparse(url).path.split("/") if part]
+    return _SPORT_BY_PATH.get(parts[0], fallback) if parts else fallback
 
 
 def _status_from_text(text: str) -> str:
@@ -119,7 +140,6 @@ def _extract_start(text: str, anchor_date: date) -> datetime | None:
                 return None
             hour, minute = map(int, clock.groups())
             day, month, year = anchor_date.day, anchor_date.month, anchor_date.year
-
     if hour > 23 or minute > 59:
         return None
     try:
@@ -149,7 +169,7 @@ def parse_match_center_html(html: str, anchor_date: date, *, sport: str = "") ->
             "title": title,
             "raw_title": raw_text,
             "search_text": raw_text,
-            "sport": sport,
+            "sport": _sport_from_url(url, sport),
             "status": _status_from_text(raw_text),
             "source_timezone": "Europe/Moscow",
             "timezone": "Asia/Almaty",
@@ -165,31 +185,32 @@ def parse_match_center_html(html: str, anchor_date: date, *, sport: str = "") ->
     return events
 
 
-async def _fetch_sport_page(session, semaphore, anchor_date, sport, path):
-    url = build_match_center_url(path)
-    try:
-        async with semaphore:
-            async with session.get(url) as response:
-                if response.status != 200:
-                    return [], f"{sport}:HTTP_{response.status}"
-                html = await response.text()
-    except Exception as error:
-        return [], f"{sport}:{type(error).__name__}:{error}"
+def _blocked_page_diagnostic(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    title = _clean_text(soup.title.get_text(" ", strip=True) if soup.title else "")[:120]
+    preview = _clean_text(soup.get_text(" ", strip=True))[:200]
+    return f"bytes={len(html)}:title={title!r}:text={preview!r}"
 
+
+async def _download(session: aiohttp.ClientSession, url: str) -> tuple[str, str | None]:
+    try:
+        async with session.get(url) as response:
+            if response.status != 200:
+                return "", f"HTTP_{response.status}:final={response.url}"
+            return await response.text(), None
+    except Exception as error:
+        return "", f"{type(error).__name__}:{error}"
+
+
+async def _fetch_section(session, semaphore, anchor_date, sport, path):
+    url = build_match_center_url(path)
+    async with semaphore:
+        html, error = await _download(session, url)
+    if error:
+        return [], f"{sport}:{error}"
     events = parse_match_center_html(html, anchor_date, sport=sport)
     if not events:
-        soup = BeautifulSoup(html, "html.parser")
-        hrefs = [
-            str(tag.get("href") or "")
-            for tag in soup.find_all("a", href=True)
-            if "match" in str(tag.get("href") or "").casefold()
-        ][:5]
-        preview = _clean_text(soup.get_text(" ", strip=True))[:280]
-        title = _clean_text(soup.title.get_text(" ", strip=True) if soup.title else "")[:120]
-        return [], (
-            f"{sport}:no_events:bytes={len(html)}:title={title!r}:"
-            f"text={preview!r}:match_hrefs={hrefs}"
-        )
+        return [], f"{sport}:no_events:{_blocked_page_diagnostic(html)}"
     return events, None
 
 
@@ -200,23 +221,38 @@ async def fetch_championat_calendar(anchor_date: date) -> ChampionatCalendar:
         "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.5",
     }
     semaphore = asyncio.Semaphore(REQUEST_CONCURRENCY)
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-        rows = await asyncio.gather(*(
-            _fetch_sport_page(session, semaphore, anchor_date, sport, path)
-            for sport, path in SPORT_PAGES.items()
-        ))
+    errors: list[str] = []
 
-    events, errors, seen_urls = [], [], set()
-    for page_events, error in rows:
-        if error:
-            errors.append(error)
-        for event in page_events:
-            url = str(event.get("source_url") or "")
-            if url and url in seen_urls:
-                continue
-            if url:
-                seen_urls.add(url)
-            events.append(event)
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        primary_url = build_match_center_url(PRIMARY_MATCH_CENTER)
+        html, primary_error = await _download(session, primary_url)
+        primary_events = parse_match_center_html(html, anchor_date) if html else []
+        if primary_events:
+            events = primary_events
+            logger.info("championat transport=stat_rasp events=%d", len(events))
+        else:
+            if primary_error:
+                errors.append(f"primary:{primary_error}")
+            elif html:
+                errors.append(f"primary:no_events:{_blocked_page_diagnostic(html)}")
+            rows = await asyncio.gather(*(
+                _fetch_section(session, semaphore, anchor_date, sport, path)
+                for sport, path in SECTION_PAGES.items()
+            ))
+            events = []
+            seen: set[str] = set()
+            for page_events, error in rows:
+                if error:
+                    errors.append(error)
+                for event in page_events:
+                    url = str(event.get("source_url") or "")
+                    if url and url in seen:
+                        continue
+                    if url:
+                        seen.add(url)
+                    events.append(event)
+            if events:
+                logger.info("championat transport=section_pages events=%d", len(events))
 
     events.sort(key=lambda item: (str(item.get("date") or ""), str(item.get("time") or ""), str(item.get("source_url") or "")))
     fetched_dates = sorted({str(event.get("date") or "") for event in events if event.get("date")})
