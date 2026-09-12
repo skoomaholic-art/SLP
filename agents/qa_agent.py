@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from services.event_contract import validate_sport_event
+from services.event_status import is_live_broadcast
 from services.schedule_merge import exact_broadcast_key
 from services.time_logic import get_scheduled_datetimes
 
@@ -44,6 +45,8 @@ class ParserQAAgent:
                 errors.append(f"{prefix}: time_logic: {error}")
                 continue
 
+            if start.tzinfo is None or end.tzinfo is None:
+                errors.append(f"{prefix}: naive_datetime")
             if end <= start:
                 errors.append(f"{prefix}: end_not_after_start")
 
@@ -53,7 +56,7 @@ class ParserQAAgent:
             if not str(event.get("raw_title") or "").strip():
                 errors.append(f"{prefix}: empty_raw_title")
 
-            if bool(event.get("is_live")):
+            if is_live_broadcast(event):
                 if not str(event.get("sport") or "").strip():
                     warnings.append(f"{prefix}: live_event_without_sport")
                 if not str(event.get("title") or "").strip():
