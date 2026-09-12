@@ -3,7 +3,11 @@ import unittest
 from parsers.qazsport_complete import apply_page_live_markers, extract_row_live_times
 from parsers.sportplus_cached import extract_sportplus_on_air_times
 from parsers.tvguide_broadcast import apply_vsetv_evidence
-from parsers.vsetv_live import build_day_urls, parse_vsetv_live_html
+from parsers.vsetv_live import (
+    build_week_urls,
+    parse_vsetv_live_html,
+    parse_vsetv_week_html,
+)
 from services.broadcast_evidence import add_broadcast_evidence
 
 
@@ -44,6 +48,27 @@ VSETV_HTML = """
   </div>
   <div class="time">07:30</div>
   <div class="prname2">E:60 - Хроники профессионального спорта.</div>
+</div>
+"""
+
+VSETV_WEEK_HTML = """
+<div class="day-title">Воскресенье, 13 сентября</div>
+<div id="schedule_container">
+  <div class="time">04:25</div>
+  <div class="prname2">
+    <img src="pic/ico_live.gif" width="18" height="11">
+    Бейсбол. Ольмекас - Перикос. Прямая трансляция.
+  </div>
+  <div class="time">08:00</div>
+  <div class="prname2">Футбол. Повтор матча.</div>
+</div>
+<div class="day-title">Понедельник, 14 сентября</div>
+<div id="schedule_container">
+  <div class="time">21:00</div>
+  <div class="prname2">
+    <img src="/pic/ico_live.gif?x=1" width="18" height="11">
+    Футбол. Команда А - Команда Б. Прямая трансляция.
+  </div>
 </div>
 """
 
@@ -105,15 +130,30 @@ class BroadcastEvidenceTests(unittest.TestCase):
         self.assertFalse(item.get("provider_claimed_live", False))
         self.assertFalse(item["is_live_broadcast"])
 
-    def test_vsetv_transport_prefers_http_but_keeps_https_fallback(self):
-        urls = build_day_urls(771, __import__("datetime").date(2026, 9, 13))
+    def test_vsetv_transport_uses_week_page_and_http_first(self):
+        urls = build_week_urls(771)
         self.assertEqual(
             urls,
             [
-                "http://www.vsetv.com/schedule_channel_771_day_2026-09-13.html",
-                "https://www.vsetv.com/schedule_channel_771_day_2026-09-13.html",
+                "http://www.vsetv.com/schedule_channel_771_week.html",
+                "http://vsetv.com/schedule_channel_771_week.html",
+                "https://www.vsetv.com/schedule_channel_771_week.html",
             ],
         )
+
+    def test_vsetv_week_parser_assigns_live_rows_to_dates(self):
+        rows = parse_vsetv_week_html(
+            VSETV_WEEK_HTML,
+            channel="Setanta Sports 1",
+            anchor_date=__import__("datetime").date(2026, 9, 13),
+            source_url="http://www.vsetv.com/schedule_channel_771_week.html",
+        )
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(
+            [(row["date"], row["time"]) for row in rows],
+            [("2026-09-13", "04:25"), ("2026-09-14", "21:00")],
+        )
+        self.assertTrue(all(row["explicit_direct_text"] for row in rows))
 
     def test_vsetv_icon_is_third_party_claim_not_direct_by_itself(self):
         rows = parse_vsetv_live_html(
