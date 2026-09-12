@@ -4,6 +4,7 @@ import logging
 from datetime import date, datetime, timedelta
 
 from agents.orchestrator import ParserOrchestrator, RefreshResult
+from services.live_evidence import event_is_live_broadcast, event_is_schedule_candidate
 from services.schedule_merge import merge_source_schedules
 from services.time_logic import KZ_TIMEZONE, get_event_status
 
@@ -72,66 +73,48 @@ class ScheduleService:
         merged = merge_source_schedules(*snapshots)
         result: list[dict] = []
         skipped = {
-            "not_direct": 0,
+            "not_sport_candidate": 0,
             "non_sport_studio": 0,
-            "past_not_live": 0,
+            "past_not_on_air": 0,
         }
 
         for event in merged:
-            if not event.get("is_live", False):
-                skipped["not_direct"] += 1
-                logger.debug(
-                    "[%s] skip reason=not_direct date=%s time=%s title=%r",
-                    event.get("source"),
-                    event.get("date"),
-                    event.get("time"),
-                    event.get("raw_title"),
-                )
+            if not event_is_schedule_candidate(event):
+                skipped["not_sport_candidate"] += 1
                 continue
 
             if not is_user_event(event):
                 skipped["non_sport_studio"] += 1
-                logger.debug(
-                    "[%s] skip reason=non_sport_studio date=%s time=%s title=%r",
-                    event.get("source"),
-                    event.get("date"),
-                    event.get("time"),
-                    event.get("raw_title"),
-                )
                 continue
 
             status = get_event_status(event, now=now)
             if str(event.get("date") or "") < today.isoformat() and status != "live":
-                skipped["past_not_live"] += 1
-                logger.debug(
-                    "[%s] skip reason=past_not_live date=%s time=%s title=%r",
-                    event.get("source"),
-                    event.get("date"),
-                    event.get("time"),
-                    event.get("raw_title"),
-                )
+                skipped["past_not_on_air"] += 1
                 continue
 
             result.append(event)
 
         live_count = sum(
+            1 for event in result if get_event_status(event, now=now) == "live"
+        )
+        direct_live_count = sum(
             1
             for event in result
             if get_event_status(event, now=now) == "live"
+            and event_is_live_broadcast(event)
         )
         upcoming_count = sum(
-            1
-            for event in result
-            if get_event_status(event, now=now) == "upcoming"
+            1 for event in result if get_event_status(event, now=now) == "upcoming"
         )
         finished_count = len(result) - live_count - upcoming_count
 
         logger.info(
-            "schedule read candidates=%d returned=%d live=%d upcoming=%d "
-            "finished=%d skipped=%s now=%s timezone=Asia/Almaty horizon=%s",
+            "schedule read candidates=%d returned=%d on_air=%d direct_live=%d "
+            "upcoming=%d finished=%d skipped=%s now=%s timezone=Asia/Almaty horizon=%s",
             len(merged),
             len(result),
             live_count,
+            direct_live_count,
             upcoming_count,
             finished_count,
             skipped,
@@ -152,9 +135,10 @@ class ScheduleService:
             event
             for event in self.get_events(now=now)
             if get_event_status(event, now=now) == "live"
+            and event_is_live_broadcast(event)
         ]
         logger.info(
-            "live query count=%d now=%s timezone=Asia/Almaty",
+            "direct live query count=%d now=%s timezone=Asia/Almaty",
             len(events),
             now.isoformat(timespec="seconds"),
         )

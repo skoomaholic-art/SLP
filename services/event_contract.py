@@ -39,6 +39,9 @@ def build_sport_event(
     normalized["channel"] = str(normalized.get("channel") or "").strip()
     normalized["date"] = str(normalized.get("date") or "").strip()
     normalized["time"] = str(normalized.get("time") or "").strip()
+    normalized["timezone"] = str(
+        normalized.get("timezone") or "Asia/Almaty"
+    ).strip()
     normalized["sport"] = str(normalized.get("sport") or "").strip()
     normalized["tournament"] = str(normalized.get("tournament") or "").strip()
     normalized["title"] = str(
@@ -51,7 +54,14 @@ def build_sport_event(
         or normalized.get("title")
         or ""
     ).strip()
-    normalized["is_live"] = bool(normalized.get("is_live", False))
+
+    if "is_live_broadcast" in normalized:
+        direct_broadcast = bool(normalized.get("is_live_broadcast"))
+    else:
+        direct_broadcast = bool(normalized.get("is_live", False))
+    normalized["is_live_broadcast"] = direct_broadcast
+    # Backward-compatible alias. Do not use this field for temporal ON-AIR state.
+    normalized["is_live"] = direct_broadcast
 
     normalized.setdefault("estimated_broadcast_end_date", None)
     normalized.setdefault("estimated_broadcast_end", None)
@@ -63,7 +73,12 @@ def build_sport_event(
 
 
 def validate_sport_event(event: dict[str, Any]) -> None:
-    """Проверяет только универсальный контракт, не бизнес-логику источника."""
+    """Проверяет универсальный контракт, не бизнес-логику источника.
+
+    ``timezone`` и ``is_live_broadcast`` добавлены в 2026-09 как канонические
+    поля, но валидатор принимает старые snapshot/test payloads для безопасной
+    миграции. ``build_sport_event`` всегда добавляет новые поля.
+    """
 
     missing = [
         field
@@ -91,10 +106,16 @@ def validate_sport_event(event: dict[str, Any]) -> None:
                 f"SportEvent: поле {field} должно быть строкой"
             )
 
+    if "timezone" in event:
+        if not isinstance(event["timezone"], str):
+            raise TypeError("SportEvent: поле timezone должно быть строкой")
+        if not str(event["timezone"]).strip():
+            raise ValueError("SportEvent: timezone не должен быть пустым")
+
     if not isinstance(event["is_live"], bool):
-        raise TypeError(
-            "SportEvent: поле is_live должно быть bool"
-        )
+        raise TypeError("SportEvent: поле is_live должно быть bool")
+    if "is_live_broadcast" in event and not isinstance(event["is_live_broadcast"], bool):
+        raise TypeError("SportEvent: поле is_live_broadcast должно быть bool")
 
     try:
         datetime.strptime(
@@ -126,11 +147,5 @@ def validate_sport_event(event: dict[str, Any]) -> None:
         )
 
     if end_date is not None:
-        datetime.strptime(
-            str(end_date),
-            "%Y-%m-%d",
-        )
-        datetime.strptime(
-            str(end_time),
-            "%H:%M",
-        )
+        datetime.strptime(str(end_date), "%Y-%m-%d")
+        datetime.strptime(str(end_time), "%H:%M")
