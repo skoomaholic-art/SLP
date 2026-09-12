@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 
+from parsers.championat import get_championat_calendar
 from parsers.qazsport_complete import get_qazsport_schedule_complete
 from parsers.sportplus_cached import (
     get_sportplus_available_dates,
@@ -17,10 +18,16 @@ async def main() -> None:
     now = datetime.now(KZ_TIMEZONE)
     today = now.date()
 
-    qazsport, sportplus, sportplus_dates = await asyncio.gather(
+    qazsport, sportplus, sportplus_dates, championat = await asyncio.gather(
         get_qazsport_schedule_complete(today, include_current_live=True),
         get_sportplus_schedule_cached(today),
         get_sportplus_available_dates(today),
+        get_championat_calendar(
+            today,
+            lookback_days=0,
+            lookahead_days=1,
+            force_refresh=True,
+        ),
     )
 
     if not qazsport:
@@ -28,6 +35,10 @@ async def main() -> None:
     if today not in sportplus_dates:
         raise RuntimeError(
             "Sport+ Qazaqstan: current date is missing from the published TV guide"
+        )
+    if not championat.events:
+        raise RuntimeError(
+            f"Championat match center returned no events; errors={championat.errors[:5]}"
         )
 
     sources = {
@@ -54,6 +65,17 @@ async def main() -> None:
             f"{name}: entries={len(events)} direct_live_now={live_now} "
             f"direct_upcoming={upcoming} now={now.isoformat()} timezone=Asia/Almaty"
         )
+
+    today_rows = sum(
+        1 for event in championat.events
+        if str(event.get("date") or "") == today.isoformat()
+    )
+    print(
+        "Championat: "
+        f"events={len(championat.events)} today={today_rows} "
+        f"dates={len(championat.fetched_dates)} errors={len(championat.errors)} "
+        "source_timezone=Europe/Moscow timezone=Asia/Almaty"
+    )
 
 
 if __name__ == "__main__":
