@@ -3,15 +3,46 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 
+import aiohttp
+from bs4 import BeautifulSoup
+
 from parsers.championat import get_championat_calendar
 from parsers.qazsport_complete import get_qazsport_schedule_complete
 from parsers.sportplus_cached import (
     get_sportplus_available_dates,
     get_sportplus_schedule_cached,
 )
+from parsers.vsetv_live import build_week_url, get_vsetv_live_evidence
 from services.event_contract import validate_sport_event
 from services.live_evidence import event_is_live_broadcast
 from services.time_logic import KZ_TIMEZONE, get_event_status
+
+
+async def _vsetv_signature() -> str:
+    url = build_week_url(771)
+    timeout = aiohttp.ClientTimeout(total=20)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/140.0 Safari/537.36",
+        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.5",
+    }
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(url, allow_redirects=True) as response:
+                html = await response.text()
+                soup = BeautifulSoup(html, "html.parser")
+                title = " ".join((soup.title.get_text(" ", strip=True) if soup.title else "").split())
+                visible = " ".join(soup.stripped_strings)
+                return (
+                    f"status={response.status} final_url={response.url} bytes={len(html.encode('utf-8'))} "
+                    f"title={title!r} prname2={len(soup.select('div.prname2'))} "
+                    f"schedule_containers={len(soup.select('#schedule_container'))} "
+                    f"ico_live={html.casefold().count('ico_live.gif')} "
+                    f"direct_text={visible.casefold().count('прямая трансляция')} "
+                    f"preview={visible[:160]!r}"
+                )
+    except Exception as error:
+        return f"probe_error={type(error).__name__}:{error}"
 
 
 async def main() -> None:
@@ -28,6 +59,10 @@ async def main() -> None:
             lookahead_days=1,
             force_refresh=True,
         ),
+    )
+    vsetv_rows, vsetv_errors = await get_vsetv_live_evidence(
+        today,
+        force_refresh=True,
     )
 
     if not qazsport:
@@ -67,7 +102,8 @@ async def main() -> None:
         )
 
     today_rows = sum(
-        1 for event in championat.events
+        1
+        for event in championat.events
         if str(event.get("date") or "") == today.isoformat()
     )
     print(
@@ -75,6 +111,11 @@ async def main() -> None:
         f"events={len(championat.events)} today={today_rows} "
         f"dates={len(championat.fetched_dates)} errors={len(championat.errors)} "
         "source_timezone=Europe/Moscow timezone=Asia/Almaty"
+    )
+    print(
+        "VseTV: "
+        f"rows={len(vsetv_rows)} errors={len(vsetv_errors)} "
+        f"signature={await _vsetv_signature()}"
     )
 
 
