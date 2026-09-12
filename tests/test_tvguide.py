@@ -73,7 +73,7 @@ class TVGuideTests(unittest.TestCase):
         self.assertEqual(parsed["source"], SOURCE)
         self.assertEqual(parsed["live_evidence_method"], "provider_epg_sport_candidate")
 
-    def test_explicit_provider_live_text_remains_direct(self):
+    def test_explicit_provider_live_text_requires_external_confirmation(self):
         parsed = infer_direct_event(
             self.event(
                 "Футбол. Челси - Астон Вилла LIVE",
@@ -84,8 +84,12 @@ class TVGuideTests(unittest.TestCase):
             target_date=date(2026, 9, 12),
             seen=set(),
         )
-        self.assertTrue(parsed["is_live_broadcast"])
+        self.assertTrue(parsed["provider_claimed_live"])
+        self.assertFalse(parsed["is_live"])
+        self.assertFalse(parsed["is_live_broadcast"])
         self.assertTrue(parsed["is_sport_event"])
+        self.assertEqual(parsed["reconciliation_state"], "unverified")
+        self.assertEqual(parsed["live_evidence_method"], "provider_live_unverified")
 
     def test_historical_year_is_not_promoted(self):
         parsed = infer_direct_event(

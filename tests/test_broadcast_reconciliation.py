@@ -101,14 +101,21 @@ class TvguideReplayTests(unittest.TestCase):
         self.assertFalse(event["is_live_broadcast"])
         self.assertFalse(event["is_sport_event"])
 
-    def test_confirmed_external_result_promotes_direct(self):
+    def test_confirmed_championat_result_promotes_direct(self):
         event = apply_reconciliation_result(
             base_event(),
-            {"state": "confirmed_direct", "difference_minutes": 0, "external_time_kz": "2026-09-13T02:00:00+05:00", "sources": [{"source_name": "ufc.com"}]},
+            {
+                "state": "confirmed_direct",
+                "verification_source": "championat.com",
+                "difference_minutes": 0,
+                "external_time_kz": "2026-09-13T02:00:00+05:00",
+                "sources": [{"source_name": "championat.com"}],
+            },
         )
         self.assertTrue(event["is_live_broadcast"])
         self.assertTrue(event["is_sport_event"])
-        self.assertEqual(event["live_evidence_method"], "external_schedule_consensus")
+        self.assertEqual(event["live_evidence_method"], "championat_schedule_match")
+        self.assertEqual(event["reconciliation_verification_source"], "championat.com")
 
 
 class PublicScheduleTests(unittest.TestCase):
@@ -138,7 +145,7 @@ class PublicScheduleTests(unittest.TestCase):
                 is_live=True,
                 is_live_broadcast=True,
                 live_state="live",
-                live_evidence_method="external_schedule_consensus",
+                live_evidence_method="championat_schedule_match",
             )
             db.upsert_source_snapshot(
                 run_id="test",
