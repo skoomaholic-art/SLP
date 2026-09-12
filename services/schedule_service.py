@@ -38,7 +38,7 @@ def _date_range(start: date, end: date):
 
 
 class ScheduleService:
-    """Application service for refreshes and database-backed bot reads."""
+    """Application service for confirmed LIVE-broadcast schedule reads."""
 
     def __init__(self, orchestrator: ParserOrchestrator | None = None):
         self.orchestrator = orchestrator or ParserOrchestrator()
@@ -73,12 +73,20 @@ class ScheduleService:
         merged = merge_source_schedules(*snapshots)
         result: list[dict] = []
         skipped = {
+            "not_confirmed_direct": 0,
             "not_sport_candidate": 0,
             "non_sport_studio": 0,
             "past_not_on_air": 0,
         }
 
         for event in merged:
+            # SLP is a LIVE-broadcast parser, not a generic EPG browser. Unknown
+            # TV programmes and catch-up/replay rows stay in source snapshots for
+            # diagnostics but never enter the public schedule/export.
+            if not event_is_live_broadcast(event):
+                skipped["not_confirmed_direct"] += 1
+                continue
+
             if not event_is_schedule_candidate(event):
                 skipped["not_sport_candidate"] += 1
                 continue
@@ -97,24 +105,17 @@ class ScheduleService:
         live_count = sum(
             1 for event in result if get_event_status(event, now=now) == "live"
         )
-        direct_live_count = sum(
-            1
-            for event in result
-            if get_event_status(event, now=now) == "live"
-            and event_is_live_broadcast(event)
-        )
         upcoming_count = sum(
             1 for event in result if get_event_status(event, now=now) == "upcoming"
         )
         finished_count = len(result) - live_count - upcoming_count
 
         logger.info(
-            "schedule read candidates=%d returned=%d on_air=%d direct_live=%d "
-            "upcoming=%d finished=%d skipped=%s now=%s timezone=Asia/Almaty horizon=%s",
+            "schedule read candidates=%d returned=%d direct_live=%d upcoming=%d "
+            "finished=%d skipped=%s now=%s timezone=Asia/Almaty horizon=%s",
             len(merged),
             len(result),
             live_count,
-            direct_live_count,
             upcoming_count,
             finished_count,
             skipped,
@@ -135,7 +136,6 @@ class ScheduleService:
             event
             for event in self.get_events(now=now)
             if get_event_status(event, now=now) == "live"
-            and event_is_live_broadcast(event)
         ]
         logger.info(
             "direct live query count=%d now=%s timezone=Asia/Almaty",
