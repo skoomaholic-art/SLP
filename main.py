@@ -5,7 +5,7 @@ import logging
 
 from aiogram import Bot, Dispatcher
 
-from agents.orchestrator import ParserOrchestrator
+from agents.runtime_orchestrator import RuntimeParserOrchestrator
 from bot.handlers import router
 from config import load_settings
 from scheduler.jobs import scheduler_loop
@@ -21,7 +21,7 @@ async def main() -> None:
     configure_logging()
     settings = load_settings()
     database = SLPDatabase()
-    orchestrator = ParserOrchestrator(database=database)
+    orchestrator = RuntimeParserOrchestrator(database=database)
     schedule_service = ScheduleService(orchestrator)
 
     bot = Bot(token=settings.bot_token)
@@ -34,9 +34,6 @@ async def main() -> None:
         settings.refresh_interval_seconds,
     )
 
-    # Fill the database before Telegram starts accepting /live requests.
-    # This removes the cold-start race where polling could answer from an
-    # empty SQLite database while the first source refresh was still running.
     try:
         initial = await schedule_service.refresh()
         logger.info(
@@ -47,7 +44,6 @@ async def main() -> None:
             len(initial.source_warnings),
         )
     except Exception:
-        # The bot may still be useful with a last-good SQLite snapshot.
         logger.exception("startup refresh failed; starting with stored data")
 
     scheduler_task = asyncio.create_task(

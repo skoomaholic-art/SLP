@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 
-from agents.orchestrator import ParserOrchestrator
+from agents.runtime_orchestrator import RuntimeParserOrchestrator
+from services.live_evidence import event_is_live_broadcast
 from services.logging_config import configure_logging
 from services.schedule_service import ScheduleService
 from services.time_logic import KZ_TIMEZONE, get_event_status, get_scheduled_datetimes
@@ -15,7 +16,7 @@ def _title(event: dict) -> str:
 
 
 def _print_table(events: list[dict], *, now: datetime) -> None:
-    headers = ("CHANNEL", "DATE", "START", "END", "STATUS", "LIVE", "EVENT", "SOURCE")
+    headers = ("CHANNEL", "DATE", "START", "END", "STATUS", "DIRECT", "EVENT", "SOURCE")
     rows = []
     for event in events:
         start, end = get_scheduled_datetimes(event)
@@ -26,7 +27,7 @@ def _print_table(events: list[dict], *, now: datetime) -> None:
                 start.strftime("%H:%M"),
                 end.strftime("%Y-%m-%d %H:%M"),
                 get_event_status(event, now=now),
-                "yes" if event.get("is_live", False) else "no",
+                "yes" if event_is_live_broadcast(event) else "no",
                 _title(event),
                 str(event.get("source") or ""),
             )
@@ -34,8 +35,7 @@ def _print_table(events: list[dict], *, now: datetime) -> None:
 
     widths = [
         max(len(headers[index]), *(len(row[index]) for row in rows))
-        if rows
-        else len(headers[index])
+        if rows else len(headers[index])
         for index in range(len(headers))
     ]
     print(" | ".join(headers[index].ljust(widths[index]) for index in range(len(headers))))
@@ -48,7 +48,7 @@ async def main() -> None:
     configure_logging()
     now = datetime.now(KZ_TIMEZONE)
     database = SLPDatabase()
-    service = ScheduleService(ParserOrchestrator(database=database))
+    service = ScheduleService(RuntimeParserOrchestrator(database=database))
     refresh = await service.refresh()
     events = service.get_events(now=now)
 
@@ -58,18 +58,18 @@ async def main() -> None:
     _print_table(events, now=now)
 
     live = service.get_live_events(now=now)
-    print("\n=== LIVE NOW ===")
+    print("\n=== CONFIRMED DIRECT LIVE NOW ===")
     if live:
         _print_table(live, now=now)
     else:
-        print("No LIVE events.")
+        print("No confirmed direct LIVE events.")
 
     upcoming = service.get_upcoming_events(now=now, limit=10)
-    print("\n=== NEXT LIVE EVENTS ===")
+    print("\n=== NEXT SCHEDULE EVENTS ===")
     if upcoming:
         _print_table(upcoming, now=now)
     else:
-        print("No upcoming LIVE events.")
+        print("No upcoming events.")
 
     if refresh.source_errors:
         print("\n=== SOURCE ERRORS ===")
