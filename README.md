@@ -106,6 +106,7 @@ SLP_DB_PATH=/path/to/slp.db
 SLP_LOG_LEVEL=INFO
 ADMIN_IDS=123456789,987654321
 OPENSERP_BIN=/path/to/openserp
+OPENSERP_BASE_URL=http://openserp-api.railway.internal:7000
 ```
 
 Never commit `.env`, Telegram tokens, cookies, session files, or API credentials.

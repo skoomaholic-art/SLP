@@ -26,6 +26,7 @@ MSK_TIMEZONE = ZoneInfo("Europe/Moscow")
 
 OPENSERP_HOST = "127.0.0.1"
 OPENSERP_PORT = 7000
+OPENSERP_BASE_URL = (os.getenv("OPENSERP_BASE_URL") or "").strip().rstrip("/")
 
 OPENSERP_BIN = (
     os.getenv("OPENSERP_BIN")
@@ -364,7 +365,15 @@ def openserp_is_running():
         return False
 
 
+def _openserp_endpoint(path: str) -> str:
+    if OPENSERP_BASE_URL:
+        return f"{OPENSERP_BASE_URL}{path}"
+    return f"http://{OPENSERP_HOST}:{OPENSERP_PORT}{path}"
+
+
 def ensure_openserp():
+    if OPENSERP_BASE_URL:
+        return
     if openserp_is_running():
         return
 
@@ -444,12 +453,9 @@ def openserp_search(
     }
 
     url = (
-        f"http://{OPENSERP_HOST}:"
-        f"{OPENSERP_PORT}"
-        "/mega/search?"
-        + urllib.parse.urlencode(
-            params
-        )
+        _openserp_endpoint("/mega/search")
+        + "?"
+        + urllib.parse.urlencode(params)
     )
 
     request = urllib.request.Request(
@@ -521,10 +527,7 @@ def _post_json(url, payload, timeout):
 def openserp_extract_url(url):
     ensure_openserp()
 
-    endpoint = (
-        f"http://{OPENSERP_HOST}:"
-        f"{OPENSERP_PORT}/extract"
-    )
+    endpoint = _openserp_endpoint("/extract")
 
     data = _post_json(
         endpoint,
@@ -566,10 +569,7 @@ def openserp_extract_batch(urls):
     if not unique_urls:
         return []
 
-    endpoint = (
-        f"http://{OPENSERP_HOST}:"
-        f"{OPENSERP_PORT}/extract/batch"
-    )
+    endpoint = _openserp_endpoint("/extract/batch")
 
     payload = {
         "urls": unique_urls,
@@ -2067,6 +2067,7 @@ def verify_event(event):
 
     all_results = []
     search_meta = []
+    search_errors = []
 
     # Основной быстрый поиск: Bing + DuckDuckGo.
     try:
@@ -2083,6 +2084,7 @@ def verify_event(event):
             }
         )
     except Exception as error:
+        search_errors.append(f"primary:{type(error).__name__}:{error}")
         print(
             "OpenSERP search error:",
             repr(error),
@@ -2119,6 +2121,7 @@ def verify_event(event):
                 }
             )
         except Exception as error:
+            search_errors.append(f"fallback:{type(error).__name__}:{error}")
             print(
                 "OpenSERP fallback error:",
                 repr(error),
@@ -2196,6 +2199,7 @@ def verify_event(event):
         "search_results_count": len(all_results),
         "matching_results_count": matching_count,
         "search_meta": search_meta,
+        "search_errors": search_errors,
         "extraction_selected_count": len(
             selected_results
         ),
@@ -2216,17 +2220,19 @@ def verify_event(event):
         ] = extraction_error
 
     if not candidates:
+        unavailable = bool(search_errors and not all_results)
         return {
             **base_result,
             "found": False,
+            "verification_unavailable": unavailable,
             "message": (
-                "Событие найдено, "
-                "но надёжно определить "
-                "время не удалось."
-                if matching_count
-                else
-                "Подходящих результатов "
-                "по событию не найдено."
+                "Сервис внешней проверки сейчас недоступен."
+                if unavailable
+                else (
+                    "Событие найдено, но надёжно определить время не удалось."
+                    if matching_count
+                    else "Подходящих результатов по событию не найдено."
+                )
             ),
             "source_count": 0,
             "total_weight": 0,
