@@ -8,7 +8,9 @@ def build_verification_text(event: dict, verification: dict) -> str:
     found = bool(verification.get("found", False))
     difference = verification.get("difference_minutes")
 
-    if verification.get("time_rejected", False):
+    if verification.get("verification_unavailable", False):
+        verdict = "🔴 Внешняя проверка сейчас недоступна"
+    elif verification.get("time_rejected", False):
         verdict = "⚠️ Внешнее время отброшено как ненадёжное"
     elif not found:
         verdict = "⚪ Надёжного внешнего подтверждения времени нет"
