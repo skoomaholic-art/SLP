@@ -23,6 +23,25 @@ python main.py
 
 Do not create a second production entrypoint, a parallel bot, a replacement parser stack, or monkey-patch the running Telegram application.
 
+## Git workflow — one writer, one P0
+
+`main` is a release/integration branch, not an agent scratchpad.
+
+For normal coding-agent work:
+
+1. read GitHub issue `#13` and the active execution plan;
+2. record the current `main` SHA before editing;
+3. create/use one task branch named like `agent/p0-production-e2e` or `fix/<single-problem>`;
+4. keep all changes for that task on that branch;
+5. before opening/updating the PR, check whether `main` moved;
+6. if `main` moved, integrate the new head and rerun the full applicable verification ladder;
+7. merge only after CI is green and the acceptance evidence is recorded;
+8. do not let two coding agents implement the same P0 in separate branches at the same time.
+
+Direct writes to `main` are reserved for an explicitly user-approved emergency change or small repository-governance/bootstrap changes. An agent must not start a second implementation merely because another branch or session is still running.
+
+Railway production is a separate release boundary. A green commit on `main` is not proof that Railway runs that commit. Always compare deployed revision with GitHub `main` before diagnosing production behavior.
+
 ## Production wiring
 
 `main.py` creates `RuntimeParserOrchestrator`, which currently wires these loaders:
