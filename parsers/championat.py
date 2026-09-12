@@ -5,7 +5,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from urllib.parse import urljoin, urlparse
 from zoneinfo import ZoneInfo
 
@@ -18,41 +18,30 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://www.championat.com/stat/"
 MSK_TIMEZONE = ZoneInfo("Europe/Moscow")
-CACHE_TTL_SECONDS = 600.0
+CACHE_TTL_SECONDS = 300.0
 DEFAULT_LOOKBACK_DAYS = 2
 DEFAULT_LOOKAHEAD_DAYS = 7
 REQUEST_TIMEOUT_SECONDS = 20
-REQUEST_CONCURRENCY = 4
 
 _DATE_TIME_RE = re.compile(r"(?<!\d)(\d{1,2})[.]([01]?\d)[.](20\d{2})\s+(\d{1,2}):(\d{2})(?!\d)")
+_SHORT_DATE_TIME_RE = re.compile(r"(?<!\d)(\d{1,2})[.]([01]?\d)\s+(\d{1,2}):(\d{2})(?!\d)")
 _TIME_RE = re.compile(r"(?<!\d)([0-2]?\d):(\d{2})(?!\d)")
 _MATCH_HREF_RE = re.compile(r"/(?:football|hockey|tennis|basketball|volleyball|other|mma|auto|biathlon|ski|figureskating|cybersport|chess)/.+?/match/\d+/?", re.I)
 _STATUS_MARKERS = (
     "Не начался",
+    "Не началось",
     "Окончен",
+    "Окончено",
     "Идёт",
     "Идет",
     "Перерыв",
     "Отложен",
+    "Отложено",
     "Перенесен",
     "Перенесён",
     "Отменен",
     "Отменён",
 )
-_RU_MONTHS = {
-    1: "января",
-    2: "февраля",
-    3: "марта",
-    4: "апреля",
-    5: "мая",
-    6: "июня",
-    7: "июля",
-    8: "августа",
-    9: "сентября",
-    10: "октября",
-    11: "ноября",
-    12: "декабря",
-}
 _SPORT_BY_PATH = {
     "football": "Футбол",
     "hockey": "Хоккей",
@@ -83,18 +72,12 @@ _cache_expires_at = 0.0
 _cache_result = ChampionatCalendar(events=[], errors=[], fetched_dates=[])
 
 
-def build_match_center_url(target_date: date) -> str:
-    return f"{BASE_URL}?date={target_date.isoformat()}"
-
-
-def _page_mentions_date(html: str, target_date: date) -> bool:
-    markers = (
-        target_date.isoformat(),
-        target_date.strftime("%d.%m.%Y"),
-        f"{target_date.day} {_RU_MONTHS[target_date.month]} {target_date.year}",
-    )
-    lowered = html.casefold()
-    return any(marker.casefold() in lowered for marker in markers)
+def build_match_center_url(target_date: date | None = None) -> str:
+    # Championat renders the current Match Center server-side at /stat/.
+    # Date tabs are client-side hash navigation, so query-string dates must not
+    # be used for backend fetching. Explicit DD.MM rows on the page are parsed
+    # as next-day/future entries when Championat publishes them.
+    return BASE_URL
 
 
 def _sport_from_url(url: str) -> str:
@@ -117,12 +100,12 @@ def _clean_text(value: str) -> str:
 def _container_text(anchor) -> str:
     best = _clean_text(anchor.get_text(" ", strip=True))
     node = anchor
-    for _ in range(8):
+    for _ in range(7):
         node = getattr(node, "parent", None)
         if node is None:
             break
         text = _clean_text(node.get_text(" ", strip=True))
-        if not text or len(text) > 1800:
+        if not text or len(text) > 1200:
             continue
         if _TIME_RE.search(text):
             best = text
@@ -131,39 +114,44 @@ def _container_text(anchor) -> str:
     return best
 
 
-def _extract_start(text: str, target_date: date, *, page_date_confirmed: bool) -> datetime | None:
+def _infer_year(anchor_date: date, month: int) -> int:
+    # Match-center may show next-day rows without year. Around New Year a small
+    # month wraps into the following year; a large month around January belongs
+    # to the previous year.
+    if anchor_date.month == 12 and month == 1:
+        return anchor_date.year + 1
+    if anchor_date.month == 1 and month == 12:
+        return anchor_date.year - 1
+    return anchor_date.year
+
+
+def _extract_start(text: str, anchor_date: date) -> datetime | None:
     full = _DATE_TIME_RE.search(text)
     if full:
         day, month, year, hour, minute = map(int, full.groups())
-        try:
-            source = datetime(year, month, day, hour, minute, tzinfo=MSK_TIMEZONE)
-        except ValueError:
-            return None
-        return source.astimezone(KZ_TIMEZONE)
+    else:
+        short = _SHORT_DATE_TIME_RE.search(text)
+        if short:
+            day, month, hour, minute = map(int, short.groups())
+            year = _infer_year(anchor_date, month)
+        else:
+            clock = _TIME_RE.search(text)
+            if not clock:
+                return None
+            hour, minute = map(int, clock.groups())
+            day, month, year = anchor_date.day, anchor_date.month, anchor_date.year
 
-    if not page_date_confirmed:
-        return None
-
-    clock = _TIME_RE.search(text)
-    if not clock:
-        return None
-    hour, minute = map(int, clock.groups())
     if hour > 23 or minute > 59:
         return None
-    source = datetime(
-        target_date.year,
-        target_date.month,
-        target_date.day,
-        hour,
-        minute,
-        tzinfo=MSK_TIMEZONE,
-    )
+    try:
+        source = datetime(year, month, day, hour, minute, tzinfo=MSK_TIMEZONE)
+    except ValueError:
+        return None
     return source.astimezone(KZ_TIMEZONE)
 
 
-def parse_match_center_html(html: str, target_date: date) -> list[dict]:
+def parse_match_center_html(html: str, anchor_date: date) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
-    page_date_confirmed = _page_mentions_date(html, target_date)
     by_url: dict[str, dict] = {}
 
     for anchor in soup.find_all("a", href=True):
@@ -172,11 +160,7 @@ def parse_match_center_html(html: str, target_date: date) -> list[dict]:
             continue
         url = urljoin(BASE_URL, href.split("#", 1)[0])
         raw_text = _container_text(anchor)
-        start_kz = _extract_start(
-            raw_text,
-            target_date,
-            page_date_confirmed=page_date_confirmed,
-        )
+        start_kz = _extract_start(raw_text, anchor_date)
         if start_kz is None:
             continue
 
@@ -205,62 +189,44 @@ def parse_match_center_html(html: str, target_date: date) -> list[dict]:
     return events
 
 
-async def _fetch_day(session: aiohttp.ClientSession, target_date: date, semaphore: asyncio.Semaphore) -> tuple[date, list[dict], str | None]:
-    url = build_match_center_url(target_date)
-    try:
-        async with semaphore:
-            async with session.get(url) as response:
-                if response.status != 200:
-                    return target_date, [], f"{target_date.isoformat()}:HTTP_{response.status}"
-                html = await response.text()
-        events = parse_match_center_html(html, target_date)
-        if not events and not _page_mentions_date(html, target_date):
-            return target_date, [], f"{target_date.isoformat()}:date_not_present_in_response"
-        return target_date, events, None
-    except Exception as error:
-        return target_date, [], f"{target_date.isoformat()}:{type(error).__name__}:{error}"
-
-
-async def fetch_championat_calendar(
-    dates: list[date],
-) -> ChampionatCalendar:
+async def fetch_championat_calendar(anchor_date: date) -> ChampionatCalendar:
     timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; SLP/2.0; +https://github.com/skoomaholic-art/SLP)",
         "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.5",
     }
-    semaphore = asyncio.Semaphore(REQUEST_CONCURRENCY)
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-        rows = await asyncio.gather(*(
-            _fetch_day(session, target_date, semaphore)
-            for target_date in dates
-        ))
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(build_match_center_url(anchor_date)) as response:
+                if response.status != 200:
+                    return ChampionatCalendar(
+                        events=[],
+                        errors=[f"match_center:HTTP_{response.status}"],
+                        fetched_dates=[],
+                    )
+                html = await response.text()
+    except Exception as error:
+        return ChampionatCalendar(
+            events=[],
+            errors=[f"match_center:{type(error).__name__}:{error}"],
+            fetched_dates=[],
+        )
 
-    events: list[dict] = []
-    errors: list[str] = []
-    fetched_dates: list[str] = []
-    seen_urls: set[str] = set()
-    for target_date, day_events, error in rows:
-        if error:
-            errors.append(error)
-            continue
-        fetched_dates.append(target_date.isoformat())
-        for event in day_events:
-            url = str(event.get("source_url") or "")
-            if url and url in seen_urls:
-                continue
-            if url:
-                seen_urls.add(url)
-            events.append(event)
+    events = parse_match_center_html(html, anchor_date)
+    if not events:
+        return ChampionatCalendar(
+            events=[],
+            errors=["match_center:no_match_events_parsed"],
+            fetched_dates=[],
+        )
 
-    events.sort(key=lambda item: (str(item.get("date") or ""), str(item.get("time") or ""), str(item.get("source_url") or "")))
+    fetched_dates = sorted({str(event.get("date") or "") for event in events if event.get("date")})
     logger.info(
-        "championat calendar fetched dates=%d events=%d errors=%d",
-        len(fetched_dates),
+        "championat calendar fetched events=%d dates=%s timezone=Asia/Almaty",
         len(events),
-        len(errors),
+        fetched_dates,
     )
-    return ChampionatCalendar(events=events, errors=errors, fetched_dates=fetched_dates)
+    return ChampionatCalendar(events=events, errors=[], fetched_dates=fetched_dates)
 
 
 async def get_championat_calendar(
@@ -270,6 +236,11 @@ async def get_championat_calendar(
     lookahead_days: int = DEFAULT_LOOKAHEAD_DAYS,
     force_refresh: bool = False,
 ) -> ChampionatCalendar:
+    # lookback/lookahead remain part of the API because TVGuide owns a wider
+    # horizon. Championat's server-rendered Match Center itself decides which
+    # adjacent dates are already published. Unknown future rows stay fail-closed
+    # and are retried as they approach airtime.
+    del lookback_days, lookahead_days
     global _cache_anchor, _cache_expires_at, _cache_result
     anchor = anchor or datetime.now(KZ_TIMEZONE).date()
     async with _cache_lock:
@@ -278,11 +249,7 @@ async def get_championat_calendar(
             or _cache_anchor != anchor
             or time.monotonic() >= _cache_expires_at
         ):
-            dates = [
-                anchor + timedelta(days=offset)
-                for offset in range(-lookback_days, lookahead_days + 1)
-            ]
-            _cache_result = await fetch_championat_calendar(dates)
+            _cache_result = await fetch_championat_calendar(anchor)
             _cache_anchor = anchor
             _cache_expires_at = time.monotonic() + CACHE_TTL_SECONDS
         return ChampionatCalendar(
