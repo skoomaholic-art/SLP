@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from datetime import date, datetime
 
@@ -14,6 +15,7 @@ from parsers.sportplus import (
     _extract_headers,
     parse_sportplus_html,
 )
+from services.broadcast_evidence import add_broadcast_evidence
 
 
 logger = logging.getLogger(__name__)
@@ -21,6 +23,7 @@ _CACHE_TTL_SECONDS = 45.0
 _cache_html: str | None = None
 _cache_monotonic = 0.0
 _cache_lock: asyncio.Lock | None = None
+_TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
 def _get_lock() -> asyncio.Lock:
@@ -85,12 +88,67 @@ async def _fetch_tvguide_html() -> str:
         raise last_error
 
 
+def extract_sportplus_on_air_times(html: str) -> set[str]:
+    """Extract the official site's current-slot marker without calling it DIRECT.
+
+    Sport+ uses ``div.blink a[title=LIVE]`` for the programme that is currently
+    on air. The marker can appear on the anthem, so it must remain temporal
+    evidence only and must never by itself create a sports LIVE event.
+    """
+    soup = BeautifulSoup(str(html or ""), "html.parser")
+    result: set[str] = set()
+    for blink in soup.select("div.blink"):
+        link = blink.find("a")
+        if link is None:
+            continue
+        marker = " ".join(
+            str(value or "")
+            for value in (link.get("title"), link.get_text(" ", strip=True))
+        ).casefold()
+        if "live" not in marker:
+            continue
+        row = blink.find_parent("li")
+        if row is None:
+            continue
+        for span in row.find_all("span"):
+            value = " ".join(span.stripped_strings)
+            if _TIME_RE.fullmatch(value):
+                result.add(value)
+                break
+    return result
+
+
+def _annotate_sportplus_evidence(events: list[dict], html: str) -> list[dict]:
+    on_air_times = extract_sportplus_on_air_times(html)
+    result: list[dict] = []
+    for event in events:
+        item = add_broadcast_evidence(
+            event,
+            method="official_live_text",
+            source="sportplustv.kz",
+            value="Прямая трансляция",
+            confidence="high",
+        )
+        if str(item.get("time") or "") in on_air_times:
+            item = add_broadcast_evidence(
+                item,
+                method="official_on_air_marker",
+                source="sportplustv.kz",
+                value="div.blink a[title=LIVE]",
+                confidence="high",
+                on_air_now=True,
+            )
+        result.append(item)
+    return result
+
+
 async def get_sportplus_schedule_cached(
     target_date: date | datetime | str | None = None,
 ) -> list[dict]:
     """Fetch the multi-day guide once per refresh burst and parse one date."""
     html = await _fetch_tvguide_html()
-    return parse_sportplus_html(html, target_date=target_date)
+    events = parse_sportplus_html(html, target_date=target_date)
+    return _annotate_sportplus_evidence(events, html)
 
 
 async def get_sportplus_available_dates(
