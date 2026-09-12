@@ -1,9 +1,136 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 from services.schedule_merge import group_simulcasts, unique_channels
 from services.time_logic import KZ_TIMEZONE, MONTHS, get_event_status, get_time_window_text
+
+
+# Presentation-only normalization. Raw/provider values stay untouched for matching,
+# reconciliation, exports and diagnostics; only Telegram-facing text is normalized.
+_PHRASE_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    ("УЕФА Чемпиондар Лигасы", "Лига чемпионов УЕФА"),
+    ("Чемпиондар Лигасы", "Лига чемпионов"),
+    ("Қазақстан чемпионаты", "Чемпионат Казахстана"),
+    ("Қазақстан Премьер-Лигасы", "Премьер-лига Казахстана"),
+    ("Азия чемпионаты", "Чемпионат Азии"),
+    ("Жалпы кезең", "Общий этап"),
+    ("Тікелей эфир", "Прямая трансляция"),
+    ("Grand Slam", "Большой шлем"),
+    ("Формула 1", "Формула-1"),
+)
+
+_NAME_ALIASES: tuple[tuple[str, str], ...] = (
+    ("шахтер", "Шахтёр"),
+    ("шахтёр", "Шахтёр"),
+    ("окжетпес", "Окжетпес"),
+    ("кайрат", "Кайрат"),
+    ("тобыл", "Тобол"),
+    ("тобол", "Тобол"),
+    ("ертис", "Иртыш"),
+    ("иртыш", "Иртыш"),
+    ("актобе", "Актобе"),
+    ("жетису", "Жетысу"),
+    ("жетысу", "Жетысу"),
+    ("елимай", "Елимай"),
+    ("кызылжар", "Кызылжар"),
+    ("улытау", "Улытау"),
+    ("туран", "Туран"),
+    ("хан-тенгири", "Хан-Тенгри"),
+    ("хан-тенгри", "Хан-Тенгри"),
+)
+
+_KAZAKH_TO_RUSSIAN = str.maketrans(
+    {
+        "Ә": "А",
+        "ә": "а",
+        "Ғ": "Г",
+        "ғ": "г",
+        "Қ": "К",
+        "қ": "к",
+        "Ң": "Н",
+        "ң": "н",
+        "Ө": "О",
+        "ө": "о",
+        "Ұ": "У",
+        "ұ": "у",
+        "Ү": "У",
+        "ү": "у",
+        "Һ": "Х",
+        "һ": "х",
+        "І": "И",
+        "і": "и",
+    }
+)
+
+_KEEP_UPPER = {
+    "ATP",
+    "ERC",
+    "F1",
+    "F2",
+    "F3",
+    "FIFA",
+    "HD",
+    "KHL",
+    "LMB",
+    "MMA",
+    "PFL",
+    "UFC",
+    "UEFA",
+    "WRC",
+    "WTA",
+    "КХЛ",
+    "КПЛ",
+    "ЛЧ",
+    "НХЛ",
+    "РПЛ",
+    "УЕФА",
+    "ФИФА",
+}
+_TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁё]+(?:-[A-Za-zА-Яа-яЁё]+)*")
+
+
+def _replace_ci(value: str, source: str, replacement: str) -> str:
+    return re.sub(re.escape(source), replacement, value, flags=re.IGNORECASE)
+
+
+def _normal_case_token(match: re.Match[str]) -> str:
+    token = match.group(0)
+    if token.upper() in _KEEP_UPPER:
+        return token.upper()
+    letters = [char for char in token if char.isalpha()]
+    if len(letters) >= 2 and all(char.isupper() for char in letters):
+        return token.capitalize()
+    return token
+
+
+def normalize_display_text(value: str) -> str:
+    """Return a compact Russian-facing label without changing source data."""
+    text = " ".join(str(value or "").replace("\xa0", " ").split())
+    if not text:
+        return ""
+
+    for source, replacement in _PHRASE_REPLACEMENTS:
+        text = _replace_ci(text, source, replacement)
+
+    # Any still-untranslated Kazakh-specific letters are transliterated so the
+    # user-facing label uses a consistent Russian Cyrillic alphabet.
+    text = text.translate(_KAZAKH_TO_RUSSIAN)
+
+    for source, replacement in _NAME_ALIASES:
+        text = re.sub(
+            rf"(?<![\w-]){re.escape(source)}(?![\w-])",
+            replacement,
+            text,
+            flags=re.IGNORECASE,
+        )
+
+    text = _TOKEN_RE.sub(_normal_case_token, text)
+    text = re.sub(r"\s+[–—-]\s+", " — ", text)
+    text = re.sub(r"(?<=\w)[–—](?=\w)", " — ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
 def event_title(event: dict) -> str:
@@ -11,10 +138,10 @@ def event_title(event: dict) -> str:
 
 
 def display_title(event: dict) -> str:
-    title = " ".join(event_title(event).split()).replace("Grand slam", "Grand Slam")
-    sport = " ".join(str(event.get("sport") or "").split())
-    tournament = " ".join(str(event.get("tournament") or "").split())
-    if any(separator in title for separator in (" – ", " - ", " — ")):
+    title = normalize_display_text(event_title(event))
+    sport = normalize_display_text(str(event.get("sport") or ""))
+    tournament = normalize_display_text(str(event.get("tournament") or ""))
+    if any(separator in title for separator in (" — ", " – ", " - ")):
         return title
     if tournament and title.casefold().startswith(tournament.casefold()):
         return title
