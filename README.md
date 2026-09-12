@@ -1,87 +1,96 @@
-# SLP — Skoomaholic Live Parser v2
+# SLP — Skoomaholic's Sports Live Parser
 
-Production Telegram bot for collecting and monitoring sports LIVE schedules.
+Production-oriented Telegram bot and TV-schedule aggregator for sports direct broadcasts in Kazakhstan.
 
-SLP reads TV schedules, normalizes events to UTC+5 / `Asia/Almaty`, protects the feed from parser collapses, stores accepted snapshots in SQLite and serves Telegram from the database instead of scraping sites on every click.
+SLP reads official channel schedules, normalizes all broadcast time to `Asia/Almaty` (UTC+5), validates source output, keeps last-good snapshots in SQLite, computes `upcoming / live / finished` centrally, and serves Telegram from accepted stored data.
 
-## Sources
+## Supported channels
 
-- Qazsport — `https://qazsporttv.kz/ru/program`
-- Sport+ Qazaqstan — `https://www.sportplustv.kz/ru/tvguide`
+| Channel | Source | Mechanism |
+| --- | --- | --- |
+| Qazsport | `https://qazsporttv.kz/ru/program` | official static HTML, date-specific pages |
+| Sport+ Qazaqstan | `https://sportplustv.kz/ru/tvguide` | official static multi-day HTML |
 
-Each source is isolated. A failure in one parser does not stop the other source or the Telegram bot.
+Playwright is intentionally **not** a runtime dependency. Both current sources expose the required schedule in server-rendered HTML, so `aiohttp + BeautifulSoup` is simpler and more reliable. If a source later becomes JS-only, add Playwright only to that provider.
 
-## Runtime architecture
+## Data flow
 
 ```text
-Qazsport / Sport+
-       ↓
-source parsers
-       ↓
+official TV source
+      ↓
+source parser
+      ↓
 SportEvent contract
-       ↓
+      ↓
 ParserOrchestrator
-  ├─ source health checks
+  ├─ per-source isolation
+  ├─ retry for required current scopes
   ├─ deterministic QA
+  ├─ source anomaly detection
   └─ last-good fallback
-       ↓
-SQLite snapshots/history/incidents
-       ↓
+      ↓
+SQLite snapshots / run history / incidents
+      ↓
 ScheduleService
-       ↓
-Telegram bot + notifications + XLSX
+  ├─ direct-broadcast filtering
+  ├─ Asia/Almaty status calculation
+  └─ multi-day schedule window
+      ↓
+Telegram / notifications / XLSX / diagnostics
 ```
 
-There is one production entrypoint: `main.py`.
+Same sporting event on two TV channels is preserved as two broadcasts. Deduplication removes only true duplicates on the same channel/date/time/title.
 
-## Main rules
+## LIVE semantics
 
-- Project timezone: `Asia/Almaty` / UTC+5.
-- TV broadcast time is authoritative for the TV schedule.
-- Internet verification never silently rewrites TV time.
-- Events after midnight are assigned to the correct calendar day.
-- Same match on different TV channels is preserved; only true duplicate broadcasts are removed.
-- LIVE/SOON/OVER is calculated from the accepted broadcast schedule.
-- A broken parser cannot replace a healthy stored schedule with an empty snapshot.
-- Telegram reads accepted SQLite snapshots; source scraping runs in the background.
-
-## Telegram
-
-Main menu:
-
-- `📅 Расписание`
-- `🔴 Сейчас LIVE`
-- `🌐 Проверить событие`
-- `📊 Система`
-- `🔔 Уведомления`
-- `📥 XLSX`
-
-Commands:
+Broadcast state is calculated centrally from timezone-aware datetimes:
 
 ```text
-/start    main menu
-/today    accepted schedule
-/live     broadcasts live now
-/check    independent web verification for one event
-/health   parser/database health
-/status   alias for /health
-/refresh  force parser refresh (admin when ADMIN_IDS is set)
-/errors   unresolved parser/QA incidents (admin when ADMIN_IDS is set)
+upcoming: now < start
+live:     start <= now < end
+finished: now >= end
 ```
 
-`📥 XLSX` generates a real workbook in memory and sends it directly to Telegram. No placeholder and no temporary export file is written to disk.
+When a source does not publish an explicit end time, SLP uses a conservative sport-specific fallback. When the next TV programme is known, that programme start is used as the broadcast end.
 
-## Background refresh
+The application timezone is always `Asia/Almaty`. Naive `now` values supplied in tests are interpreted as `Asia/Almaty`; aware values are converted to it.
 
-Default interval is 240 seconds (4 minutes). Change it with:
+## Schedule depth
+
+The runtime no longer reads only today:
+
+- yesterday is retained only so an overnight LIVE broadcast can stay visible after midnight;
+- Qazsport is refreshed through the current published TV week and at least the nearest Monday;
+- Sport+ is scanned up to 14 days ahead because its official TV guide publishes a wider window;
+- Telegram reads stored snapshots through 14 days ahead.
+
+If a future source page is not published yet, that optional date does not degrade the current feed. Current/yesterday source failures still use last-good data when available.
+
+## Cold start
+
+Before Telegram polling starts, SLP performs one source refresh. This prevents `/live` from answering from a brand-new empty SQLite database while the first background refresh is still running.
+
+After that, the scheduler refreshes every four minutes by default.
+
+## Installation
+
+CI uses Python 3.12.
 
 ```bash
-SLP_REFRESH_INTERVAL_SECONDS=240
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 ```
 
-The scheduler refreshes sources, runs QA/health checks, persists accepted snapshots, compares the new schedule with the previous snapshot and sends change notifications to subscribers.
+Copy the environment template and set the Telegram token outside Git:
 
-## Configuration
+```bash
+cp .env.example .env
+```
+
+The project does not load `.env` automatically; export variables through your shell, container, service manager, Codespaces secrets, or another secret manager.
+
+## Environment variables
 
 Required:
 
@@ -94,39 +103,60 @@ Optional:
 ```bash
 SLP_REFRESH_INTERVAL_SECONDS=240
 SLP_DB_PATH=/path/to/slp.db
+SLP_LOG_LEVEL=INFO
 ADMIN_IDS=123456789,987654321
 OPENSERP_BIN=/path/to/openserp
 ```
 
-Secrets must stay in environment variables or Codespaces secrets. Do not commit `.env` or tokens.
+Never commit `.env`, Telegram tokens, cookies, session files, or API credentials.
 
-`ADMIN_IDS` is optional. If it is configured, `/refresh` and `/errors` are restricted to those Telegram IDs.
-
-OpenSERP is used only for explicit independent internet checks. Parser/database operation does not depend on OpenSERP being available.
-
-## Install
-
-Python 3.12 is used in CI.
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-## Run
+## Run the bot
 
 ```bash
 python main.py
 ```
 
-Expected startup log:
+Useful commands:
 
 ```text
-SLP v2 started
-SQLite: .../slp.db
-Background refresh: every 240 sec
+/start    main menu
+/today    accepted current + future direct-broadcast schedule
+/live     direct broadcasts whose current state is LIVE
+/check    independent web verification for one event
+/health   parser/database health
+/status   alias for /health
+/refresh  force source refresh (admin when ADMIN_IDS is configured)
+/errors   unresolved source/QA incidents (admin)
 ```
+
+One provider failure does not stop the other provider. User-facing Telegram messages do not contain Python tracebacks; full exceptions remain in application logs.
+
+## Diagnostics
+
+Run a real end-to-end source refresh without a Telegram token:
+
+```bash
+PYTHONPATH=. python scripts/diagnose_live.py
+```
+
+It prints:
+
+```text
+CHANNEL | DATE | START | END | STATUS | LIVE | EVENT | SOURCE
+...
+=== LIVE NOW ===
+...
+=== NEXT LIVE EVENTS ===
+...
+```
+
+This is the preferred smoke command when investigating “the site shows LIVE but the bot says there is nothing live”.
+
+## Logging
+
+Set `SLP_LOG_LEVEL=DEBUG` for skip reasons and detailed source diagnostics.
+
+Typical INFO records include source/date, fetched and accepted counts, current status counts, `now`, timezone, run ID and schedule horizon. Source exceptions use traceback logging. Secrets and `.env` contents are never logged.
 
 ## Tests
 
@@ -135,21 +165,33 @@ python -m compileall -q .
 python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
-GitHub Actions runs compile + full regression on pull requests and pushes to `main`.
+GitHub Actions runs compile/import/full regression on pushes and pull requests. A separate scheduled smoke workflow checks the real official source pages.
 
 ## Persistence
 
 SQLite stores:
 
-- accepted source event snapshots;
-- parser run history;
+- active accepted source snapshots;
+- historical parser-run counts;
 - orchestrator runs;
 - source/QA incidents.
 
-Runtime files (`*.db`, WAL files, logs, `slp_state.json`) are ignored by Git.
+Runtime SQLite/WAL files, logs, notification state and `.env` files are ignored by Git.
 
-## Version
+## Dependency policy
 
-Current production line: **SLP v2**.
+Dependencies are pinned in `requirements.txt` and upgraded only after API/CI compatibility is checked. As of September 2026, the pinned aiogram, aiohttp, Beautiful Soup and openpyxl versions are already current stable releases used by this project.
 
-Legacy `Step 71.2`, `Parser v1 RC` and the separate `agent_main.py` runtime are removed.
+## Troubleshooting
+
+**`/live` is empty immediately after startup**  
+Check startup logs. Polling now begins only after the initial refresh attempt. If a source failed, `/health` and `/errors` show the stored incident/fallback state.
+
+**A site event is missing**  
+Run `SLP_LOG_LEVEL=DEBUG PYTHONPATH=. python scripts/diagnose_live.py`. Check whether the source marked it as a direct broadcast, whether it was parsed, and the computed `start <= now < end` window.
+
+**A future day is missing**  
+The official source may not have published it yet. Optional unpublished future dates are retried on later refreshes and do not invalidate today’s feed.
+
+**One channel is down**  
+The other channel continues refreshing. If a last-good snapshot exists for the failed source/date, SLP keeps serving it instead of replacing it with broken data.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from aiogram import Bot
 
@@ -15,6 +16,9 @@ from services.schedule_watch import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 async def _send_changes(bot: Bot, changes: list[dict]) -> None:
     if not changes:
         return
@@ -23,8 +27,11 @@ async def _send_changes(bot: Bot, changes: list[dict]) -> None:
         for text in messages:
             try:
                 await bot.send_message(chat_id, text)
-            except Exception as error:
-                print(f"SLP notification error chat={chat_id}: {error!r}")
+            except Exception:
+                logger.exception(
+                    "notification delivery failed chat_id=%s",
+                    chat_id,
+                )
 
 
 async def refresh_and_notify(schedule_service: ScheduleService, bot: Bot) -> None:
@@ -32,32 +39,40 @@ async def refresh_and_notify(schedule_service: ScheduleService, bot: Bot) -> Non
     result = await schedule_service.refresh()
 
     if result.source_errors:
-        print("SLP refresh degraded:", " | ".join(result.source_errors))
-        return
+        logger.warning(
+            "refresh degraded run=%s errors=%s; continuing with healthy/fallback data",
+            result.run_id,
+            " | ".join(result.source_errors),
+        )
 
     current = build_schedule_snapshot(schedule_service.get_events())
     if previous is None:
         update_snapshot(current)
-        print("SLP scheduler: baseline snapshot saved")
+        logger.info("scheduler baseline snapshot saved")
         return
 
     changes = diff_schedule_snapshots(previous, current)
     update_snapshot(current)
     await _send_changes(bot, changes)
     if changes:
-        print(f"SLP scheduler: {len(changes)} schedule change(s)")
+        logger.info("scheduler schedule_changes=%d", len(changes))
 
 
 async def scheduler_loop(
     schedule_service: ScheduleService,
     bot: Bot,
     interval_seconds: int,
+    *,
+    initial_delay: bool = False,
 ) -> None:
+    if initial_delay:
+        await asyncio.sleep(interval_seconds)
+
     while True:
         try:
             await refresh_and_notify(schedule_service, bot)
         except asyncio.CancelledError:
             raise
-        except Exception as error:
-            print("SLP scheduler error:", repr(error))
+        except Exception:
+            logger.exception("scheduler refresh failed")
         await asyncio.sleep(interval_seconds)
