@@ -33,25 +33,17 @@ async def main() -> None:
         database.path,
         settings.refresh_interval_seconds,
     )
-
-    try:
-        initial = await schedule_service.refresh()
-        logger.info(
-            "startup refresh run=%s events=%d errors=%d warnings=%d",
-            initial.run_id,
-            len(initial.events),
-            len(initial.source_errors),
-            len(initial.source_warnings),
-        )
-    except Exception:
-        logger.exception("startup refresh failed; starting with stored data")
+    logger.info(
+        "starting Telegram polling immediately from stored data; "
+        "schedule refresh runs in background"
+    )
 
     scheduler_task = asyncio.create_task(
         scheduler_loop(
             schedule_service,
             bot,
             settings.refresh_interval_seconds,
-            initial_delay=True,
+            initial_delay=False,
         )
     )
 

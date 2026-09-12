@@ -8,10 +8,12 @@ MAIN_PATH = ROOT / "main.py"
 
 
 class StartupRefreshTests(unittest.TestCase):
-    def test_initial_refresh_precedes_polling(self):
+    def test_network_refresh_is_not_awaited_before_polling(self):
         source = MAIN_PATH.read_text(encoding="utf-8")
+        self.assertNotIn("await schedule_service.refresh()", source)
+        self.assertIn("initial_delay=False", source)
         self.assertLess(
-            source.index("await schedule_service.refresh()"),
+            source.index("scheduler_task = asyncio.create_task("),
             source.index("await dispatcher.start_polling("),
         )
 
