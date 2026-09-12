@@ -1,6 +1,10 @@
 import unittest
 
-from parsers.qazsport_complete import apply_page_live_markers, extract_page_live_times
+from parsers.qazsport_complete import (
+    apply_page_live_markers,
+    extract_html_live_times,
+    extract_page_live_times,
+)
 
 
 class QazsportCompletenessTests(unittest.TestCase):
@@ -13,6 +17,17 @@ class QazsportCompletenessTests(unittest.TestCase):
             extract_page_live_times(page_text),
             {"11:25", "17:55", "20:00"},
         )
+
+    def test_html_live_badge_between_programmes_belongs_to_next_time(self):
+        html = """
+        <a>11:10 Арнайы репортаж</a>
+        <span class="badge live">LIVE</span>
+        <a>11:25 Азия чемпионаты. 3 орын үшін матч</a>
+        <a>13:35 Sport Review</a>
+        <img src="/assets/live.svg" alt="live">
+        <a>17:55 Ұлытау – Алта</a>
+        """
+        self.assertEqual(extract_html_live_times(html), {"11:25", "17:55"})
 
     def test_live_marker_outside_anchor_promotes_matching_event(self):
         events = [
@@ -37,10 +52,17 @@ class QazsportCompletenessTests(unittest.TestCase):
                 "is_live_broadcast": False,
             },
         ]
-        result = apply_page_live_markers(
+        result, detected, matched = apply_page_live_markers(
             events,
-            "LIVE 11:25 Азия чемпионаты LIVE 17:55 Футбол Ұлытау – Алта",
+            "",
+            page_html=(
+                '<a>11:10 Арнайы репортаж</a><span class="live">LIVE</span>'
+                '<a>11:25 Азия чемпионаты</a><a>13:35 Review</a>'
+                '<img src="/live.svg"><a>17:55 Ұлытау – Алта</a>'
+            ),
         )
+        self.assertEqual(detected, {"11:25", "17:55"})
+        self.assertEqual(matched, detected)
         self.assertTrue(result[0]["is_live_broadcast"])
         self.assertTrue(result[1]["is_live_broadcast"])
         self.assertEqual(result[0]["live_evidence_method"], "qazsport_page_live_text")
