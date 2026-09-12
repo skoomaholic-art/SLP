@@ -1,8 +1,9 @@
 import asyncio
 import hashlib
+import logging
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -13,11 +14,10 @@ from aiogram.types import (
     Message,
 )
 
-from parsers.qazsport import get_qazsport_schedule
-from parsers.sportplus import get_sportplus_schedule
+from agents.orchestrator import ParserOrchestrator
+from services.event_status import filter_live_now
 from services.schedule_merge import (
     group_simulcasts,
-    merge_source_schedules,
     unique_channels,
 )
 from services.schedule_watch import (
@@ -47,6 +47,15 @@ if not BOT_TOKEN:
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+orchestrator = ParserOrchestrator()
+
+live_logger = logging.getLogger("slp.live")
+if not live_logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    live_logger.addHandler(handler)
+live_logger.setLevel(logging.INFO)
+live_logger.propagate = False
 
 
 # =========================================================
@@ -61,6 +70,8 @@ schedule_cache = {
     "time": 0,
     "events": [],
     "source_errors": [],
+    "minimum_horizon": None,
+    "actual_horizon": None,
 }
 
 SCHEDULE_CACHE_TTL = 180
@@ -75,30 +86,15 @@ verification_semaphore = asyncio.Semaphore(2)
 main_keyboard = InlineKeyboardMarkup(
     inline_keyboard=[
         [
-            InlineKeyboardButton(
-                text="📅 Расписание",
-                callback_data="schedule",
-            ),
-            InlineKeyboardButton(
-                text="🔴 LIVE",
-                callback_data="live",
-            ),
+            InlineKeyboardButton(text="📅 Расписание", callback_data="schedule"),
+            InlineKeyboardButton(text="🔴 LIVE", callback_data="live"),
         ],
         [
-            InlineKeyboardButton(
-                text="🔔 Уведомления",
-                callback_data="notifications",
-            ),
-            InlineKeyboardButton(
-                text="📊 Статус",
-                callback_data="status",
-            ),
+            InlineKeyboardButton(text="🔔 Уведомления", callback_data="notifications"),
+            InlineKeyboardButton(text="📊 Статус", callback_data="status"),
         ],
         [
-            InlineKeyboardButton(
-                text="📥 Выгрузить",
-                callback_data="export_schedule",
-            ),
+            InlineKeyboardButton(text="📥 Выгрузить", callback_data="export_schedule"),
         ],
     ]
 )
@@ -125,18 +121,12 @@ MONTHS = {
 
 
 def format_date(date_text):
-    value = datetime.strptime(
-        date_text,
-        "%Y-%m-%d",
-    )
+    value = datetime.strptime(date_text, "%Y-%m-%d")
     return f"{value.day} {MONTHS[value.month]}"
 
 
 def format_full_date(date_text):
-    value = datetime.strptime(
-        date_text,
-        "%Y-%m-%d",
-    )
+    value = datetime.strptime(date_text, "%Y-%m-%d")
     return f"{value.day} {MONTHS[value.month]} {value.year}"
 
 
@@ -145,18 +135,13 @@ def format_full_date(date_text):
 # =========================================================
 
 def get_event_title(event):
-    return (
-        event.get("title")
-        or event.get("raw_title")
-        or "Без названия"
-    )
+    return event.get("title") or event.get("raw_title") or "Без названия"
 
 
 def _normalize_compact_part(value):
     text = str(value or "").strip()
     if not text:
         return ""
-
     text = text.replace("Grand slam", "Grand Slam")
     text = text.replace(". Женщины", ", женщины")
     return " ".join(text.split())
@@ -173,12 +158,9 @@ def get_schedule_display_title(event):
     sport = _normalize_compact_part(event.get("sport"))
     tournament = _normalize_compact_part(event.get("tournament"))
 
-    # Для матчей пара участников сама по себе является понятным названием.
     if _looks_like_match_title(title):
         return title
 
-    # Если адаптер уже собрал полноценное название (например,
-    # "Сезон конных скачек 2026. Алматы"), не раздуваем строку.
     if tournament and title.casefold().startswith(tournament.casefold()):
         return title
 
@@ -194,56 +176,40 @@ def get_schedule_display_title(event):
 
 
 def get_event_id(event):
-    raw_title = (
-        event.get("raw_title")
-        or event.get("title")
-        or ""
-    )
-
+    raw_title = event.get("raw_title") or event.get("title") or ""
     value = (
         f"{event.get('date', '')}|"
         f"{event.get('time', '')}|"
         f"{event.get('channel', '')}|"
         f"{raw_title}"
     )
-
-    return hashlib.sha1(
-        value.encode("utf-8")
-    ).hexdigest()[:12]
+    return hashlib.sha1(value.encode("utf-8")).hexdigest()[:12]
 
 
 def is_user_event(event):
     title = get_event_title(event).casefold()
     sport = str(event.get("sport") or "").strip()
     tournament = str(event.get("tournament") or "").strip()
-
     studio_markers = (
         "студийная программа",
         "студиялық бағдарлама",
         "перед матчем",
         "матч қарсаңында",
     )
-
-    if (
-        any(marker in title for marker in studio_markers)
-        and not sport
-        and not tournament
-    ):
+    if any(marker in title for marker in studio_markers) and not sport and not tournament:
         return False
-
     return True
 
 
 # =========================================================
 # СТАТУС ТРАНСЛЯЦИИ
-# ВАЖНО: статус берётся ТОЛЬКО из эфирного расписания.
-# Интернет-проверка не может менять LIVE / SOON / OVER.
+# Источник сообщает is_live_broadcast. live_now вычисляется отдельно.
+# Интернет-проверка не может менять эфирный статус.
 # =========================================================
 
 def get_status_icon(event):
     status = get_event_status(event)
-
-    if status == "live":
+    if status == "live_now":
         return "🔴"
     if status == "upcoming":
         return "🟡"
@@ -252,24 +218,20 @@ def get_status_icon(event):
 
 def get_status_name(event):
     status = get_event_status(event)
-
-    if status == "live":
+    if status == "live_now":
         return "LIVE"
     if status == "upcoming":
         return "SOON"
+    if status == "current":
+        return "NOW"
     return "OVER"
 
 
 def get_broadcast_end_detail(event):
     end_text = get_end_full_text(event)
-
-    if (
-        event.get("estimated_broadcast_end_date")
-        and event.get("estimated_broadcast_end")
-    ):
-        return end_text
-
-    return f"≈ {end_text} (оценка по виду спорта)"
+    if event.get("end_estimation_method") == "fallback_duration":
+        return f"≈ {end_text} (оценка по виду спорта)"
+    return end_text
 
 
 def get_live_evidence_text(event):
@@ -299,63 +261,31 @@ def get_live_evidence_text(event):
 # =========================================================
 
 def get_accuracy(event):
-    verification = verification_cache.get(
-        get_event_id(event)
-    )
+    verification = verification_cache.get(get_event_id(event))
 
     if not verification:
-        return {
-            "text": "Нет данных о времени",
-            "difference": None,
-            "needs_attention": False,
-        }
+        return {"text": "Нет данных о времени", "difference": None, "needs_attention": False}
 
     if verification.get("time_rejected", False):
         return {
             "text": "Нуждается в проверке: внешнее время отброшено",
-            "difference": abs(
-                verification.get("rejected_difference_minutes", 0)
-            ),
+            "difference": abs(verification.get("rejected_difference_minutes", 0)),
             "needs_attention": True,
         }
 
     if not verification.get("found", False):
-        return {
-            "text": "Нет данных о времени",
-            "difference": None,
-            "needs_attention": False,
-        }
+        return {"text": "Нет данных о времени", "difference": None, "needs_attention": False}
 
     difference = verification.get("difference_minutes")
-
     if difference is None:
-        return {
-            "text": "Нет данных о времени",
-            "difference": None,
-            "needs_attention": False,
-        }
+        return {"text": "Нет данных о времени", "difference": None, "needs_attention": False}
 
     difference = abs(difference)
-
     if difference <= 10:
-        return {
-            "text": "Время совпадает",
-            "difference": difference,
-            "needs_attention": False,
-        }
-
+        return {"text": "Время совпадает", "difference": difference, "needs_attention": False}
     if difference <= 20:
-        return {
-            "text": "Событие требуется проверить",
-            "difference": difference,
-            "needs_attention": True,
-        }
-
-    return {
-        "text": "Есть расхождение по времени",
-        "difference": difference,
-        "needs_attention": True,
-    }
+        return {"text": "Событие требуется проверить", "difference": difference, "needs_attention": True}
+    return {"text": "Есть расхождение по времени", "difference": difference, "needs_attention": True}
 
 
 # =========================================================
@@ -370,10 +300,10 @@ def get_schedule_status_badge(event):
 
 def compact_event_line(event):
     channel = event.get("channel") or "Канал не указан"
-
+    date_label = format_date(event["date"])
     return (
         f"{get_schedule_status_badge(event)} "
-        f"{get_time_window_text(event)} · "
+        f"{date_label}, {get_time_window_text(event)} · "
         f"{get_schedule_display_title(event)} | {channel}"
     )
 
@@ -384,15 +314,14 @@ def compact_simulcast_block(group):
 
     title = get_schedule_display_title(group[0])
     lines = [f"📡 {title}"]
-
     for event in group:
         channel = event.get("channel") or "Канал не указан"
+        date_label = format_date(event["date"])
         lines.append(
             f"{get_schedule_status_badge(event)} "
-            f"{get_time_window_text(event)} · "
+            f"{date_label}, {get_time_window_text(event)} · "
             f"{title} | {channel}"
         )
-
     return "\n".join(lines)
 
 
@@ -408,18 +337,16 @@ def build_schedule_text(events):
     else:
         channel_label = f"{channel_count} каналов"
 
+    horizon = schedule_cache.get("actual_horizon")
+    horizon_text = f" · до {format_date(horizon)}" if horizon else ""
     header = (
         "📅 Расписание\n"
-        f"{now.day} {MONTHS[now.month]} {now.year} · {channel_label}"
+        f"{now.day} {MONTHS[now.month]} {now.year} · {channel_label}{horizon_text}"
     )
 
     groups = group_simulcasts(events)
-
     if groups:
-        event_text = "\n\n".join(
-            compact_simulcast_block(group)
-            for group in groups
-        )
+        event_text = "\n\n".join(compact_simulcast_block(group) for group in groups)
     else:
         event_text = "Событий нет."
 
@@ -432,43 +359,19 @@ def build_schedule_text(events):
 
 def build_live_text(events):
     now = datetime.now(KZ_TIMEZONE)
-
-    header = (
-        "🔴 LIVE\n"
-        f"Сейчас: {now.strftime('%H:%M')} (UTC+5)"
-    )
-
+    header = "🔴 LIVE\n" f"Сейчас: {now.strftime('%H:%M')} · Asia/Almaty"
     groups = group_simulcasts(events)
-
     if not groups:
-        return (
-            f"{header}\n\n"
-            "Сейчас прямых трансляций нет."
-        )
-
-    event_text = "\n\n".join(
-        compact_simulcast_block(group)
-        for group in groups
-    )
-
+        return f"{header}\n\nСейчас прямых трансляций нет."
+    event_text = "\n\n".join(compact_simulcast_block(group) for group in groups)
     return f"{header}\n\n{event_text}"
 
 
 def build_schedule_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🔎 Подробнее",
-                    callback_data="details_schedule",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📥 Выгрузить",
-                    callback_data="export_schedule",
-                )
-            ],
+            [InlineKeyboardButton(text="🔎 Подробнее", callback_data="details_schedule")],
+            [InlineKeyboardButton(text="📥 Выгрузить", callback_data="export_schedule")],
         ]
     )
 
@@ -476,126 +379,52 @@ def build_schedule_keyboard():
 def build_live_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🔎 Подробнее",
-                    callback_data="details_live",
-                )
-            ]
+            [InlineKeyboardButton(text="🔎 Подробнее", callback_data="details_live")]
         ]
     )
 
 
 # =========================================================
 # РАСПИСАНИЕ
+# Один pipeline для main.py и agent_main.py:
+# parsers -> SportEvent -> SQLite -> SQLite query -> Telegram.
 # =========================================================
 
-async def _safe_source_load(label, coroutine, source_errors):
-    try:
-        return await coroutine
-    except Exception as error:
-        source_errors.append(label)
-        print(
-            f"Ошибка источника {label}:",
-            repr(error),
-        )
-        return []
-
-
-async def load_schedule_events(
-    *,
-    force_refresh=False,
-    return_errors=False,
-):
+async def load_schedule_events(*, force_refresh=False, return_errors=False):
     now_timestamp = time.time()
 
     if (
         not force_refresh
         and schedule_cache["events"]
-        and (
-            now_timestamp
-            - schedule_cache["time"]
-        ) < SCHEDULE_CACHE_TTL
+        and (now_timestamp - schedule_cache["time"]) < SCHEDULE_CACHE_TTL
     ):
         events = schedule_cache["events"]
         errors = list(schedule_cache.get("source_errors", []))
         return (events, errors) if return_errors else events
 
-    now = datetime.now(KZ_TIMEZONE)
-    yesterday = now.date() - timedelta(days=1)
-    source_errors = []
+    try:
+        result = await orchestrator.refresh()
+    except Exception as error:
+        print("SLP orchestrator fatal error:", repr(error))
+        cached = list(schedule_cache.get("events") or [])
+        errors = [f"Orchestrator: {type(error).__name__}: {error}"]
+        if cached:
+            print("SLP orchestrator: using in-memory cache after fatal error")
+            return (cached, errors) if return_errors else cached
+        raise
 
-    (
-        qazsport_today,
-        sportplus_today,
-        qazsport_yesterday,
-        sportplus_yesterday,
-    ) = await asyncio.gather(
-        _safe_source_load(
-            "Qazsport сегодня",
-            get_qazsport_schedule(
-                include_current_live=True,
-            ),
-            source_errors,
-        ),
-        _safe_source_load(
-            "Sport+ сегодня",
-            get_sportplus_schedule(),
-            source_errors,
-        ),
-        _safe_source_load(
-            "Qazsport вчера",
-            get_qazsport_schedule(
-                yesterday,
-                include_current_live=True,
-            ),
-            source_errors,
-        ),
-        _safe_source_load(
-            "Sport+ вчера",
-            get_sportplus_schedule(yesterday),
-            source_errors,
-        ),
-    )
-
-    today_schedule = merge_source_schedules(
-        qazsport_today,
-        sportplus_today,
-    )
-    yesterday_schedule = merge_source_schedules(
-        qazsport_yesterday,
-        sportplus_yesterday,
-    )
-
-    today_events = [
-        event
-        for event in today_schedule
-        if (
-            event.get("is_live", False)
-            and is_user_event(event)
-        )
-    ]
-
-    yesterday_events = [
-        event
-        for event in yesterday_schedule
-        if (
-            event.get("is_live", False)
-            and is_user_event(event)
-            and get_event_status(event) == "live"
-        )
-    ]
-
-    events = merge_source_schedules(
-        yesterday_events,
-        today_events,
-    )
-
-    schedule_cache["events"] = events
+    schedule_cache["events"] = result.events
     schedule_cache["time"] = now_timestamp
-    schedule_cache["source_errors"] = list(source_errors)
+    schedule_cache["source_errors"] = list(result.source_errors)
+    schedule_cache["minimum_horizon"] = result.minimum_horizon
+    schedule_cache["actual_horizon"] = result.actual_horizon
 
-    return (events, source_errors) if return_errors else events
+    if result.source_errors:
+        print("SLP orchestrator degraded:", " | ".join(result.source_errors))
+    if result.source_warnings:
+        print("SLP orchestrator warnings:", " | ".join(result.source_warnings))
+
+    return (result.events, result.source_errors) if return_errors else result.events
 
 
 # =========================================================
@@ -604,18 +433,11 @@ async def load_schedule_events(
 
 async def run_verification(event):
     event_id = get_event_id(event)
-
     async with verification_semaphore:
         try:
-            result = await asyncio.to_thread(
-                verify_event,
-                event,
-            )
+            result = await asyncio.to_thread(verify_event, event)
         except Exception as error:
-            print(
-                "Ошибка OpenSERP:",
-                repr(error),
-            )
+            print("Ошибка OpenSERP:", repr(error))
             result = {
                 "found": False,
                 "search_results_count": 0,
@@ -624,27 +446,21 @@ async def run_verification(event):
                 "total_weight": 0,
                 "sources": [],
             }
-
     verification_cache[event_id] = result
     return result
 
 
 async def ensure_event_verification(event):
     event_id = get_event_id(event)
-
     if event_id in verification_cache:
         return verification_cache[event_id]
 
     existing_task = verification_tasks.get(event_id)
-
     if existing_task:
         return await existing_task
 
-    task = asyncio.create_task(
-        run_verification(event)
-    )
+    task = asyncio.create_task(run_verification(event))
     verification_tasks[event_id] = task
-
     try:
         return await task
     finally:
@@ -654,10 +470,7 @@ async def ensure_event_verification(event):
 
 async def verify_events(events):
     await asyncio.gather(
-        *[
-            ensure_event_verification(event)
-            for event in events
-        ],
+        *[ensure_event_verification(event) for event in events],
         return_exceptions=True,
     )
 
@@ -666,11 +479,7 @@ async def verify_events(events):
 # ФОНОВОЕ ОБНОВЛЕНИЕ
 # =========================================================
 
-async def background_verify_and_refresh(
-    events,
-    message,
-    view_type,
-):
+async def background_verify_and_refresh(events, message, view_type):
     await verify_events(events)
 
     try:
@@ -678,23 +487,13 @@ async def background_verify_and_refresh(
             text = build_schedule_text(events)
             keyboard = build_schedule_keyboard()
         else:
-            live_events = [
-                event
-                for event in events
-                if get_event_status(event) == "live"
-            ]
+            live_events = filter_live_now(events, logger=live_logger)
             text = build_live_text(live_events)
             keyboard = build_live_keyboard()
 
-        await message.edit_text(
-            text,
-            reply_markup=keyboard,
-        )
+        await message.edit_text(text, reply_markup=keyboard)
     except Exception as error:
-        print(
-            "Ошибка фонового обновления Telegram:",
-            repr(error),
-        )
+        print("Ошибка фонового обновления Telegram:", repr(error))
 
 
 # =========================================================
@@ -703,24 +502,16 @@ async def background_verify_and_refresh(
 
 async def send_schedule_changes(changes):
     subscribers = get_subscribers()
-
     if not subscribers or not changes:
         return
 
     messages = build_change_messages(changes)
-
     for chat_id in subscribers:
         for message_text in messages:
             try:
-                await bot.send_message(
-                    chat_id,
-                    message_text,
-                )
+                await bot.send_message(chat_id, message_text)
             except Exception as error:
-                print(
-                    f"Ошибка уведомления для {chat_id}:",
-                    repr(error),
-                )
+                print(f"Ошибка уведомления для {chat_id}:", repr(error))
 
 
 async def check_schedule_changes_once():
@@ -731,8 +522,7 @@ async def check_schedule_changes_once():
 
     if source_errors:
         print(
-            "Проверка изменений пропущена: "
-            "есть ошибки источников:",
+            "Проверка изменений пропущена: есть ошибки источников:",
             ", ".join(source_errors),
         )
         return []
@@ -745,20 +535,12 @@ async def check_schedule_changes_once():
         print("SLP notifications: базовый снимок расписания сохранён")
         return []
 
-    changes = diff_schedule_snapshots(
-        previous_snapshot,
-        current_snapshot,
-    )
-
+    changes = diff_schedule_snapshots(previous_snapshot, current_snapshot)
     update_snapshot(current_snapshot)
 
     if changes:
         await send_schedule_changes(changes)
-        print(
-            "SLP notifications: найдено изменений:",
-            len(changes),
-        )
-
+        print("SLP notifications: найдено изменений:", len(changes))
     return changes
 
 
@@ -769,11 +551,7 @@ async def notification_watch_loop():
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            print(
-                "Ошибка мониторинга расписания:",
-                repr(error),
-            )
-
+            print("Ошибка мониторинга расписания:", repr(error))
         await asyncio.sleep(NOTIFICATION_CHECK_INTERVAL)
 
 
@@ -783,46 +561,29 @@ async def notification_watch_loop():
 
 def build_source_text(verification):
     sources = verification.get("sources", [])
-
     if not sources:
         return ""
 
     lines = []
-
     for source in sources[:3]:
         name = source.get("source_name", "Источник")
         external_time = source.get("external_time_kz", "")
-
         if external_time:
-            lines.append(
-                f"• {name} · {external_time} UTC+5"
-            )
+            lines.append(f"• {name} · {external_time} UTC+5")
         else:
             lines.append(f"• {name}")
-
-    if not lines:
-        return ""
-
-    return "\nИсточники:\n" + "\n".join(lines)
+    return "\nИсточники:\n" + "\n".join(lines) if lines else ""
 
 
 def build_detailed_event(event, number):
-    verification = verification_cache.get(
-        get_event_id(event),
-        {},
-    )
+    verification = verification_cache.get(get_event_id(event), {})
     accuracy = get_accuracy(event)
-
     sport = event.get("sport") or "не определён"
     tournament = event.get("tournament") or "не определён"
 
     lines = [
         f"{number}. {get_event_title(event)}",
-        (
-            f"📌 Статус: "
-            f"{get_status_icon(event)} "
-            f"{get_status_name(event)}"
-        ),
+        f"📌 Статус: {get_status_icon(event)} {get_status_name(event)}",
         f"🕐 Начало эфира: {get_start_full_text(event)}",
         f"🏁 Окончание эфира: {get_broadcast_end_detail(event)}",
         f"🏅 Вид спорта: {sport}",
@@ -836,61 +597,25 @@ def build_detailed_event(event, number):
 
     if verification.get("found", False):
         difference = verification.get("difference_minutes")
-
-        if difference is None:
-            difference_text = "не определено"
-        else:
-            difference_text = f"{abs(difference)} мин."
-
-        confidence = (
-            verification.get("confidence", {})
-            .get("label", "не определён")
-        )
-
+        difference_text = "не определено" if difference is None else f"{abs(difference)} мин."
+        confidence = verification.get("confidence", {}).get("label", "не определён")
         lines.extend(
             [
-                (
-                    f"🕐 Внешнее время: "
-                    f"{verification.get('external_time_kz', '?')} "
-                    f"(UTC+5)"
-                ),
+                f"🕐 Внешнее время: {verification.get('external_time_kz', '?')} (UTC+5)",
                 f"⏱ Расхождение: {difference_text}",
-                (
-                    f"⚖️ Вес доверия: "
-                    f"{verification.get('total_weight', 0)}"
-                ),
+                f"⚖️ Вес доверия: {verification.get('total_weight', 0)}",
                 f"📊 Уровень доверия: {confidence}",
-                (
-                    f"📚 Время подтвердили: "
-                    f"{verification.get('source_count', 0)} "
-                    "независимых источника(ов)"
-                ),
-                (
-                    f"🔎 Найдено результатов: "
-                    f"{verification.get('search_results_count', 0)}"
-                ),
-                (
-                    f"🎯 Релевантных результатов: "
-                    f"{verification.get('matching_results_count', 0)}"
-                ),
+                f"📚 Время подтвердили: {verification.get('source_count', 0)} независимых источника(ов)",
+                f"🔎 Найдено результатов: {verification.get('search_results_count', 0)}",
+                f"🎯 Релевантных результатов: {verification.get('matching_results_count', 0)}",
             ]
         )
-
         source_text = build_source_text(verification)
-
         if source_text:
             lines.append(source_text)
-
     else:
-        total = verification.get(
-            "search_results_count",
-            0,
-        )
-        matching = verification.get(
-            "matching_results_count",
-            0,
-        )
-
+        total = verification.get("search_results_count", 0)
+        matching = verification.get("matching_results_count", 0)
         lines.extend(
             [
                 "⚖️ Вес доверия: 0",
@@ -900,76 +625,44 @@ def build_detailed_event(event, number):
                 f"🎯 Релевантных результатов: {matching}",
             ]
         )
-
         if verification.get("time_rejected", False):
             lines.append(
-                "ℹ️ Найденное внешнее время отброшено: "
-                "расхождение больше 30 минут."
+                "ℹ️ Найденное внешнее время отброшено: расхождение больше 30 минут."
             )
         elif matching > 0:
-            lines.append(
-                "ℹ️ Событие найдено, но время надёжно "
-                "определить не удалось."
-            )
+            lines.append("ℹ️ Событие найдено, но время надёжно определить не удалось.")
 
     return "\n".join(lines)
 
 
-def split_messages(
-    blocks,
-    title,
-    limit=3900,
-):
+def split_messages(blocks, title, limit=3900):
     messages = []
     current = title
-
     for block in blocks:
         candidate = f"{current}\n\n{block}"
-
         if len(candidate) > limit:
             messages.append(current)
             current = f"{title}\n\n{block}"
         else:
             current = candidate
-
     if current:
         messages.append(current)
-
     return messages
 
 
-async def show_details(
-    callback,
-    events,
-    title,
-):
+async def show_details(callback, events, title):
     if not events:
-        await callback.message.answer(
-            "Событий нет."
-        )
+        await callback.message.answer("Событий нет.")
         return
 
-    loading = await callback.message.answer(
-        "⏳ Формирую подробный список..."
-    )
-
+    loading = await callback.message.answer("⏳ Формирую подробный список...")
     await verify_events(events)
-
     blocks = [
         build_detailed_event(event, number)
-        for number, event in enumerate(
-            events,
-            start=1,
-        )
+        for number, event in enumerate(events, start=1)
     ]
-
-    messages = split_messages(
-        blocks,
-        title,
-    )
-
+    messages = split_messages(blocks, title)
     await loading.edit_text(messages[0])
-
     for message_text in messages[1:]:
         await callback.message.answer(message_text)
 
@@ -981,8 +674,7 @@ async def show_details(
 @dp.message(Command("start"))
 async def start_command(message: Message):
     await message.answer(
-        "SLP [Skoomaholic Live Parser] запущен ✅\n\n"
-        "Выберите действие:",
+        "SLP [Skoomaholic Live Parser] запущен ✅\n\nВыберите действие:",
         reply_markup=main_keyboard,
     )
 
@@ -994,42 +686,21 @@ async def start_command(message: Message):
 @dp.callback_query(F.data == "schedule")
 async def schedule_callback(callback: CallbackQuery):
     await callback.answer()
-
-    loading = await callback.message.answer(
-        "⏳ Загружаю расписание..."
-    )
+    loading = await callback.message.answer("⏳ Загружаю расписание...")
 
     try:
         events = await load_schedule_events()
-
-        view_cache[
-            (
-                callback.from_user.id,
-                "schedule",
-            )
-        ] = events
-
+        view_cache[(callback.from_user.id, "schedule")] = events
         await loading.edit_text(
             build_schedule_text(events),
             reply_markup=build_schedule_keyboard(),
         )
-
         asyncio.create_task(
-            background_verify_and_refresh(
-                events,
-                loading,
-                "schedule",
-            )
+            background_verify_and_refresh(events, loading, "schedule")
         )
-
     except Exception as error:
-        print(
-            "Ошибка расписания:",
-            repr(error),
-        )
-        await loading.edit_text(
-            "❌ Не удалось загрузить расписание."
-        )
+        print("Ошибка расписания:", repr(error))
+        await loading.edit_text("❌ Не удалось загрузить расписание.")
 
 
 # =========================================================
@@ -1039,48 +710,23 @@ async def schedule_callback(callback: CallbackQuery):
 @dp.callback_query(F.data == "live")
 async def live_callback(callback: CallbackQuery):
     await callback.answer()
-
-    loading = await callback.message.answer(
-        "⏳ Загружаю LIVE..."
-    )
+    loading = await callback.message.answer("⏳ Загружаю LIVE...")
 
     try:
         all_events = await load_schedule_events()
+        live_events = filter_live_now(all_events, logger=live_logger)
 
-        live_events = [
-            event
-            for event in all_events
-            if get_event_status(event) == "live"
-        ]
-
-        view_cache[
-            (
-                callback.from_user.id,
-                "live",
-            )
-        ] = live_events
-
+        view_cache[(callback.from_user.id, "live")] = live_events
         await loading.edit_text(
             build_live_text(live_events),
             reply_markup=build_live_keyboard(),
         )
-
         asyncio.create_task(
-            background_verify_and_refresh(
-                live_events,
-                loading,
-                "live",
-            )
+            background_verify_and_refresh(live_events, loading, "live")
         )
-
     except Exception as error:
-        print(
-            "Ошибка LIVE:",
-            repr(error),
-        )
-        await loading.edit_text(
-            "❌ Не удалось загрузить LIVE."
-        )
+        print("Ошибка LIVE:", repr(error))
+        await loading.edit_text("❌ Не удалось загрузить LIVE.")
 
 
 # =========================================================
@@ -1090,39 +736,15 @@ async def live_callback(callback: CallbackQuery):
 @dp.callback_query(F.data == "details_schedule")
 async def details_schedule_callback(callback: CallbackQuery):
     await callback.answer()
-
-    events = view_cache.get(
-        (
-            callback.from_user.id,
-            "schedule",
-        ),
-        [],
-    )
-
-    await show_details(
-        callback,
-        events,
-        "🔎 Подробное расписание",
-    )
+    events = view_cache.get((callback.from_user.id, "schedule"), [])
+    await show_details(callback, events, "🔎 Подробное расписание")
 
 
 @dp.callback_query(F.data == "details_live")
 async def details_live_callback(callback: CallbackQuery):
     await callback.answer()
-
-    events = view_cache.get(
-        (
-            callback.from_user.id,
-            "live",
-        ),
-        [],
-    )
-
-    await show_details(
-        callback,
-        events,
-        "🔎 Подробно LIVE",
-    )
+    events = view_cache.get((callback.from_user.id, "live"), [])
+    await show_details(callback, events, "🔎 Подробно LIVE")
 
 
 # =========================================================
@@ -1145,9 +767,7 @@ async def notifications_callback(callback: CallbackQuery):
         )
     else:
         await callback.answer("Уведомления выключены")
-        await callback.message.answer(
-            "🔕 Уведомления выключены."
-        )
+        await callback.message.answer("🔕 Уведомления выключены.")
 
 
 # =========================================================
@@ -1157,10 +777,8 @@ async def notifications_callback(callback: CallbackQuery):
 @dp.callback_query(F.data == "export_schedule")
 async def export_schedule_callback(callback: CallbackQuery):
     await callback.answer()
-
     await callback.message.answer(
-        "📥 Выгрузка расписания\n\n"
-        "XLSX подключим после стабилизации Parser v1."
+        "📥 Выгрузка расписания\n\nXLSX подключим после стабилизации Parser v1."
     )
 
 
@@ -1171,17 +789,18 @@ async def export_schedule_callback(callback: CallbackQuery):
 @dp.callback_query(F.data == "status")
 async def status_callback(callback: CallbackQuery):
     await callback.answer()
-
     await callback.message.answer(
         "📊 Статус SLP\n\n"
         "✅ Qazsport подключён\n"
         "✅ Sport+ Qazaqstan подключён\n"
         "✅ Единый SportEvent используется\n"
-        "✅ Расписание работает с несколькими источниками\n"
-        "✅ LIVE работает\n"
-        "✅ UTC+5 учитывается\n"
+        "✅ is_live_broadcast отделён от live_now\n"
+        "✅ Время timezone-aware · Asia/Almaty\n"
+        "✅ Расписание расширяется минимум до ближайшего понедельника\n"
+        "✅ Горизонт расширяется до самой дальней известной LIVE-даты\n"
+        "✅ Telegram и refresh используют одну SQLite\n"
         "✅ Переход через полночь нормализуется\n"
-        "✅ Последнее событие получает fallback окончания\n"
+        "✅ Последнее событие получает ограниченный fallback окончания\n"
         "✅ Интернет-время не меняет LIVE/SOON/OVER\n"
         "✅ OpenSERP работает в фоне\n"
         "✅ Мониторинг изменений расписания работает\n"
@@ -1196,27 +815,19 @@ async def status_callback(callback: CallbackQuery):
 # =========================================================
 
 async def main():
-    print(
-        "SLP запущен. "
-        "Ожидаю сообщения в Telegram..."
-    )
+    print("SLP запущен. Ожидаю сообщения в Telegram...")
+    print(f"SLP SQLite: {orchestrator.database.path}")
     print(
         "SLP notifications: проверка каждые "
         f"{NOTIFICATION_CHECK_INTERVAL} сек."
     )
 
-    watch_task = asyncio.create_task(
-        notification_watch_loop()
-    )
-
+    watch_task = asyncio.create_task(notification_watch_loop())
     try:
         await dp.start_polling(bot)
     finally:
         watch_task.cancel()
-        await asyncio.gather(
-            watch_task,
-            return_exceptions=True,
-        )
+        await asyncio.gather(watch_task, return_exceptions=True)
 
 
 if __name__ == "__main__":
