@@ -8,13 +8,13 @@ from datetime import date, datetime, timedelta, timezone
 
 from parsers.tvplus import fetch_tvplus_schedules
 from services.time_logic import KZ_TIMEZONE, get_scheduled_datetimes
-from verifiers.broadcast_occurrence import verify_broadcast_occurrence
+from verifiers.championat_occurrence import verify_championat_occurrence
 
 logger = logging.getLogger(__name__)
 SOURCE = "tvguide"
 LOOKAHEAD_DAYS = 7
 CACHE_TTL_SECONDS = 180.0
-RECONCILE_LOOKAHEAD_HOURS = 36
+RECONCILE_LOOKAHEAD_HOURS = LOOKAHEAD_DAYS * 24 + 12
 RECONCILE_MAX_NEW_PER_REFRESH = 80
 RECONCILE_CONCURRENCY = 6
 
@@ -138,7 +138,7 @@ def infer_direct_event(event: dict, *, target_date: date, seen: set[tuple[str, s
     seen.add(identity)
 
     method = str(item.get("live_evidence_method") or "")
-    explicit_live = bool(
+    provider_claimed_live = bool(
         item.get("is_live_broadcast", item.get("is_live", False))
         and item.get("live_state") == "live"
         and method in {
@@ -147,14 +147,9 @@ def infer_direct_event(event: dict, *, target_date: date, seen: set[tuple[str, s
         }
     )
 
-    if explicit_live and not replay and not stale_year:
-        item["is_live_broadcast"] = True
-        item["is_live"] = True
-        item["is_sport_event"] = True
-        item["reconciliation_state"] = "provider_confirmed"
-        item["live_evidence_confidence"] = item.get("live_evidence_confidence") or "high"
-        return item
-
+    # TVGuide/EPG is never authoritative for LIVE. Even an explicit LIVE label
+    # must be reconciled against a real sporting occurrence before publication.
+    item["provider_claimed_live"] = provider_claimed_live
     item["is_live_broadcast"] = False
     item["is_live"] = False
     item["is_sport_event"] = bool(event_like and not replay and not stale_year and not repeated)
@@ -177,7 +172,10 @@ def infer_direct_event(event: dict, *, target_date: date, seen: set[tuple[str, s
     else:
         item["live_state"] = "unknown"
         item["live_evidence_method"] = (
-            "provider_epg_sport_candidate" if event_like else "provider_epg_only"
+            "provider_live_unverified"
+            if provider_claimed_live
+            else "provider_epg_sport_candidate" if event_like
+            else "provider_epg_only"
         )
         item["live_evidence_confidence"] = "low"
         item["reconciliation_state"] = "unverified"
@@ -237,9 +235,11 @@ def _cache_ttl(result: dict) -> float:
 def apply_reconciliation_result(event: dict, result: dict) -> dict:
     item = dict(event)
     state = str(result.get("state") or "unknown")
+    verification_source = str(result.get("verification_source") or "external")
     item["reconciliation_state"] = state
     item["reconciliation_checked_at"] = datetime.now(KZ_TIMEZONE).isoformat(timespec="seconds")
     item["reconciliation_sources"] = result.get("sources") or []
+    item["reconciliation_verification_source"] = verification_source
     if result.get("external_time_kz"):
         item["reconciliation_external_time"] = result["external_time_kz"]
     if result.get("difference_minutes") is not None:
@@ -250,7 +250,11 @@ def apply_reconciliation_result(event: dict, result: dict) -> dict:
         item["is_live"] = True
         item["is_sport_event"] = True
         item["live_state"] = "live"
-        item["live_evidence_method"] = "external_schedule_consensus"
+        item["live_evidence_method"] = (
+            "championat_schedule_match"
+            if verification_source == "championat.com"
+            else "official_schedule_match"
+        )
         item["live_evidence_value"] = "real-event schedule matched TV slot"
         item["live_evidence_confidence"] = "high"
     elif state == "mismatch":
@@ -282,8 +286,6 @@ async def _reconcile_external(by_date: dict[date, list[dict]]) -> dict[date, lis
 
     for scope_date in sorted(by_date):
         for index, event in enumerate(by_date[scope_date]):
-            if event.get("is_live_broadcast"):
-                continue
             if not event.get("is_sport_event"):
                 continue
             start, _ = get_scheduled_datetimes(event)
@@ -302,7 +304,7 @@ async def _reconcile_external(by_date: dict[date, list[dict]]) -> dict[date, lis
     async def verify_one(entry: tuple[date, int, dict, str]):
         scope_date, index, event, key = entry
         async with semaphore:
-            result = await asyncio.to_thread(verify_broadcast_occurrence, event)
+            result = await asyncio.to_thread(verify_championat_occurrence, event)
         _verification_cache[key] = (time.monotonic() + _cache_ttl(result), result)
         return scope_date, index, apply_reconciliation_result(event, result)
 
@@ -320,7 +322,7 @@ async def _reconcile_external(by_date: dict[date, list[dict]]) -> dict[date, lis
 
     confirmed = sum(
         1 for events in by_date.values() for event in events
-        if event.get("reconciliation_state") in {"confirmed_direct", "provider_confirmed"}
+        if event.get("reconciliation_state") == "confirmed_direct"
     )
     replays = sum(
         1 for events in by_date.values() for event in events
@@ -331,7 +333,7 @@ async def _reconcile_external(by_date: dict[date, list[dict]]) -> dict[date, lis
         if str(event.get("reconciliation_state") or "").startswith("pending")
     )
     logger.info(
-        "tvguide reconciliation checked_new=%d confirmed=%d replay_or_mismatch=%d pending=%d window_hours=%d",
+        "tvguide reconciliation checked_new=%d confirmed=%d replay_or_mismatch=%d pending=%d window_hours=%d reference=championat.com",
         len(selected), confirmed, replays, pending, RECONCILE_LOOKAHEAD_HOURS,
     )
     return by_date
