@@ -127,8 +127,8 @@ def normalize_display_text(value: str) -> str:
         )
 
     text = _TOKEN_RE.sub(_normal_case_token, text)
-    text = re.sub(r"\s+[–—-]\s+", " — ", text)
-    text = re.sub(r"(?<=\w)[–—](?=\w)", " — ", text)
+    text = re.sub(r"\s+[–—-]\s+", " – ", text)
+    text = re.sub(r"(?<=\w)[–—](?=\w)", " – ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
@@ -141,7 +141,7 @@ def display_title(event: dict) -> str:
     title = normalize_display_text(event_title(event))
     sport = normalize_display_text(str(event.get("sport") or ""))
     tournament = normalize_display_text(str(event.get("tournament") or ""))
-    if any(separator in title for separator in (" — ", " – ", " - ")):
+    if any(separator in title for separator in (" – ", " — ", " - ")):
         return title
     if tournament and title.casefold().startswith(tournament.casefold()):
         return title
