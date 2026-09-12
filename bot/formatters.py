@@ -72,14 +72,26 @@ def split_blocks(header: str, blocks: list[str], footer: str = "", limit: int = 
     return messages
 
 
-def build_schedule_messages(events: list[dict]) -> list[str]:
+def build_schedule_messages(
+    events: list[dict],
+    *,
+    total_count: int | None = None,
+) -> list[str]:
     now = datetime.now(KZ_TIMEZONE)
+    shown_count = len(events)
+    effective_total = shown_count if total_count is None else max(int(total_count), shown_count)
+    count_text = f"событий: {effective_total}"
+    if effective_total > shown_count:
+        count_text += f" · показано: {shown_count}"
     header = (
         "📅 SLP · Расписание\n"
         f"{now.day} {MONTHS[now.month]} {now.year} · "
-        f"событий: {len(events)} · каналов: {len(unique_channels(events))}"
+        f"{count_text} · каналов в выдаче: {len(unique_channels(events))}"
     )
-    return split_blocks(header, schedule_blocks(events), "\n\n🔴 LIVE · 🟡 SOON · ⚪ OVER")
+    footer = "\n\n🔴 LIVE · 🟡 SOON · ⚪ OVER"
+    if effective_total > shown_count:
+        footer += "\n📥 Полный горизонт расписания доступен через XLSX."
+    return split_blocks(header, schedule_blocks(events), footer)
 
 
 def build_live_messages(events: list[dict]) -> list[str]:
