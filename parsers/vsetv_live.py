@@ -13,7 +13,10 @@ from services.time_logic import KZ_TIMEZONE
 
 
 logger = logging.getLogger(__name__)
-BASE_URL = "https://www.vsetv.com"
+BASE_URLS = (
+    "http://www.vsetv.com",
+    "https://www.vsetv.com",
+)
 CACHE_TTL_SECONDS = 180.0
 REQUEST_TIMEOUT_SECONDS = 15
 
@@ -35,11 +38,19 @@ _cache_rows: list[dict] = []
 _cache_errors: list[str] = []
 
 
-def build_day_url(channel_id: int, target_date: date) -> str:
+def build_day_url(channel_id: int, target_date: date, *, base_url: str | None = None) -> str:
+    base = (base_url or BASE_URLS[0]).rstrip("/")
     return (
-        f"{BASE_URL}/schedule_channel_{channel_id}_day_"
+        f"{base}/schedule_channel_{channel_id}_day_"
         f"{target_date.isoformat()}.html"
     )
+
+
+def build_day_urls(channel_id: int, target_date: date) -> list[str]:
+    return [
+        build_day_url(channel_id, target_date, base_url=base_url)
+        for base_url in BASE_URLS
+    ]
 
 
 def _clean(value: str) -> str:
@@ -115,22 +126,39 @@ async def _fetch_one(
     channel_id: int,
     target_date: date,
 ) -> tuple[list[dict], str | None]:
-    url = build_day_url(channel_id, target_date)
-    try:
-        async with session.get(url) as response:
-            if response.status != 200:
-                return [], f"{channel}:HTTP_{response.status}"
-            html = await response.text()
-    except Exception as error:
-        return [], f"{channel}:{type(error).__name__}:{error}"
+    errors: list[str] = []
 
-    rows = parse_vsetv_live_html(
-        html,
-        channel=channel,
-        target_date=target_date,
-        source_url=url,
-    )
-    return rows, None
+    # VseTV is still served over plain HTTP in some environments. Railway's
+    # current egress cannot establish a TLS connection to vsetv.com:443, while
+    # the same public pages are available on port 80. Try HTTP first and retain
+    # HTTPS only as a fallback so a future site migration does not break us.
+    for url in build_day_urls(channel_id, target_date):
+        try:
+            async with session.get(url, allow_redirects=True) as response:
+                if response.status != 200:
+                    errors.append(f"{url}:HTTP_{response.status}")
+                    continue
+                html = await response.text()
+        except Exception as error:
+            errors.append(f"{url}:{type(error).__name__}:{error}")
+            continue
+
+        rows = parse_vsetv_live_html(
+            html,
+            channel=channel,
+            target_date=target_date,
+            source_url=str(response.url),
+        )
+        logger.debug(
+            "vsetv fetched channel=%s date=%s url=%s rows=%d",
+            channel,
+            target_date,
+            response.url,
+            len(rows),
+        )
+        return rows, None
+
+    return [], f"{channel}:" + " | ".join(errors)
 
 
 async def get_vsetv_live_evidence(

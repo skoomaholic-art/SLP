@@ -3,7 +3,7 @@ import unittest
 from parsers.qazsport_complete import apply_page_live_markers, extract_row_live_times
 from parsers.sportplus_cached import extract_sportplus_on_air_times
 from parsers.tvguide_broadcast import apply_vsetv_evidence
-from parsers.vsetv_live import parse_vsetv_live_html
+from parsers.vsetv_live import build_day_urls, parse_vsetv_live_html
 from services.broadcast_evidence import add_broadcast_evidence
 
 
@@ -105,12 +105,22 @@ class BroadcastEvidenceTests(unittest.TestCase):
         self.assertFalse(item.get("provider_claimed_live", False))
         self.assertFalse(item["is_live_broadcast"])
 
+    def test_vsetv_transport_prefers_http_but_keeps_https_fallback(self):
+        urls = build_day_urls(771, __import__("datetime").date(2026, 9, 13))
+        self.assertEqual(
+            urls,
+            [
+                "http://www.vsetv.com/schedule_channel_771_day_2026-09-13.html",
+                "https://www.vsetv.com/schedule_channel_771_day_2026-09-13.html",
+            ],
+        )
+
     def test_vsetv_icon_is_third_party_claim_not_direct_by_itself(self):
         rows = parse_vsetv_live_html(
             VSETV_HTML,
             channel="Setanta Sports 1",
             target_date=__import__("datetime").date(2026, 9, 13),
-            source_url="https://www.vsetv.com/example",
+            source_url="http://www.vsetv.com/example",
         )
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["time"], "04:25")
