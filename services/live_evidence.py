@@ -40,6 +40,11 @@ EDITORIAL_TEXT_MARKERS = REPLAY_TEXT_MARKERS + (
     "АРНАЙЫ РЕПОРТАЖ",
     "СҰХБАТ",
     "ӘНҰРАН",
+    "ПРОГРАММА ТУР ПО ТУРУ",
+    "КХЛ. ПОДРОБНО",
+    "КХЛ. ТРАНСФЕРЫ",
+    "ДНЕВНИК",
+    "ИТОГИ",
 )
 
 SPORT_TEXT_MARKERS = (
@@ -81,6 +86,9 @@ EXPLICIT_LIVE_METHODS = {
     "provider_live_asset",
     "qazsport_live_text",
     "qazsport_live_asset",
+    "qazsport_page_live_text",
+    "qazsport_page_live_asset",
+    "external_schedule_consensus",
 }
 
 
@@ -100,8 +108,21 @@ def _upper(value: object) -> str:
     return " ".join(str(value or "").upper().split())
 
 
+def _event_text(event: dict) -> str:
+    return _upper(
+        " ".join(
+            str(event.get(key) or "")
+            for key in ("raw_title", "title", "tournament", "sport")
+        )
+    )
+
+
+def event_is_editorial_or_replay(event: dict) -> bool:
+    text = _event_text(event)
+    return any(marker in text for marker in EDITORIAL_TEXT_MARKERS)
+
+
 def extract_asset_hints(element) -> tuple[str, ...]:
-    """Return asset/class hints scoped to one event DOM subtree."""
     if element is None:
         return ()
 
@@ -131,11 +152,6 @@ def classify_live_evidence(
     asset_hints: Iterable[str] = (),
     live_asset_patterns: Iterable[str] = (),
 ) -> LiveEvidence:
-    """Classify explicit LIVE evidence for one concrete programme card.
-
-    Replay/editorial markers always win. EPG presence alone is never accepted
-    as proof of a direct broadcast.
-    """
     normalized = _upper(text)
 
     for marker in REPLAY_TEXT_MARKERS:
@@ -164,12 +180,9 @@ def classify_live_evidence(
 
 
 def event_is_live_broadcast(event: dict) -> bool:
-    """Return direct-broadcast truth, never temporal ON-AIR state.
+    if event_is_editorial_or_replay(event):
+        return False
 
-    Old persisted TVGuide rows from before the contract split are handled
-    defensively: heuristic ``provider_scheduled_sport_event`` is not accepted
-    as LIVE evidence.
-    """
     if "is_live_broadcast" in event:
         return bool(event.get("is_live_broadcast"))
 
@@ -182,40 +195,27 @@ def event_is_live_broadcast(event: dict) -> bool:
             and method in EXPLICIT_LIVE_METHODS
         )
 
-    # Qazsport/Sport+ legacy payloads used is_live only for source LIVE marks.
     return bool(event.get("is_live", False))
 
 
 def event_is_official_live(event: dict) -> bool:
-    """Require explicit adapter evidence; a bare heuristic is insufficient."""
     method = str(event.get("live_evidence_method") or "")
     if method in EXPLICIT_LIVE_METHODS:
-        return bool(event.get("live_state") == "live")
+        return bool(event.get("live_state") == "live") and not event_is_editorial_or_replay(event)
     return event_is_live_broadcast(event) and str(event.get("source") or "") != "tvguide"
 
 
 def event_is_schedule_candidate(event: dict) -> bool:
-    """Decide whether a programme belongs in the sports schedule.
+    if event_is_editorial_or_replay(event):
+        return False
 
-    This is deliberately independent from direct-broadcast evidence. A sports
-    programme can be listed in the schedule while ``is_live_broadcast`` stays
-    false/unknown.
-    """
     if "is_sport_event" in event:
         return bool(event.get("is_sport_event"))
 
     if event_is_live_broadcast(event):
         return True
 
-    text = _upper(
-        " ".join(
-            str(event.get(key) or "")
-            for key in ("raw_title", "title", "tournament", "sport")
-        )
-    )
-    if any(marker in text for marker in EDITORIAL_TEXT_MARKERS):
-        return False
-
+    text = _event_text(event)
     if str(event.get("sport") or "").strip() or str(event.get("tournament") or "").strip():
         return True
 

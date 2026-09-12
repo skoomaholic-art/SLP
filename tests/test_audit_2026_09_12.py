@@ -74,7 +74,7 @@ class AuditTimezoneRegressionTests(unittest.TestCase):
                 )
                 self.assertFalse(event_is_live_broadcast(parsed))
 
-    def test_qazsport_unmarked_sport_program_remains_visible_in_schedule(self):
+    def test_qazsport_unmarked_sport_program_is_candidate_but_not_direct(self):
         event = {
             "source": "qazsport",
             "channel": "Qazsport",
@@ -89,7 +89,7 @@ class AuditTimezoneRegressionTests(unittest.TestCase):
 
 
 class AuditScheduleSeparationTests(unittest.TestCase):
-    def test_schedule_can_include_sport_candidate_without_calling_it_direct(self):
+    def test_public_schedule_rejects_unconfirmed_epg_candidate(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db = SLPDatabase(Path(temp_dir) / "audit.db")
             orchestrator = ParserOrchestrator(
@@ -111,8 +111,7 @@ class AuditScheduleSeparationTests(unittest.TestCase):
                 events=[event],
             )
             rows = service.get_events(now=AUDIT_NOW)
-            self.assertEqual(len(rows), 1)
-            self.assertFalse(event_is_live_broadcast(rows[0]))
+            self.assertEqual(rows, [])
             self.assertEqual(service.get_live_events(now=AUDIT_NOW), [])
 
 
