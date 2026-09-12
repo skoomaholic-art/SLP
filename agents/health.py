@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from agents.orchestrator import SOURCE_LABELS
 from services.time_logic import KZ_TIMEZONE
 from storage.database import SLPDatabase
 
 
-SOURCE_NAMES = {
-    "qazsport": "Qazsport",
-    "sportplus": "Sport+ Qazaqstan",
-}
+SOURCE_NAMES = SOURCE_LABELS
+
 
 STATUS_ICON = {
     "ok": "🟢",
@@ -31,9 +30,8 @@ def build_health_text(database: SLPDatabase) -> str:
         "",
     ]
 
-    for source in ("qazsport", "sportplus"):
+    for source, name in SOURCE_NAMES.items():
         run = runs.get(source)
-        name = SOURCE_NAMES[source]
         if not run:
             lines.append(f"⚪ {name} · ещё нет запусков")
             continue

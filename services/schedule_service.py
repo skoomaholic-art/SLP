@@ -9,7 +9,6 @@ from services.time_logic import KZ_TIMEZONE, get_event_status
 
 
 logger = logging.getLogger(__name__)
-SOURCE_KEYS = ("qazsport", "sportplus")
 SCHEDULE_LOOKAHEAD_DAYS = 14
 
 
@@ -67,7 +66,7 @@ class ScheduleService:
         snapshots: list[list[dict]] = []
         for scope_date in _date_range(first_scope, last_scope):
             scope_text = scope_date.isoformat()
-            for source in SOURCE_KEYS:
+            for source in self.orchestrator.loaders:
                 snapshots.append(self._source_snapshot(source, scope_text))
 
         merged = merge_source_schedules(*snapshots)

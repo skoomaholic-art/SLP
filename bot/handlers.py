@@ -29,9 +29,10 @@ def _admin_allowed(settings: Settings, user_id: int) -> bool:
     return settings.is_admin(user_id)
 
 
-async def _send_messages(message: Message, chunks: list[str]) -> None:
-    for chunk in chunks:
-        await message.answer(chunk)
+async def _send_messages(message: Message, chunks: list[str], *, reply_markup=None) -> None:
+    for index, chunk in enumerate(chunks):
+        markup = reply_markup if index == len(chunks) - 1 else None
+        await message.answer(chunk, reply_markup=markup)
 
 
 @router.message(Command("start"))
@@ -54,6 +55,7 @@ async def today_command(message: Message, schedule_service: ScheduleService) -> 
     await _send_messages(
         message,
         build_schedule_messages(schedule_service.get_events()),
+        reply_markup=MAIN_KEYBOARD,
     )
 
 
@@ -66,6 +68,7 @@ async def schedule_callback(
     await _send_messages(
         callback.message,
         build_schedule_messages(schedule_service.get_events()),
+        reply_markup=MAIN_KEYBOARD,
     )
 
 
@@ -74,6 +77,7 @@ async def live_command(message: Message, schedule_service: ScheduleService) -> N
     await _send_messages(
         message,
         build_live_messages(schedule_service.get_live_events()),
+        reply_markup=MAIN_KEYBOARD,
     )
 
 
@@ -86,6 +90,7 @@ async def live_callback(
     await _send_messages(
         callback.message,
         build_live_messages(schedule_service.get_live_events()),
+        reply_markup=MAIN_KEYBOARD,
     )
 
 
