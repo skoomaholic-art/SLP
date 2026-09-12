@@ -11,6 +11,7 @@ from agents.qa_agent import ParserQAAgent, QAResult
 from agents.source_agent import SourceAssessment, SourceHealthAgent
 from parsers.qazsport import get_qazsport_schedule
 from parsers.sportplus_cached import get_sportplus_schedule_cached
+from parsers.tvguide_cached import LOOKAHEAD_DAYS as TVGUIDE_LOOKAHEAD_DAYS, get_tvguide_schedule
 from services.schedule_merge import merge_source_schedules
 from services.time_logic import KZ_TIMEZONE, get_event_status
 from storage.database import SLPDatabase
@@ -22,6 +23,7 @@ SourceLoader = Callable[[date], Awaitable[list[dict]]]
 SOURCE_LABELS = {
     "qazsport": "Qazsport",
     "sportplus": "Sport+ Qazaqstan",
+    "tvguide": "TV+ / Mobikino (14 каналов)",
 }
 SPORTPLUS_LOOKAHEAD_DAYS = 14
 
@@ -38,6 +40,8 @@ def source_lookahead_days(source: str, today: date) -> int:
         return _qazsport_lookahead_days(today)
     if source == "sportplus":
         return SPORTPLUS_LOOKAHEAD_DAYS
+    if source == "tvguide":
+        return TVGUIDE_LOOKAHEAD_DAYS
     return 7
 
 
@@ -83,6 +87,10 @@ async def _default_qazsport_loader(target_date: date) -> list[dict]:
 
 async def _default_sportplus_loader(target_date: date) -> list[dict]:
     return await get_sportplus_schedule_cached(target_date)
+
+
+async def _default_tvguide_loader(target_date: date) -> list[dict]:
+    return await get_tvguide_schedule(target_date)
 
 
 def _is_user_event(event: dict) -> bool:
@@ -149,6 +157,7 @@ class ParserOrchestrator:
         self.loaders: dict[str, SourceLoader] = loaders or {
             "qazsport": _default_qazsport_loader,
             "sportplus": _default_sportplus_loader,
+            "tvguide": _default_tvguide_loader,
         }
 
     async def _call_loader(
