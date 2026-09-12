@@ -9,7 +9,8 @@ The repository, not chat history, is the source of truth. Start every session by
 3. `docs/ARCHITECTURE.md`
 4. `docs/PRODUCT_SPEC.md`
 5. `docs/known-issues/bugs.md`
-6. this file again before making broad architectural changes
+6. `docs/RELEASE_PROCESS.md`
+7. this file again before making broad architectural changes
 
 ## Mission
 
@@ -35,12 +36,29 @@ For normal coding-agent work:
 4. keep all changes for that task on that branch;
 5. before opening/updating the PR, check whether `main` moved;
 6. if `main` moved, integrate the new head and rerun the full applicable verification ladder;
-7. merge only after CI is green and the acceptance evidence is recorded;
-8. do not let two coding agents implement the same P0 in separate branches at the same time.
+7. open/update a PR only after local checks pass;
+8. do not merge your own PR unless the user explicitly instructs you to merge that exact PR;
+9. do not let two coding agents implement the same P0 in separate branches at the same time.
 
-Direct writes to `main` are reserved for an explicitly user-approved emergency change or small repository-governance/bootstrap changes. An agent must not start a second implementation merely because another branch or session is still running.
+Coding agents must never push directly to `main`. Repository bootstrap/governance changes still go through a branch and PR.
 
 Railway production is a separate release boundary. A green commit on `main` is not proof that Railway runs that commit. Always compare deployed revision with GitHub `main` before diagnosing production behavior.
+
+## Hard production release boundary
+
+A coding agent is not the production release operator.
+
+The only supported production release path is `.github/workflows/production-release.yml`, documented in `docs/RELEASE_PROCESS.md`.
+
+Coding agents must not:
+
+- call Railway deploy or redeploy actions;
+- run `railway up` or `railway redeploy` against production;
+- enable Railway auto-deploy;
+- deploy a branch, local workspace, or stale SHA;
+- bypass a failed GitHub release gate with a manual Railway deployment.
+
+If the release workflow is unavailable, missing `RAILWAY_TOKEN`, or fails verification, report `NOT RELEASED` with the exact blocker. Do not improvise another production path.
 
 ## Production wiring
 
