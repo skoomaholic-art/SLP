@@ -28,16 +28,44 @@ from verifiers.web_search import verify_event
 logger = logging.getLogger(__name__)
 router = Router(name="slp")
 _check_views: dict[int, list[dict]] = {}
+TELEGRAM_SCHEDULE_EVENT_LIMIT = 60
 
 
 def _admin_allowed(settings: Settings, user_id: int) -> bool:
     return settings.is_admin(user_id)
 
 
+def _schedule_view_events(
+    schedule_service: ScheduleService,
+    *,
+    limit: int = TELEGRAM_SCHEDULE_EVENT_LIMIT,
+) -> tuple[list[dict], int]:
+    events = schedule_service.get_events()
+    safe_limit = max(int(limit), 0)
+    return events[:safe_limit], len(events)
+
+
 async def _send_messages(message: Message, chunks: list[str], *, reply_markup=None) -> None:
+    logger.info("telegram send chunks=%d", len(chunks))
     for index, chunk in enumerate(chunks):
         markup = reply_markup if index == len(chunks) - 1 else None
         await message.answer(chunk, reply_markup=markup)
+
+
+async def _send_schedule_view(
+    message: Message,
+    schedule_service: ScheduleService,
+) -> None:
+    events, total_count = _schedule_view_events(schedule_service)
+    chunks = build_schedule_messages(events, total_count=total_count)
+    logger.info(
+        "telegram schedule view total=%d shown=%d chunks=%d limit=%d",
+        total_count,
+        len(events),
+        len(chunks),
+        TELEGRAM_SCHEDULE_EVENT_LIMIT,
+    )
+    await _send_messages(message, chunks, reply_markup=MAIN_KEYBOARD)
 
 
 @router.message(Command("start"))
@@ -57,11 +85,7 @@ async def menu_callback(callback: CallbackQuery) -> None:
 
 @router.message(Command("today"))
 async def today_command(message: Message, schedule_service: ScheduleService) -> None:
-    await _send_messages(
-        message,
-        build_schedule_messages(schedule_service.get_events()),
-        reply_markup=MAIN_KEYBOARD,
-    )
+    await _send_schedule_view(message, schedule_service)
 
 
 @router.callback_query(F.data == "schedule")
@@ -70,18 +94,16 @@ async def schedule_callback(
     schedule_service: ScheduleService,
 ) -> None:
     await callback.answer()
-    await _send_messages(
-        callback.message,
-        build_schedule_messages(schedule_service.get_events()),
-        reply_markup=MAIN_KEYBOARD,
-    )
+    await _send_schedule_view(callback.message, schedule_service)
 
 
 @router.message(Command("live"))
 async def live_command(message: Message, schedule_service: ScheduleService) -> None:
+    events = schedule_service.get_live_events()
+    logger.info("telegram live view events=%d", len(events))
     await _send_messages(
         message,
-        build_live_messages(schedule_service.get_live_events()),
+        build_live_messages(events),
         reply_markup=MAIN_KEYBOARD,
     )
 
@@ -92,9 +114,11 @@ async def live_callback(
     schedule_service: ScheduleService,
 ) -> None:
     await callback.answer()
+    events = schedule_service.get_live_events()
+    logger.info("telegram live callback events=%d", len(events))
     await _send_messages(
         callback.message,
-        build_live_messages(schedule_service.get_live_events()),
+        build_live_messages(events),
         reply_markup=MAIN_KEYBOARD,
     )
 
