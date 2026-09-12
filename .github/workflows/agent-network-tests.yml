@@ -9,7 +9,7 @@ on:
       - "agents/**"
       - "storage/**"
       - "agent_main.py"
-      - "tests/test_agent_network.py"
+      - "tests/**"
       - ".github/workflows/agent-network-tests.yml"
 
 jobs:
@@ -30,5 +30,5 @@ jobs:
       - name: Compile project
         run: python -m compileall -q .
 
-      - name: Run agent regression tests
-        run: python -m unittest discover -s tests -p 'test_agent_network.py' -v
+      - name: Run full unit regression suite
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
