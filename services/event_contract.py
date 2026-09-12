@@ -12,12 +12,10 @@ REQUIRED_EVENT_FIELDS = (
     "channel",
     "date",
     "time",
-    "timezone",
     "sport",
     "tournament",
     "title",
     "is_live",
-    "is_live_broadcast",
     "raw_title",
     "estimated_broadcast_end_date",
     "estimated_broadcast_end",
@@ -75,7 +73,12 @@ def build_sport_event(
 
 
 def validate_sport_event(event: dict[str, Any]) -> None:
-    """Проверяет универсальный контракт, не бизнес-логику источника."""
+    """Проверяет универсальный контракт, не бизнес-логику источника.
+
+    ``timezone`` и ``is_live_broadcast`` добавлены в 2026-09 как канонические
+    поля, но валидатор принимает старые snapshot/test payloads для безопасной
+    миграции. ``build_sport_event`` всегда добавляет новые поля.
+    """
 
     missing = [
         field
@@ -95,7 +98,6 @@ def validate_sport_event(event: dict[str, Any]) -> None:
         "channel",
         "date",
         "time",
-        "timezone",
         "title",
         "raw_title",
     ):
@@ -104,14 +106,16 @@ def validate_sport_event(event: dict[str, Any]) -> None:
                 f"SportEvent: поле {field} должно быть строкой"
             )
 
-    if not str(event["timezone"]).strip():
-        raise ValueError("SportEvent: timezone не должен быть пустым")
+    if "timezone" in event:
+        if not isinstance(event["timezone"], str):
+            raise TypeError("SportEvent: поле timezone должно быть строкой")
+        if not str(event["timezone"]).strip():
+            raise ValueError("SportEvent: timezone не должен быть пустым")
 
-    for field in ("is_live", "is_live_broadcast"):
-        if not isinstance(event[field], bool):
-            raise TypeError(
-                f"SportEvent: поле {field} должно быть bool"
-            )
+    if not isinstance(event["is_live"], bool):
+        raise TypeError("SportEvent: поле is_live должно быть bool")
+    if "is_live_broadcast" in event and not isinstance(event["is_live_broadcast"], bool):
+        raise TypeError("SportEvent: поле is_live_broadcast должно быть bool")
 
     try:
         datetime.strptime(
