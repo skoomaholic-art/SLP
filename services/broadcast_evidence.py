@@ -8,6 +8,7 @@ OFFICIAL_LIVE_METHODS = {
     "official_live_text",
     "official_live_asset",
     "official_live_page_marker",
+    "qazsport_page_live_text",
 }
 
 THIRD_PARTY_LIVE_METHODS = {
