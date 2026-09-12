@@ -105,32 +105,45 @@ def _safe_end(start: datetime, end: datetime, source_live: bool) -> datetime:
     return end
 
 
+def _next_program_end(
+    event: dict,
+    start: datetime,
+    next_event: dict | None,
+) -> datetime | None:
+    if next_event is None:
+        return None
+    if str(next_event.get("channel") or "") != str(event.get("channel") or ""):
+        return None
+    next_start = get_event_start(next_event)
+    return next_start if next_start > start else None
+
+
 def resolve_event_end(
     event: dict,
     *,
     next_event: dict | None = None,
 ) -> tuple[datetime, str]:
-    """Resolve the end using source/EPG data first and bounded fallback last."""
+    """Resolve end: source/EPG -> next same-channel programme -> fallback."""
     start = get_event_start(event)
     source_live = is_live_broadcast(event)
+    end_method = str(event.get("end_estimation_method") or "")
 
     explicit = _parse_aware_iso(event.get("end_time"), field="end_time")
-    if explicit is not None:
-        return _safe_end(start, explicit, source_live), str(
-            event.get("end_estimation_method") or "source"
-        )
+    # A serialized fallback is not authoritative: if the batch now contains a
+    # next same-channel programme, that boundary is more precise.
+    if explicit is not None and end_method != "fallback_duration":
+        return _safe_end(start, explicit, source_live), end_method or "source"
 
     legacy = _legacy_end(event, start)
-    if legacy is not None:
-        return _safe_end(start, legacy, source_live), str(
-            event.get("end_estimation_method") or "next_program"
-        )
+    if legacy is not None and end_method != "fallback_duration":
+        return _safe_end(start, legacy, source_live), end_method or "next_program"
 
-    if next_event is not None:
-        if str(next_event.get("channel") or "") == str(event.get("channel") or ""):
-            next_start = get_event_start(next_event)
-            if next_start > start:
-                return _safe_end(start, next_start, source_live), "next_program"
+    next_program = _next_program_end(event, start, next_event)
+    if next_program is not None:
+        return _safe_end(start, next_program, source_live), "next_program"
+
+    if explicit is not None:
+        return _safe_end(start, explicit, source_live), "fallback_duration"
 
     fallback = start + timedelta(minutes=get_fallback_duration_minutes(event))
     return _safe_end(start, fallback, source_live), "fallback_duration"
