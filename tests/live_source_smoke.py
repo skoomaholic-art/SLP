@@ -12,7 +12,13 @@ from parsers.sportplus_cached import (
     get_sportplus_available_dates,
     get_sportplus_schedule_cached,
 )
-from parsers.vsetv_live import build_week_url, get_vsetv_live_evidence
+from parsers.vsetv_live import (
+    _nearest_programme_date,
+    _programme_is_live,
+    _programme_time,
+    build_week_url,
+    get_vsetv_live_evidence,
+)
 from services.event_contract import validate_sport_event
 from services.live_evidence import event_is_live_broadcast
 from services.time_logic import KZ_TIMEZONE, get_event_status
@@ -31,15 +37,32 @@ async def _vsetv_signature() -> str:
             async with session.get(url, allow_redirects=True) as response:
                 html = await response.text()
                 soup = BeautifulSoup(html, "html.parser")
-                title = " ".join((soup.title.get_text(" ", strip=True) if soup.title else "").split())
+                title = " ".join(
+                    (soup.title.get_text(" ", strip=True) if soup.title else "").split()
+                )
                 visible = " ".join(soup.stripped_strings)
+                programmes = soup.select("div.prname2")
+                live_programmes = [row for row in programmes if _programme_is_live(row)]
+                if live_programmes:
+                    first_live = live_programmes[0]
+                    first_time = _programme_time(first_live)
+                    first_date = _nearest_programme_date(
+                        first_live,
+                        anchor_date=datetime.now(KZ_TIMEZONE).date(),
+                    )
+                    first_text = " ".join(first_live.stripped_strings)[:140]
+                else:
+                    first_time = None
+                    first_date = None
+                    first_text = ""
                 return (
                     f"status={response.status} final_url={response.url} bytes={len(html.encode('utf-8'))} "
-                    f"title={title!r} prname2={len(soup.select('div.prname2'))} "
+                    f"title={title!r} prname2={len(programmes)} live_prname2={len(live_programmes)} "
                     f"schedule_containers={len(soup.select('#schedule_container'))} "
                     f"ico_live={html.casefold().count('ico_live.gif')} "
                     f"direct_text={visible.casefold().count('прямая трансляция')} "
-                    f"preview={visible[:160]!r}"
+                    f"first_live_time={first_time!r} first_live_date={first_date!r} "
+                    f"first_live_text={first_text!r} preview={visible[:120]!r}"
                 )
     except Exception as error:
         return f"probe_error={type(error).__name__}:{error}"
