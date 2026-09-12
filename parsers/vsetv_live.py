@@ -105,10 +105,13 @@ def _parse_heading_date(text: str, *, anchor_date: date) -> date | None:
 
 
 def _programme_time(programme) -> str | None:
+    # Day pages often keep the time as a direct sibling. Weekly pages can wrap
+    # the programme in extra containers, so fall back to the nearest preceding
+    # div.time in document order. This mirrors the actual VseTV DOM where every
+    # programme's time is emitted immediately before its prname2 block.
     time_node = programme.find_previous_sibling("div", class_="time")
     if time_node is None:
-        parent = programme.parent
-        time_node = parent.find("div", class_="time") if parent else None
+        time_node = programme.find_previous("div", class_="time")
     if time_node is None:
         return None
 
