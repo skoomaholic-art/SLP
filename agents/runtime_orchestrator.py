@@ -5,7 +5,7 @@ from datetime import date, datetime
 from agents.orchestrator import ParserOrchestrator
 from parsers.qazsport_complete import get_qazsport_schedule_complete
 from parsers.sportplus_cached import get_sportplus_schedule_cached
-from parsers.tvguide_cached import get_tvguide_schedule
+from parsers.tvguide_broadcast import get_tvguide_schedule_with_evidence
 from services.time_logic import KZ_TIMEZONE
 from storage.database import SLPDatabase
 
@@ -31,11 +31,11 @@ async def _sportplus_loader(target_date: date) -> list[dict]:
 
 
 async def _tvguide_loader(target_date: date) -> list[dict]:
-    return await get_tvguide_schedule(target_date)
+    return await get_tvguide_schedule_with_evidence(target_date)
 
 
 class RuntimeParserOrchestrator(ParserOrchestrator):
-    """Production orchestrator with source-completeness wrappers enabled."""
+    """Production orchestrator with source-completeness/evidence wrappers enabled."""
 
     def __init__(
         self,
