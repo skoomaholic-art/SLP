@@ -5,78 +5,36 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MAIN_PATH = ROOT / "main.py"
+SERVICE_PATH = ROOT / "services" / "schedule_service.py"
 
 
-class MainMergeIntegrationTests(unittest.TestCase):
+class ProductionEntrypointTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.source = MAIN_PATH.read_text(encoding="utf-8")
-        cls.tree = ast.parse(cls.source)
+        cls.main_source = MAIN_PATH.read_text(encoding="utf-8")
+        cls.main_tree = ast.parse(cls.main_source)
+        cls.service_source = SERVICE_PATH.read_text(encoding="utf-8")
 
-    def test_main_imports_merge_service(self):
-        imported = set()
+    def test_main_is_thin_entrypoint(self):
+        self.assertLess(len(self.main_source.splitlines()), 80)
+        self.assertIn("ParserOrchestrator", self.main_source)
+        self.assertIn("ScheduleService", self.main_source)
+        self.assertIn("scheduler_loop", self.main_source)
+        self.assertNotIn("get_qazsport_schedule", self.main_source)
+        self.assertNotIn("get_sportplus_schedule", self.main_source)
 
-        for node in ast.walk(self.tree):
-            if (
-                isinstance(node, ast.ImportFrom)
-                and node.module == "services.schedule_merge"
-            ):
-                imported.update(alias.name for alias in node.names)
+    def test_bot_reads_database_backed_service(self):
+        self.assertIn("load_active_source_snapshot", self.service_source)
+        self.assertIn("merge_source_schedules", self.service_source)
+        self.assertIn("get_event_status", self.service_source)
 
-        self.assertTrue(
-            {
-                "group_simulcasts",
-                "merge_source_schedules",
-                "unique_channels",
-            }.issubset(imported)
-        )
-
-    def test_load_schedule_uses_merge_source_schedules(self):
-        load_function = next(
-            node
-            for node in self.tree.body
-            if isinstance(node, ast.AsyncFunctionDef)
-            and node.name == "load_schedule_events"
-        )
-
-        calls = {
-            node.func.id
-            for node in ast.walk(load_function)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-        }
-
-        self.assertIn("merge_source_schedules", calls)
-
-    def test_telegram_views_use_simulcast_groups(self):
-        functions = {
-            node.name: node
-            for node in self.tree.body
-            if isinstance(node, ast.FunctionDef)
-        }
-
-        for name in ("build_schedule_text", "build_live_text"):
-            calls = {
-                node.func.id
-                for node in ast.walk(functions[name])
-                if isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-            }
-            self.assertIn("group_simulcasts", calls)
-
-    def test_old_duplicate_helpers_are_removed(self):
-        defined = {
+    def test_only_one_main_coroutine(self):
+        names = [
             node.name
-            for node in self.tree.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
-
-        self.assertNotIn("remove_duplicates", defined)
-        self.assertNotIn("sort_events", defined)
-
-    def test_channel_count_is_not_hardcoded(self):
-        self.assertNotIn("· 2 канала", self.source)
-        self.assertIn("unique_channels(events)", self.source)
+            for node in self.main_tree.body
+            if isinstance(node, ast.AsyncFunctionDef)
+        ]
+        self.assertEqual(names, ["main"])
 
 
 if __name__ == "__main__":

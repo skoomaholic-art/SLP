@@ -24,9 +24,9 @@ Thumbs.db
 # SLP runtime state and local diagnostics
 slp_state.json
 slp_state.json.tmp
-slp.db
-slp.db-shm
-slp.db-wal
+*.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
 logs.txt
