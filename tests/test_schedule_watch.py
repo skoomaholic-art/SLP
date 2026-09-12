@@ -79,7 +79,8 @@ class ScheduleWatchTests(unittest.TestCase):
     def test_missing_event_is_removed(self):
         old = build_schedule_snapshot([event()])
         new = build_schedule_snapshot([])
-        changes = diff_schedule_snapshots(old, new)
+        now = datetime(2026, 8, 29, 20, 0, tzinfo=ZoneInfo("Asia/Almaty"))
+        changes = diff_schedule_snapshots(old, new, now=now)
         self.assertEqual([item["type"] for item in changes], ["removed"])
 
     def test_finished_event_expiration_does_not_send_removed_alert(self):
