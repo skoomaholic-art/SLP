@@ -1,114 +1,61 @@
-# SLP Parser Agent Network v1
+# SLP v2 — Parser Guardrails
 
-This branch adds a guardrail/orchestration layer around the existing SLP parsers without rewriting them.
+SLP has one production entrypoint: `python main.py`.
 
-## Runtime
+The parser guardrail layer is part of the normal runtime. There is no second `agent_main.py` and no monkey-patching of the Telegram application.
 
-Stable legacy entrypoint remains:
-
-```bash
-python main.py
-```
-
-Agent-enabled entrypoint:
-
-```bash
-python agent_main.py
-```
-
-`BOT_TOKEN` is still read by the existing `main.py`. Optional database path:
-
-```bash
-export SLP_DB_PATH=/path/to/slp.db
-python agent_main.py
-```
-
-## Architecture
+## Data flow
 
 ```text
-Qazsport / Sport+
-       │
-       ▼
+Qazsport / Sport+ Qazaqstan
+        ↓
+source parsers
+        ↓
 ParserOrchestrator
-       │
-       ├── SourceHealthAgent
-       │     detects source/parser count anomalies
-       │
-       ├── ParserQAAgent
-       │     validates SportEvent contract and time logic
-       │
-       └── SLPDatabase (SQLite)
-             events snapshots
-             parser runs
-             agent runs
-             incidents
+  ├─ SourceHealthAgent
+  ├─ ParserQAAgent
+  └─ SLPDatabase (SQLite)
+        ↓
+ScheduleService
+        ↓
+Telegram handlers
 ```
 
-The parsers remain deterministic Python code. Agents do not invent schedule data.
+`ParserOrchestrator` owns source refreshes, anomaly checks, QA and last-good fallback. Accepted snapshots are persisted to SQLite. `ScheduleService` reads those accepted snapshots for Telegram, so user button presses do not scrape source websites.
 
 ## Protection rules
 
-For each source and requested schedule date, the orchestrator compares the fresh parser output to the previous accepted run.
+- parser/network exception: reject the fresh snapshot;
+- a previously healthy source collapsing to zero: reject;
+- a severe unexpected count collapse: reject or warn according to `SourceHealthAgent`;
+- contract/time QA failure: reject;
+- rejected runs keep the last accepted source snapshot active.
 
-- parser/network exception -> block fresh snapshot;
-- previous count >= 3 and fresh count becomes 0 -> block;
-- previous count >= 5 and fresh count falls to <=20% -> block;
-- >=50% drop on a larger snapshot -> warning, but publication remains allowed;
-- QA contract/time failure -> block.
+Agents never invent schedule data.
 
-When a run is blocked, SLP loads the last active SQLite snapshot for the same source/date. This prevents a broken HTML selector or temporary source failure from replacing a valid schedule with an empty one.
+## Runtime
 
-## Telegram
+Environment variables:
 
-`agent_main.py` keeps the existing schedule, LIVE, notification and detail handlers. It monkey-patches only `main.load_schedule_events` with the orchestrated loader.
-
-New diagnostics:
-
-```text
-/health
+```bash
+BOT_TOKEN=...
+SLP_REFRESH_INTERVAL_SECONDS=240
+SLP_DB_PATH=/optional/path/slp.db
+ADMIN_IDS=123456789,987654321
 ```
 
-The main menu also replaces the old static Status button with `🧠 Health`.
+`ADMIN_IDS` is optional. If configured, `/refresh` and `/errors` are restricted to those Telegram user IDs.
 
-Health output includes:
+## Diagnostics
 
-- current source status;
-- fresh vs previous event count;
-- fallback usage;
-- last orchestrator run;
-- active SQLite event count;
-- latest unresolved incidents.
-
-## Database
-
-Default file:
-
-```text
-slp.db
-```
-
-Tables:
-
-- `events` — active/previous source snapshots and original event JSON;
-- `parser_runs` — every parser/source/date check;
-- `agent_runs` — orchestrator runs;
-- `incidents` — blocked source/QA failures.
-
-Runtime SQLite files are ignored by Git.
+- `/health` or `/status` — source runs, orchestrator state, SQLite counts and incidents;
+- `/refresh` — manual parser refresh;
+- `/errors` — unresolved parser/QA incidents.
 
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -p 'test_agent_network.py' -v
+python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
-The regression suite verifies:
-
-- collapse-to-zero detection;
-- QA source mismatch rejection;
-- SQLite snapshot restoration;
-- orchestrator fallback to the last good source snapshot.
-
-## Next phase
-
-After this deterministic layer is stable, an LLM Incident/Repair Agent can be added on top of `incidents` and GitHub PRs. It should never write directly to `main`: proposed repairs must run tests first and land through a separate branch/PR.
+CI compiles the entire project and runs the full regression suite on pull requests and pushes to `main`.
