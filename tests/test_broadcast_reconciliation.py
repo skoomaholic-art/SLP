@@ -53,6 +53,18 @@ class BroadcastOccurrenceTests(unittest.TestCase):
         self.assertEqual(result["difference_minutes"], 0)
 
     @patch("verifiers.broadcast_occurrence.openserp_search")
+    def test_search_engine_group_falls_back_after_datacenter_block(self, search):
+        result_row = {
+            "title": "Noche UFC: Silva vs Delgado",
+            "snippet": "Sat, Sep 12 2026 / 5:00 PM EDT. Main Card.",
+            "url": "https://www.ufc.com/event/ufc-fight-night-september-12-2026",
+        }
+        search.side_effect = [RuntimeError("engine group blocked"), ([result_row], {})]
+        result = verify_broadcast_occurrence(base_event())
+        self.assertEqual(result["state"], "confirmed_direct")
+        self.assertGreaterEqual(search.call_count, 2)
+
+    @patch("verifiers.broadcast_occurrence.openserp_search")
     def test_khl_replay_is_rejected_when_real_match_was_previous_day(self, search):
         search.return_value = ([{
             "title": "Барыс - Амур 12 сентября 2026",
