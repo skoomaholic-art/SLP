@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import json
+import logging
 import re
+import urllib.parse
+import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from services.time_logic import KZ_TIMEZONE
 from verifiers.web_search import (
+    OPENSERP_BASE_URL,
     build_queries,
     dedupe_results,
     englishize,
@@ -19,22 +24,17 @@ from verifiers.web_search import (
     result_text,
 )
 
-FAST_TIMEOUT_SECONDS = 14
+logger = logging.getLogger(__name__)
+FAST_TIMEOUT_SECONDS = 25
 MAX_RESULTS = 12
 MAX_EXTRACT_RESULTS = 3
 MAX_CONFIRM_DIFF_MINUTES = 30
 
-# Bing/DDG are frequently throttled from datacenter IPs. Prefer engines that
-# currently survive Railway egress, then fall back to the original pair plus
-# Google. Each group is queried as a single OpenSERP mega request.
 SEARCH_ENGINE_GROUPS = (
     ("yandex", "baidu", "ecosia"),
     ("google", "bing", "duckduckgo"),
 )
 
-# Event-owner domains are strong enough to confirm a single occurrence. Keep
-# this list local to the occurrence verifier so generic web verification is not
-# made more permissive.
 OFFICIAL_EVENT_DOMAINS = {
     "ufc.com", "pflmma.com", "formula1.com", "fia.com", "fiawec.com", "wrc.com",
     "motogp.com", "khl.ru", "nhl.com", "nba.com", "fiba.basketball", "ijf.org",
@@ -239,6 +239,42 @@ def _dated_candidates(result: dict) -> tuple[list[dict], list[date]]:
     return candidates, explicit_dates
 
 
+def _openserp_search_any(query: str, engines: tuple[str, ...], timeout: int):
+    """Use OpenSERP mode=any in Railway so one healthy engine can return early.
+
+    Local/CI runs keep using the existing helper, which makes tests independent
+    of a running OpenSERP service.
+    """
+    if not OPENSERP_BASE_URL:
+        return openserp_search(query, engines=engines, timeout=timeout)
+
+    params = {
+        "text": query,
+        "engines": ",".join(engines),
+        "mode": "any",
+        "dedupe": "true",
+        "merge": "true",
+        "limit": str(MAX_RESULTS),
+    }
+    url = f"{OPENSERP_BASE_URL}/mega/search?{urllib.parse.urlencode(params)}"
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        data = json.load(response)
+
+    results = data.get("results", []) if isinstance(data, dict) else []
+    meta = data.get("meta", {}) if isinstance(data, dict) else {}
+    if not isinstance(results, list):
+        results = []
+    if not isinstance(meta, dict):
+        meta = {}
+    return results, {
+        **meta,
+        "slp_engines": list(engines),
+        "slp_timeout": timeout,
+        "slp_mode": "any",
+    }
+
+
 def _search_resilient(event: dict) -> tuple[list[dict], list[dict], list[str]]:
     all_results: list[dict] = []
     meta: list[dict] = []
@@ -248,7 +284,7 @@ def _search_resilient(event: dict) -> tuple[list[dict], list[dict], list[str]]:
         got_results = False
         for engines in SEARCH_ENGINE_GROUPS:
             try:
-                results, search_meta = openserp_search(
+                results, search_meta = _openserp_search_any(
                     query,
                     engines=engines,
                     timeout=FAST_TIMEOUT_SECONDS,
@@ -281,7 +317,10 @@ def _extract_matching_pages(matching: list[dict]) -> list[dict]:
     seen_domains: set[str] = set()
     for result in sorted(
         matching,
-        key=lambda item: (-_source_weight(str(item.get("url") or item.get("link") or "")), int(item.get("rank") or 9999)),
+        key=lambda item: (
+            -_source_weight(str(item.get("url") or item.get("link") or "")),
+            int(item.get("rank") or 9999),
+        ),
     ):
         url = str(result.get("url") or result.get("link") or "")
         if not url:
@@ -337,8 +376,6 @@ def verify_broadcast_occurrence(event: dict) -> dict:
         candidates.extend(extracted)
         seen_dates.update(dates)
 
-    # Search snippets often omit the actual start time. Pull a few independent
-    # event pages and parse their dated content before deciding UNKNOWN.
     if not candidates and matching:
         for page in _extract_matching_pages(matching):
             if not _relaxed_match(page, event):
@@ -367,6 +404,11 @@ def verify_broadcast_occurrence(event: dict) -> dict:
         if any(item["weight"] >= 100 for item in sources) or (
             len(sources) >= 2 and total_weight >= 100
         ):
+            logger.info(
+                "occurrence confirmed channel=%s scheduled=%s %s external=%s diff=%d source=%s",
+                event.get("channel"), event.get("date"), event.get("time"),
+                best["dt_kz"].isoformat(), best["difference_minutes"], best["source_name"],
+            )
             return {
                 "state": "confirmed_direct",
                 "difference_minutes": best["difference_minutes"],
@@ -389,6 +431,11 @@ def verify_broadcast_occurrence(event: dict) -> dict:
             key=lambda item: abs((item["dt_kz"] - broadcast).total_seconds()),
         )
         difference = int((closest["dt_kz"] - broadcast).total_seconds() / 60)
+        logger.info(
+            "occurrence mismatch channel=%s scheduled=%s %s external=%s diff=%d source=%s",
+            event.get("channel"), event.get("date"), event.get("time"),
+            closest["dt_kz"].isoformat(), difference, closest["source_name"],
+        )
         return {
             "state": "mismatch",
             "difference_minutes": difference,
