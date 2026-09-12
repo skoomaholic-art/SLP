@@ -18,25 +18,28 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://www.championat.com"
 PRIMARY_MATCH_CENTER = "/stat/?from=rasp"
-READER_URL = "https://r.jina.ai/https://www.championat.com/stat/?from=rasp"
+READER_BASE_URL = "https://r.jina.ai/https://www.championat.com"
 MSK_TIMEZONE = ZoneInfo("Europe/Moscow")
 CACHE_TTL_SECONDS = 300.0
 DEFAULT_LOOKBACK_DAYS = 2
 DEFAULT_LOOKAHEAD_DAYS = 7
-REQUEST_TIMEOUT_SECONDS = 25
+REQUEST_TIMEOUT_SECONDS = 30
 REQUEST_CONCURRENCY = 5
+# A healthy all-sports match center normally contains far more than this.
+# Below this threshold we batch-fetch sport-specific reader pages and merge them.
+MIN_ROOT_READER_EVENTS = 25
 
 SECTION_PAGES = {
-    "Футбол": "/football/",
-    "Хоккей": "/hockey/",
-    "Теннис": "/tennis/",
-    "Баскетбол": "/basketball/",
-    "Волейбол": "/volleyball/",
-    "Автоспорт": "/auto/",
-    "MMA": "/boxing/",
-    "Биатлон": "/biathlon/",
-    "Лыжи": "/ski/",
-    "Фигурное катание": "/figureskating/",
+    "Футбол": "/stat/football/",
+    "Хоккей": "/stat/hockey/",
+    "Теннис": "/stat/tennis/",
+    "Баскетбол": "/stat/basketball/",
+    "Волейбол": "/stat/volleyball/",
+    "Автоспорт": "/stat/auto/",
+    "MMA": "/stat/boxing/",
+    "Биатлон": "/stat/biathlon/",
+    "Лыжи": "/stat/ski/",
+    "Фигурное катание": "/stat/figureskating/",
 }
 _SPORT_BY_PATH = {
     "football": "Футбол",
@@ -60,6 +63,7 @@ _SPORT_HEADINGS = {
     "авто": "Автоспорт",
     "автоспорт": "Автоспорт",
     "мма": "MMA",
+    "бокс": "MMA",
     "бокс/мма": "MMA",
     "биатлон": "Биатлон",
     "лыжи": "Лыжи",
@@ -71,9 +75,20 @@ _SPORT_HEADINGS = {
     "киберспорт": "Киберспорт",
     "прочие": "Прочее",
 }
+_NON_MATCH_SPORTS = {
+    "Автоспорт",
+    "Биатлон",
+    "Лыжи",
+    "Фигурное катание",
+    "Прочее",
+}
 
-_DATE_TIME_RE = re.compile(r"(?<!\d)(\d{1,2})[.]([01]?\d)[.](20\d{2})\s+(\d{1,2}):(\d{2})(?!\d)")
-_SHORT_DATE_TIME_RE = re.compile(r"(?<!\d)(\d{1,2})[.]([01]?\d)\s+(\d{1,2}):(\d{2})(?!\d)")
+_DATE_TIME_RE = re.compile(
+    r"(?<!\d)(\d{1,2})[.]([01]?\d)[.](20\d{2})\s+(\d{1,2}):(\d{2})(?!\d)"
+)
+_SHORT_DATE_TIME_RE = re.compile(
+    r"(?<!\d)(\d{1,2})[.]([01]?\d)\s+(\d{1,2}):(\d{2})(?!\d)"
+)
 _TIME_RE = re.compile(r"(?<!\d)([0-2]?\d):(\d{2})(?!\d)")
 _MATCH_HREF_RE = re.compile(r"/[^?#\s]+/match/\d+/?(?:[?#]|$)", re.I)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]*\)")
@@ -82,16 +97,33 @@ _TEXT_EVENT_RE = re.compile(
     r"(?:(\d{1,2})[.]([01]?\d)(?:[.](20\d{2}))?\s+)?"
     r"([0-2]?\d):(\d{2})\s+(.+?)\s*$"
 )
+# Hyphens inside club names (e.g. Динамо-Барнаул) are not separators unless
+# surrounded by spaces. En/em dashes may be compact on Championat home widgets.
+_MATCH_SEPARATOR_RE = re.compile(
+    r"(?:\s+-\s+|\s*[–—]\s*|\s+(?:vs\.?|v\.)\s+)",
+    re.I,
+)
 _SCORE_RE = re.compile(r"\s+\d+\s*:\s*\d+(?:\s*\([^)]*\))?")
 _STATUS_RE = re.compile(
     r"\s+(?:Не начался|Не началось|Окончен|Окончено|Идёт|Идет|Перерыв|"
     r"Отложен|Отложено|Перенесен|Перенесён|Отменен|Отменён|"
-    r"\d+-й\s+(?:тайм|период|сет))(?:\b|[,'])",
+    r"\d+-й\s+(?:тайм|период|сет)|\d+-я\s+партия)(?:\b|[,'])",
     re.I,
 )
 _STATUS_MARKERS = (
-    "Не начался", "Не началось", "Окончен", "Окончено", "Идёт", "Идет",
-    "Перерыв", "Отложен", "Отложено", "Перенесен", "Перенесён", "Отменен", "Отменён",
+    "Не начался",
+    "Не началось",
+    "Окончен",
+    "Окончено",
+    "Идёт",
+    "Идет",
+    "Перерыв",
+    "Отложен",
+    "Отложено",
+    "Перенесен",
+    "Перенесён",
+    "Отменен",
+    "Отменён",
 )
 
 
@@ -112,9 +144,18 @@ def build_match_center_url(path: str) -> str:
     return urljoin(f"{BASE_URL}/", path.lstrip("/"))
 
 
+def build_reader_url(path: str) -> str:
+    normalized = "/" + path.lstrip("/")
+    return f"{READER_BASE_URL}{normalized}"
+
+
 def _sport_from_url(url: str, fallback: str = "") -> str:
     parts = [part.casefold() for part in urlparse(url).path.split("/") if part]
-    return _SPORT_BY_PATH.get(parts[0], fallback) if parts else fallback
+    if not parts:
+        return fallback
+    if parts[0] == "stat" and len(parts) > 1:
+        return _SPORT_BY_PATH.get(parts[1], fallback)
+    return _SPORT_BY_PATH.get(parts[0], fallback)
 
 
 def _status_from_text(text: str) -> str:
@@ -122,7 +163,11 @@ def _status_from_text(text: str) -> str:
     for marker in _STATUS_MARKERS:
         if marker.casefold() in lowered:
             return marker
-    if re.search(r"\b(?:1-й|2-й|3-й|4-й)\s+(?:тайм|период|сет)\b", text, re.I):
+    if re.search(
+        r"\b(?:1-й|2-й|3-й|4-й)\s+(?:тайм|период|сет)\b|\b\d+-я\s+партия\b",
+        text,
+        re.I,
+    ):
         return "Идёт"
     return ""
 
@@ -143,7 +188,7 @@ def _container_text(anchor) -> str:
             continue
         if _TIME_RE.search(text):
             best = text
-            if any(marker.casefold() in text.casefold() for marker in _STATUS_MARKERS):
+            if _status_from_text(text):
                 break
     return best
 
@@ -156,7 +201,13 @@ def _infer_year(anchor_date: date, month: int) -> int:
     return anchor_date.year
 
 
-def _to_kz_datetime(year: int, month: int, day: int, hour: int, minute: int) -> datetime | None:
+def _to_kz_datetime(
+    year: int,
+    month: int,
+    day: int,
+    hour: int,
+    minute: int,
+) -> datetime | None:
     if hour > 23 or minute > 59:
         return None
     try:
@@ -184,14 +235,23 @@ def _extract_start(text: str, anchor_date: date) -> datetime | None:
     return _to_kz_datetime(year, month, day, hour, minute)
 
 
-def _event_dict(*, title: str, raw_text: str, sport: str, start_kz: datetime, source_url: str) -> dict:
+def _event_dict(
+    *,
+    title: str,
+    raw_text: str,
+    sport: str,
+    start_kz: datetime,
+    source_url: str,
+    tournament: str = "",
+) -> dict:
     return {
         "source": "championat",
         "source_url": source_url,
         "title": title,
         "raw_title": raw_text,
-        "search_text": raw_text,
+        "search_text": " ".join(part for part in (tournament, raw_text) if part),
         "sport": sport,
+        "tournament": tournament,
         "status": _status_from_text(raw_text),
         "source_timezone": "Europe/Moscow",
         "timezone": "Asia/Almaty",
@@ -201,7 +261,12 @@ def _event_dict(*, title: str, raw_text: str, sport: str, start_kz: datetime, so
     }
 
 
-def parse_match_center_html(html: str, anchor_date: date, *, sport: str = "") -> list[dict]:
+def parse_match_center_html(
+    html: str,
+    anchor_date: date,
+    *,
+    sport: str = "",
+) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
     by_url: dict[str, dict] = {}
     for anchor in soup.find_all("a", href=True):
@@ -247,29 +312,55 @@ def _match_title_from_tail(tail: str) -> str:
     return clean
 
 
-def parse_match_center_text(text: str, anchor_date: date) -> list[dict]:
-    """Parse reader/search-friendly Match Center text without depending on DOM classes."""
+def _looks_like_tournament_heading(line: str) -> bool:
+    if not line or len(line) > 180:
+        return False
+    if _TIME_RE.search(line):
+        return False
+    lowered = line.casefold()
+    if lowered in _SPORT_HEADINGS:
+        return False
+    return not line.startswith(("[", "(", "http"))
+
+
+def parse_match_center_text(
+    text: str,
+    anchor_date: date,
+    *,
+    sport: str = "",
+    source_url: str | None = None,
+) -> list[dict]:
+    """Parse reader/search-friendly Match Center text without DOM classes."""
     events: list[dict] = []
-    current_sport = ""
+    current_sport = sport
+    current_tournament = ""
     seen: set[tuple[str, str, str]] = set()
+    source_url = source_url or build_match_center_url(PRIMARY_MATCH_CENTER)
 
     for raw_line in str(text or "").splitlines():
         line = _strip_markdown(raw_line).strip(" #\t")
         if not line:
             continue
+
         heading = _SPORT_HEADINGS.get(line.casefold())
         if heading:
             current_sport = heading
+            current_tournament = ""
             continue
 
         match = _TEXT_EVENT_RE.match(line)
         if not match:
+            if current_sport and _looks_like_tournament_heading(line):
+                current_tournament = line
             continue
+
         day_text, month_text, year_text, hour_text, minute_text, tail = match.groups()
-        title = _match_title_from_tail(tail)
-        if not title or not re.search(r"\s(?:-|–|—|vs\.?|v\.)\s", title, re.I):
+        raw_tail = _strip_markdown(tail)
+        title = _match_title_from_tail(raw_tail)
+        has_separator = bool(_MATCH_SEPARATOR_RE.search(title))
+        if not title or (not has_separator and current_sport not in _NON_MATCH_SPORTS):
             continue
-        if not (_status_from_text(tail) or _SCORE_RE.search(_strip_markdown(tail))):
+        if not (_status_from_text(raw_tail) or _SCORE_RE.search(raw_tail)):
             continue
 
         if day_text and month_text:
@@ -278,9 +369,17 @@ def parse_match_center_text(text: str, anchor_date: date) -> list[dict]:
             year = int(year_text) if year_text else _infer_year(anchor_date, month)
         else:
             day, month, year = anchor_date.day, anchor_date.month, anchor_date.year
-        start_kz = _to_kz_datetime(year, month, day, int(hour_text), int(minute_text))
+
+        start_kz = _to_kz_datetime(
+            year,
+            month,
+            day,
+            int(hour_text),
+            int(minute_text),
+        )
         if start_kz is None:
             continue
+
         identity = (start_kz.isoformat(), current_sport, title.casefold())
         if identity in seen:
             continue
@@ -288,20 +387,30 @@ def parse_match_center_text(text: str, anchor_date: date) -> list[dict]:
         events.append(
             _event_dict(
                 title=title,
-                raw_text=_strip_markdown(tail),
+                raw_text=raw_tail,
                 sport=current_sport,
+                tournament=current_tournament,
                 start_kz=start_kz,
-                source_url=build_match_center_url(PRIMARY_MATCH_CENTER),
+                source_url=source_url,
             )
         )
 
-    events.sort(key=lambda item: (item["date"], item["time"], item["sport"], item["title"]))
+    events.sort(
+        key=lambda item: (
+            item["date"],
+            item["time"],
+            item["sport"],
+            item["title"],
+        )
+    )
     return events
 
 
 def _blocked_page_diagnostic(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
-    title = _clean_text(soup.title.get_text(" ", strip=True) if soup.title else "")[:120]
+    title = _clean_text(
+        soup.title.get_text(" ", strip=True) if soup.title else ""
+    )[:120]
     preview = _clean_text(soup.get_text(" ", strip=True))[:200]
     return f"bytes={len(html)}:title={title!r}:text={preview!r}"
 
@@ -310,7 +419,10 @@ def _text_diagnostic(text: str) -> str:
     return f"bytes={len(text)}:text={_clean_text(text)[:260]!r}"
 
 
-async def _download(session: aiohttp.ClientSession, url: str) -> tuple[str, str | None]:
+async def _download(
+    session: aiohttp.ClientSession,
+    url: str,
+) -> tuple[str, str | None]:
     try:
         async with session.get(url) as response:
             if response.status != 200:
@@ -320,21 +432,62 @@ async def _download(session: aiohttp.ClientSession, url: str) -> tuple[str, str 
         return "", f"{type(error).__name__}:{error}"
 
 
-async def _fetch_section(session, semaphore, anchor_date, sport, path):
+async def _fetch_reader_section(
+    session: aiohttp.ClientSession,
+    semaphore: asyncio.Semaphore,
+    anchor_date: date,
+    sport: str,
+    path: str,
+) -> tuple[list[dict], str | None]:
+    reader_url = build_reader_url(path)
     async with semaphore:
-        html, error = await _download(session, build_match_center_url(path))
+        text, error = await _download(session, reader_url)
     if error:
-        return [], f"{sport}:{error}"
-    events = parse_match_center_html(html, anchor_date, sport=sport)
+        return [], f"reader:{sport}:{error}"
+    events = parse_match_center_text(
+        text,
+        anchor_date,
+        sport=sport,
+        source_url=build_match_center_url(path),
+    )
     if not events:
-        return [], f"{sport}:no_events:{_blocked_page_diagnostic(html)}"
+        return [], f"reader:{sport}:no_events:{_text_diagnostic(text)}"
     return events, None
+
+
+def _merge_events(*groups: list[dict]) -> list[dict]:
+    merged: list[dict] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for group in groups:
+        for event in group:
+            key = (
+                str(event.get("date") or ""),
+                str(event.get("time") or ""),
+                str(event.get("sport") or ""),
+                _clean_text(str(event.get("title") or "")).casefold(),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(event)
+    merged.sort(
+        key=lambda item: (
+            str(item.get("date") or ""),
+            str(item.get("time") or ""),
+            str(item.get("sport") or ""),
+            str(item.get("title") or ""),
+        )
+    )
+    return merged
 
 
 async def fetch_championat_calendar(anchor_date: date) -> ChampionatCalendar:
     timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
     headers = {
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/128 Safari/537.36",
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 Chrome/128 Safari/537.36"
+        ),
         "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.5",
     }
     semaphore = asyncio.Semaphore(REQUEST_CONCURRENCY)
@@ -343,59 +496,115 @@ async def fetch_championat_calendar(anchor_date: date) -> ChampionatCalendar:
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
         primary_url = build_match_center_url(PRIMARY_MATCH_CENTER)
         html, primary_error = await _download(session, primary_url)
-        events = parse_match_center_html(html, anchor_date) if html else []
-        if events:
-            logger.info("championat transport=direct_stat events=%d", len(events))
+        direct_events = parse_match_center_html(html, anchor_date) if html else []
+        if direct_events:
+            logger.info(
+                "championat transport=direct_stat events=%d",
+                len(direct_events),
+            )
         else:
             if primary_error:
                 errors.append(f"direct:{primary_error}")
             elif html:
-                errors.append(f"direct:no_events:{_blocked_page_diagnostic(html)}")
+                errors.append(
+                    f"direct:no_events:{_blocked_page_diagnostic(html)}"
+                )
 
-            reader_text, reader_error = await _download(session, READER_URL)
-            reader_events = parse_match_center_text(reader_text, anchor_date) if reader_text else []
-            if reader_events:
-                events = reader_events
-                logger.info("championat transport=reader events=%d", len(events))
-            else:
-                if reader_error:
-                    errors.append(f"reader:{reader_error}")
-                elif reader_text:
-                    errors.append(f"reader:no_events:{_text_diagnostic(reader_text)}")
+        root_reader_url = build_reader_url(PRIMARY_MATCH_CENTER)
+        reader_text, reader_error = await _download(session, root_reader_url)
+        reader_events = (
+            parse_match_center_text(
+                reader_text,
+                anchor_date,
+                source_url=primary_url,
+            )
+            if reader_text
+            else []
+        )
+        if reader_error:
+            errors.append(f"reader:root:{reader_error}")
+        elif reader_text and not reader_events:
+            errors.append(
+                f"reader:root:no_events:{_text_diagnostic(reader_text)}"
+            )
 
-        if not events:
-            rows = await asyncio.gather(*(
-                _fetch_section(session, semaphore, anchor_date, sport, path)
-                for sport, path in SECTION_PAGES.items()
-            ))
-            seen: set[str] = set()
+        section_events: list[dict] = []
+        if len(reader_events) < MIN_ROOT_READER_EVENTS:
+            rows = await asyncio.gather(
+                *(
+                    _fetch_reader_section(
+                        session,
+                        semaphore,
+                        anchor_date,
+                        sport,
+                        path,
+                    )
+                    for sport, path in SECTION_PAGES.items()
+                )
+            )
             for page_events, error in rows:
                 if error:
                     errors.append(error)
-                for event in page_events:
-                    key = f"{event.get('date')}|{event.get('time')}|{event.get('sport')}|{event.get('title')}"
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    events.append(event)
-            if events:
-                logger.info("championat transport=section_pages events=%d", len(events))
+                section_events.extend(page_events)
+            logger.info(
+                "championat reader root incomplete root_events=%d section_events=%d",
+                len(reader_events),
+                len(section_events),
+            )
 
-    events.sort(key=lambda item: (str(item.get("date") or ""), str(item.get("time") or ""), str(item.get("sport") or ""), str(item.get("title") or "")))
-    fetched_dates = sorted({str(event.get("date") or "") for event in events if event.get("date")})
-    logger.info(
-        "championat calendar fetched events=%d sports=%d dates=%s errors=%d timezone=Asia/Almaty",
-        len(events), len({str(event.get("sport") or "") for event in events}), fetched_dates, len(errors),
+    events = _merge_events(direct_events, reader_events, section_events)
+    transport = (
+        "direct+reader"
+        if direct_events and (reader_events or section_events)
+        else "reader_sections"
+        if section_events
+        else "reader"
+        if reader_events
+        else "direct"
+        if direct_events
+        else "none"
     )
-    return ChampionatCalendar(events=events, errors=errors, fetched_dates=fetched_dates)
+    fetched_dates = sorted(
+        {
+            str(event.get("date") or "")
+            for event in events
+            if event.get("date")
+        }
+    )
+    logger.info(
+        "championat calendar fetched transport=%s events=%d sports=%d dates=%s errors=%d timezone=Asia/Almaty",
+        transport,
+        len(events),
+        len({str(event.get("sport") or "") for event in events}),
+        fetched_dates,
+        len(errors),
+    )
+    return ChampionatCalendar(
+        events=events,
+        errors=errors,
+        fetched_dates=fetched_dates,
+    )
 
 
-async def get_championat_calendar(anchor: date | None = None, *, lookback_days=DEFAULT_LOOKBACK_DAYS, lookahead_days=DEFAULT_LOOKAHEAD_DAYS, force_refresh=False) -> ChampionatCalendar:
+async def get_championat_calendar(
+    anchor: date | None = None,
+    *,
+    lookback_days: int = DEFAULT_LOOKBACK_DAYS,
+    lookahead_days: int = DEFAULT_LOOKAHEAD_DAYS,
+    force_refresh: bool = False,
+) -> ChampionatCalendar:
+    # The current Match Center transport is a snapshot around `anchor`; the
+    # parameters stay in the public contract for a future historical/calendar
+    # transport and for caller compatibility.
     del lookback_days, lookahead_days
     global _cache_anchor, _cache_expires_at, _cache_result
     anchor = anchor or datetime.now(KZ_TIMEZONE).date()
     async with _cache_lock:
-        if force_refresh or _cache_anchor != anchor or time.monotonic() >= _cache_expires_at:
+        if (
+            force_refresh
+            or _cache_anchor != anchor
+            or time.monotonic() >= _cache_expires_at
+        ):
             _cache_result = await fetch_championat_calendar(anchor)
             _cache_anchor = anchor
             _cache_expires_at = time.monotonic() + CACHE_TTL_SECONDS
