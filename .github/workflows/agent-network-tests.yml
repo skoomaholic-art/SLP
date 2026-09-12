@@ -1,16 +1,11 @@
-name: Agent network tests
+name: SLP v2 CI
 
 on:
   push:
     branches:
-      - agent-network-v1
+      - main
   pull_request:
-    paths:
-      - "agents/**"
-      - "storage/**"
-      - "agent_main.py"
-      - "tests/**"
-      - ".github/workflows/agent-network-tests.yml"
+  workflow_dispatch:
 
 jobs:
   test:
@@ -23,12 +18,16 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: python -m pip install -r requirements.txt
 
       - name: Compile project
         run: python -m compileall -q .
 
-      - name: Run full unit regression suite
+      - name: Import production runtime
+        run: python -c "import main, bot.handlers, scheduler.jobs, services.schedule_service"
+
+      - name: Run full regression suite
         run: python -m unittest discover -s tests -p 'test_*.py' -v
