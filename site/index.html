@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="SLP — Telegram-бот и агрегатор спортивных LIVE-трансляций для Казахстана. Парсинг официальных телепрограмм, контроль качества и единая временная зона Asia/Almaty."
+    />
+    <meta name="theme-color" content="#070a0e" />
+    <title>SLP — Sports Live Parser</title>
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23070a0e'/%3E%3Cpath d='M16 43V30M27 43V22M38 43V14M49 43V27' stroke='%23c7ff4a' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#content">Перейти к содержанию</a>
+
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="SLP — на главную">
+        <span class="brand-mark" aria-hidden="true">
+          <i></i><i></i><i></i><i></i>
+        </span>
+        <span>SLP</span>
+      </a>
+
+      <nav class="desktop-nav" aria-label="Основная навигация">
+        <a href="#pipeline">Как работает</a>
+        <a href="#reliability">Надёжность</a>
+        <a href="#commands">Команды</a>
+      </nav>
+
+      <a
+        class="repo-link"
+        href="https://github.com/skoomaholic-art/SLP"
+        target="_blank"
+        rel="noreferrer"
+      >
+        GitHub
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M4.5 11.5 11.5 4.5M6 4.5h5.5V10" />
+        </svg>
+      </a>
+    </header>
+
+    <main id="content">
+      <section class="hero" id="top">
+        <div class="hero-copy">
+          <div class="eyebrow">
+            <span class="pulse" aria-hidden="true"></span>
+            Sports intelligence / Kazakhstan
+          </div>
+          <h1>Спортивный эфир.<br /><span>Без слепых зон.</span></h1>
+          <p class="hero-lead">
+            SLP собирает расписания официальных телеканалов, находит прямые
+            трансляции и выдаёт редакции проверенный эфир через Telegram.
+          </p>
+          <div class="hero-actions">
+            <a class="primary-button" href="#pipeline">
+              Посмотреть систему
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M4 10h11M11 6l4 4-4 4" />
+              </svg>
+            </a>
+            <span class="timezone">Asia/Almaty · UTC+5</span>
+          </div>
+        </div>
+
+        <div class="control-panel" aria-label="Ключевые параметры SLP">
+          <div class="panel-topline">
+            <span>System overview</span>
+            <span class="system-state"><i></i> Production-ready</span>
+          </div>
+
+          <div class="signal-map" aria-hidden="true">
+            <span class="orbit orbit-one"></span>
+            <span class="orbit orbit-two"></span>
+            <span class="signal-core"><i></i></span>
+            <span class="channel channel-qaz">QAZSPORT</span>
+            <span class="channel channel-sport">SPORT+</span>
+            <span class="signal-line line-one"></span>
+            <span class="signal-line line-two"></span>
+          </div>
+
+          <div class="metric-grid">
+            <article>
+              <span class="metric-value">04:00</span>
+              <span class="metric-label">цикл обновления</span>
+            </article>
+            <article>
+              <span class="metric-value">14 дней</span>
+              <span class="metric-label">горизонт эфира</span>
+            </article>
+            <article>
+              <span class="metric-value">2</span>
+              <span class="metric-label">официальных источника</span>
+            </article>
+          </div>
+        </div>
+
+        <div class="hero-index" aria-hidden="true">01</div>
+      </section>
+
+      <section class="source-strip" aria-label="Поддерживаемые источники">
+        <span>OFFICIAL SOURCES</span>
+        <strong>QAZSPORT</strong>
+        <i></i>
+        <strong>SPORT+ QAZAQSTAN</strong>
+        <i></i>
+        <span>NO PLAYWRIGHT</span>
+      </section>
+
+      <section class="section pipeline-section" id="pipeline">
+        <div class="section-heading">
+          <span class="section-number">02 / DATA FLOW</span>
+          <h2>От телепрограммы<br />до редактора</h2>
+          <p>
+            Каждый этап отсекает шум и сохраняет только принятые данные.
+            Ошибка одного канала не останавливает остальные.
+          </p>
+        </div>
+
+        <ol class="pipeline" aria-label="Пайплайн обработки данных">
+          <li>
+            <span class="step-index">01</span>
+            <div class="step-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 18V8m8 10V4m8 14v-7" />
+              </svg>
+            </div>
+            <div>
+              <h3>Источник</h3>
+              <p>Официальные HTML-телепрограммы каналов</p>
+            </div>
+          </li>
+          <li>
+            <span class="step-index">02</span>
+            <div class="step-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m4 7 8-4 8 4-8 4-8-4Zm0 5 8 4 8-4M4 17l8 4 8-4" />
+              </svg>
+            </div>
+            <div>
+              <h3>Оркестратор</h3>
+              <p>Парсинг, повторные попытки и детерминированный QA</p>
+            </div>
+          </li>
+          <li>
+            <span class="step-index">03</span>
+            <div class="step-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <ellipse cx="12" cy="5" rx="8" ry="3" />
+                <path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7" />
+              </svg>
+            </div>
+            <div>
+              <h3>Хранилище</h3>
+              <p>SQLite-снимки, история запусков и инциденты</p>
+            </div>
+          </li>
+          <li>
+            <span class="step-index">04</span>
+            <div class="step-icon">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M21 4 3 11l7 2 2 7 9-16Z" />
+                <path d="m10 13 4-4" />
+              </svg>
+            </div>
+            <div>
+              <h3>Telegram</h3>
+              <p>LIVE, расписание, диагностика и XLSX</p>
+            </div>
+          </li>
+        </ol>
+      </section>
+
+      <section class="section live-section" id="live-logic">
+        <div class="logic-card">
+          <div class="logic-heading">
+            <span class="section-number">03 / LIVE SEMANTICS</span>
+            <h2>Один источник истины<br />для статуса эфира</h2>
+          </div>
+
+          <div class="timeline" aria-label="Логика статусов трансляции">
+            <div class="timeline-labels">
+              <span>UPCOMING</span>
+              <span>LIVE</span>
+              <span>FINISHED</span>
+            </div>
+            <div class="timeline-track">
+              <span class="track-before"></span>
+              <span class="track-live"></span>
+              <span class="track-after"></span>
+              <i class="start-marker"></i>
+              <i class="end-marker"></i>
+            </div>
+            <div class="timeline-times">
+              <span>now &lt; start</span>
+              <span>start ≤ now &lt; end</span>
+              <span>now ≥ end</span>
+            </div>
+          </div>
+
+          <p class="logic-note">
+            Вся арифметика — на timezone-aware датах. Если канал не публикует
+            время окончания, SLP берёт начало следующей программы или
+            консервативный резерв по виду спорта.
+          </p>
+        </div>
+      </section>
+
+      <section class="section reliability-section" id="reliability">
+        <div class="section-heading compact">
+          <span class="section-number">04 / RESILIENCE</span>
+          <h2>Не просто парсер.<br />Система с памятью.</h2>
+        </div>
+
+        <div class="feature-grid">
+          <article class="feature-card feature-wide">
+            <div class="feature-meta"><span>01</span><i>FALLBACK</i></div>
+            <h3>Последний хороший снимок остаётся в эфире</h3>
+            <p>
+              Сломанная или пустая страница источника не затирает принятые
+              данные. SLP фиксирует инцидент и продолжает обслуживать редакцию.
+            </p>
+            <div class="snapshot-viz" aria-hidden="true">
+              <span>LAST GOOD</span>
+              <i></i><i></i><i class="muted"></i><i></i><i></i>
+              <strong>ACCEPTED</strong>
+            </div>
+          </article>
+
+          <article class="feature-card">
+            <div class="feature-meta"><span>02</span><i>ISOLATION</i></div>
+            <h3>Сбой канала локализован</h3>
+            <p>Провайдеры обновляются независимо друг от друга.</p>
+          </article>
+
+          <article class="feature-card acid-card">
+            <div class="feature-meta"><span>03</span><i>COLD START</i></div>
+            <h3>Сначала данные.<br />Потом бот.</h3>
+            <p>Первое обновление проходит до запуска Telegram polling.</p>
+          </article>
+
+          <article class="feature-card">
+            <div class="feature-meta"><span>04</span><i>DEDUP</i></div>
+            <h3>Дубли без потери эфиров</h3>
+            <p>
+              Удаляются только совпадения на одном канале. Одна игра на двух
+              каналах остаётся двумя трансляциями.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section command-section" id="commands">
+        <div class="command-copy">
+          <span class="section-number">05 / TELEGRAM</span>
+          <h2>Редактору — ответ.<br />Системе — диагностика.</h2>
+          <p>
+            Основные сценарии доступны без панели администратора. Технические
+            подробности остаются в логах, а пользователи получают чистый ответ.
+          </p>
+        </div>
+
+        <div class="terminal" aria-label="Команды Telegram-бота">
+          <div class="terminal-bar">
+            <span><i></i><i></i><i></i></span>
+            <b>SLP / COMMANDS</b>
+            <em>UTC+5</em>
+          </div>
+          <div class="command-list">
+            <div><code>/today</code><span>текущие и будущие LIVE-события</span></div>
+            <div><code>/live</code><span>трансляции, которые идут сейчас</span></div>
+            <div><code>/check</code><span>независимая веб-проверка события</span></div>
+            <div><code>/health</code><span>состояние парсеров и базы</span></div>
+            <div><code>/refresh</code><span>принудительное обновление</span></div>
+            <div><code>/errors</code><span>открытые QA-инциденты</span></div>
+          </div>
+          <div class="terminal-status">
+            <span><i></i> Ready</span>
+            <span>Python 3.12 · SQLite · aiogram</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="cta-section">
+        <div>
+          <span class="section-number">SOURCE CODE</span>
+          <h2>SLP хранит эфир<br />в рабочем состоянии.</h2>
+        </div>
+        <a
+          class="cta-link"
+          href="https://github.com/skoomaholic-art/SLP"
+          target="_blank"
+          rel="noreferrer"
+        >
+          Открыть репозиторий
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 19 19 5M8 5h11v11" />
+          </svg>
+        </a>
+      </section>
+    </main>
+
+    <footer>
+      <a class="brand footer-brand" href="#top" aria-label="SLP — наверх">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        <span>SLP</span>
+      </a>
+      <p>Skoomaholic’s Sports Live Parser</p>
+      <p>Built for sports editorial workflow · Kazakhstan</p>
+    </footer>
+
+    <script src="./script.js"></script>
+  </body>
+</html>
