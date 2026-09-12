@@ -13,7 +13,12 @@ from bot.formatters import build_live_messages, build_schedule_messages
 from bot.keyboards import BACK_TO_MENU, MAIN_KEYBOARD, event_check_keyboard
 from bot.verification import build_verification_text
 from config import Settings
-from services.export_xlsx import build_schedule_xlsx
+from services.export_xlsx import (
+    EXPORT_MODE_FINISH_UPCOMING,
+    EXPORT_MODE_LIVE,
+    build_schedule_xlsx,
+    filter_export_events,
+)
 from services.schedule_service import ScheduleService
 from services.schedule_watch import is_subscribed, set_subscription
 from services.time_logic import KZ_TIMEZONE
@@ -203,12 +208,37 @@ async def export_callback(
     schedule_service: ScheduleService,
 ) -> None:
     await callback.answer()
-    events = schedule_service.get_events()
-    payload = build_schedule_xlsx(events)
-    filename = f"SLP_{datetime.now(KZ_TIMEZONE):%Y-%m-%d_%H-%M}.xlsx"
+    now = datetime.now(KZ_TIMEZONE)
+    events = schedule_service.get_events(now=now)
+    stamp = f"{now:%Y-%m-%d_%H-%M}"
+
+    live_events = filter_export_events(events, mode=EXPORT_MODE_LIVE, now=now)
+    live_payload = build_schedule_xlsx(events, mode=EXPORT_MODE_LIVE, now=now)
     await callback.message.answer_document(
-        BufferedInputFile(payload, filename=filename),
-        caption=f"📥 Событий: {len(events)}",
+        BufferedInputFile(
+            live_payload,
+            filename=f"SLP_{stamp}_(live).xlsx",
+        ),
+        caption=f"📥 LIVE сейчас: {len(live_events)}",
+    )
+
+    other_events = filter_export_events(
+        events,
+        mode=EXPORT_MODE_FINISH_UPCOMING,
+        now=now,
+    )
+    other_payload = build_schedule_xlsx(
+        events,
+        mode=EXPORT_MODE_FINISH_UPCOMING,
+        now=now,
+    )
+    await callback.message.answer_document(
+        BufferedInputFile(
+            other_payload,
+            filename=f"SLP_{stamp}_(finish-upcoming).xlsx",
+        ),
+        caption=f"📥 FINISHED + UPCOMING: {len(other_events)}",
+        reply_markup=MAIN_KEYBOARD,
     )
 
 
