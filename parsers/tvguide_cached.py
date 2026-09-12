@@ -6,17 +6,22 @@ import re
 import time
 from datetime import date, datetime, timedelta, timezone
 
+from parsers.championat import get_championat_calendar
 from parsers.tvplus import fetch_tvplus_schedules
 from services.time_logic import KZ_TIMEZONE, get_scheduled_datetimes
-from verifiers.championat_occurrence import verify_championat_occurrence
+from verifiers.championat_calendar import (
+    match_championat_calendar,
+    verify_official_fallback,
+)
 
 logger = logging.getLogger(__name__)
 SOURCE = "tvguide"
 LOOKAHEAD_DAYS = 7
 CACHE_TTL_SECONDS = 180.0
-RECONCILE_LOOKAHEAD_HOURS = LOOKAHEAD_DAYS * 24 + 12
-RECONCILE_MAX_NEW_PER_REFRESH = 80
-RECONCILE_CONCURRENCY = 6
+OFFICIAL_FALLBACK_LOOKAHEAD_HOURS = 36
+OFFICIAL_FALLBACK_LOOKBACK_HOURS = 6
+OFFICIAL_FALLBACK_MAX_PER_REFRESH = 20
+OFFICIAL_FALLBACK_CONCURRENCY = 4
 
 _REPLAY_MARKERS = (
     "повтор", "replay", "rerun", "re-run", "архив", "archive", "catch-up",
@@ -49,7 +54,7 @@ _cache_lock = asyncio.Lock()
 _cache_anchor: date | None = None
 _cache_expires_at = 0.0
 _cache_by_date: dict[date, list[dict]] = {}
-_verification_cache: dict[str, tuple[float, dict]] = {}
+_fallback_cache: dict[str, tuple[float, dict]] = {}
 
 
 def _text(event: dict) -> str:
@@ -147,8 +152,7 @@ def infer_direct_event(event: dict, *, target_date: date, seen: set[tuple[str, s
         }
     )
 
-    # TVGuide/EPG is never authoritative for LIVE. Even an explicit LIVE label
-    # must be reconciled against a real sporting occurrence before publication.
+    # EPG says what the channel schedules. It never proves a real LIVE event.
     item["provider_claimed_live"] = provider_claimed_live
     item["is_live_broadcast"] = False
     item["is_live"] = False
@@ -252,7 +256,7 @@ def apply_reconciliation_result(event: dict, result: dict) -> dict:
         item["live_state"] = "live"
         item["live_evidence_method"] = (
             "championat_schedule_match"
-            if verification_source == "championat.com"
+            if verification_source in {"championat.com", "championat_calendar"}
             else "official_schedule_match"
         )
         item["live_evidence_value"] = "real-event schedule matched TV slot"
@@ -266,7 +270,6 @@ def apply_reconciliation_result(event: dict, result: dict) -> dict:
         item["live_evidence_value"] = str(result.get("reason") or "real-event time/date differs from TV slot")
         item["live_evidence_confidence"] = "high"
     else:
-        # Fail closed: EPG alone is not enough to publish a LIVE event.
         item["is_live_broadcast"] = False
         item["is_live"] = False
         item["is_sport_event"] = False
@@ -278,47 +281,74 @@ def apply_reconciliation_result(event: dict, result: dict) -> dict:
 
 async def _reconcile_external(by_date: dict[date, list[dict]]) -> dict[date, list[dict]]:
     now = datetime.now(KZ_TIMEZONE)
-    start_window = datetime.combine(now.date(), datetime.min.time(), tzinfo=KZ_TIMEZONE)
-    end_window = now + timedelta(hours=RECONCILE_LOOKAHEAD_HOURS)
-    semaphore = asyncio.Semaphore(RECONCILE_CONCURRENCY)
-    new_budget = RECONCILE_MAX_NEW_PER_REFRESH
-    new_candidates: list[tuple[date, int, dict, str]] = []
+    calendar = await get_championat_calendar(now.date())
+    fallback_start = now - timedelta(hours=OFFICIAL_FALLBACK_LOOKBACK_HOURS)
+    fallback_end = now + timedelta(hours=OFFICIAL_FALLBACK_LOOKAHEAD_HOURS)
+    semaphore = asyncio.Semaphore(OFFICIAL_FALLBACK_CONCURRENCY)
+
+    fallback_candidates: list[tuple[date, int, dict, str]] = []
+    local_checked = 0
+    local_confirmed = 0
+    local_mismatch = 0
+    local_unknown = 0
 
     for scope_date in sorted(by_date):
         for index, event in enumerate(by_date[scope_date]):
             if not event.get("is_sport_event"):
                 continue
-            start, _ = get_scheduled_datetimes(event)
-            if start < start_window or start > end_window:
-                event["is_sport_event"] = False
-                event["reconciliation_state"] = "pending_window"
+
+            local_checked += 1
+            result = match_championat_calendar(event, calendar.events)
+            state = str(result.get("state") or "unknown")
+            if state == "confirmed_direct":
+                local_confirmed += 1
+                by_date[scope_date][index] = apply_reconciliation_result(event, result)
+                continue
+            if state == "mismatch":
+                local_mismatch += 1
+                by_date[scope_date][index] = apply_reconciliation_result(event, result)
                 continue
 
+            local_unknown += 1
+            start, _ = get_scheduled_datetimes(event)
             key = _verification_key(event)
-            cached = _verification_cache.get(key)
+            cached = _fallback_cache.get(key)
             if cached and cached[0] > time.monotonic():
                 by_date[scope_date][index] = apply_reconciliation_result(event, cached[1])
                 continue
-            new_candidates.append((scope_date, index, event, key))
+
+            if fallback_start <= start <= fallback_end:
+                fallback_candidates.append((scope_date, index, event, key))
+            else:
+                pending = apply_reconciliation_result(event, result)
+                pending["reconciliation_state"] = "pending_official_fallback"
+                by_date[scope_date][index] = pending
 
     async def verify_one(entry: tuple[date, int, dict, str]):
         scope_date, index, event, key = entry
         async with semaphore:
-            result = await asyncio.to_thread(verify_championat_occurrence, event)
-        _verification_cache[key] = (time.monotonic() + _cache_ttl(result), result)
+            result = await asyncio.to_thread(verify_official_fallback, event)
+        _fallback_cache[key] = (time.monotonic() + _cache_ttl(result), result)
         return scope_date, index, apply_reconciliation_result(event, result)
 
-    selected = new_candidates[:new_budget]
+    selected = fallback_candidates[:OFFICIAL_FALLBACK_MAX_PER_REFRESH]
     if selected:
         verified = await asyncio.gather(*(verify_one(entry) for entry in selected))
         for scope_date, index, event in verified:
             by_date[scope_date][index] = event
 
-    for scope_date, index, event, _ in new_candidates[new_budget:]:
-        item = dict(event)
-        item["is_sport_event"] = False
-        item["reconciliation_state"] = "pending_verification"
-        by_date[scope_date][index] = item
+    for scope_date, index, event, _ in fallback_candidates[OFFICIAL_FALLBACK_MAX_PER_REFRESH:]:
+        pending = apply_reconciliation_result(
+            event,
+            {
+                "state": "unknown",
+                "verification_source": "official_fallback",
+                "reason": "fallback_budget_deferred",
+                "sources": [],
+            },
+        )
+        pending["reconciliation_state"] = "pending_official_fallback"
+        by_date[scope_date][index] = pending
 
     confirmed = sum(
         1 for events in by_date.values() for event in events
@@ -333,9 +363,20 @@ async def _reconcile_external(by_date: dict[date, list[dict]]) -> dict[date, lis
         if str(event.get("reconciliation_state") or "").startswith("pending")
     )
     logger.info(
-        "tvguide reconciliation checked_new=%d confirmed=%d replay_or_mismatch=%d pending=%d window_hours=%d reference=championat.com",
-        len(selected), confirmed, replays, pending, RECONCILE_LOOKAHEAD_HOURS,
+        "tvguide reconciliation championat_events=%d championat_errors=%d local_checked=%d local_confirmed=%d local_mismatch=%d local_unknown=%d official_fallback_checked=%d confirmed=%d replay_or_mismatch=%d pending=%d",
+        len(calendar.events),
+        len(calendar.errors),
+        local_checked,
+        local_confirmed,
+        local_mismatch,
+        local_unknown,
+        len(selected),
+        confirmed,
+        replays,
+        pending,
     )
+    if calendar.errors:
+        logger.warning("championat calendar partial errors=%s", calendar.errors[:20])
     return by_date
 
 
