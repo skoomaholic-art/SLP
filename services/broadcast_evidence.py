@@ -7,11 +7,16 @@ OFFICIAL_LIVE_METHODS = {
     "official_live_badge",
     "official_live_text",
     "official_live_asset",
+    "official_live_page_marker",
 }
 
 THIRD_PARTY_LIVE_METHODS = {
     "third_party_live_badge",
     "third_party_live_text",
+}
+
+ON_AIR_METHODS = {
+    "official_on_air_marker",
 }
 
 
@@ -28,6 +33,8 @@ def add_broadcast_evidence(
 
     Evidence is additive. A provider marker says what a channel/guide claims;
     it does not automatically turn a non-sport programme into a sports LIVE.
+    In particular, ``official_on_air_marker`` only means the programme is the
+    channel's current slot; it is not evidence of a direct sports broadcast.
     """
     item = dict(event)
     evidence = list(item.get("broadcast_evidence") or [])
@@ -43,8 +50,10 @@ def add_broadcast_evidence(
         evidence.append(record)
     item["broadcast_evidence"] = evidence
 
-    if on_air_now is not None:
-        item["provider_on_air_now"] = bool(on_air_now)
+    if on_air_now is not None or method in ON_AIR_METHODS:
+        item["provider_on_air_now"] = bool(
+            True if on_air_now is None else on_air_now
+        )
 
     if method in OFFICIAL_LIVE_METHODS:
         item["provider_claimed_live"] = True
