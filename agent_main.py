@@ -1,14 +1,13 @@
 """Agent-enabled SLP entrypoint.
 
-Run this instead of main.py to enable persistent parser snapshots, source-health
-checks, QA guardrails, fallback recovery and /health without rewriting the
-stable Telegram UI in main.py.
+Both entrypoints now use the same DB-backed loader from ``main.py``. This file
+only adds agent health UI; it no longer creates or monkey-patches a second
+ParserOrchestrator instance.
 """
 
 from __future__ import annotations
 
 import asyncio
-import time
 
 from aiogram import F
 from aiogram.filters import Command
@@ -16,63 +15,13 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 import main as app
 from agents.health import build_health_text
-from agents.orchestrator import ParserOrchestrator
 
 
-orchestrator = ParserOrchestrator()
+orchestrator = app.orchestrator
 
 
-async def orchestrated_load_schedule_events(
-    *,
-    force_refresh: bool = False,
-    return_errors: bool = False,
-):
-    """Drop-in replacement for main.load_schedule_events."""
-    now_timestamp = time.time()
-
-    if (
-        not force_refresh
-        and app.schedule_cache["events"]
-        and (now_timestamp - app.schedule_cache["time"]) < app.SCHEDULE_CACHE_TTL
-    ):
-        events = app.schedule_cache["events"]
-        errors = list(app.schedule_cache.get("source_errors", []))
-        return (events, errors) if return_errors else events
-
-    try:
-        result = await orchestrator.refresh()
-    except Exception as error:
-        print("SLP orchestrator fatal error:", repr(error))
-        cached = list(app.schedule_cache.get("events") or [])
-        errors = [f"Orchestrator: {type(error).__name__}: {error}"]
-        if cached:
-            print("SLP orchestrator: using in-memory cache after fatal error")
-            return (cached, errors) if return_errors else cached
-        raise
-
-    app.schedule_cache["events"] = result.events
-    app.schedule_cache["time"] = now_timestamp
-    app.schedule_cache["source_errors"] = list(result.source_errors)
-
-    if result.source_errors:
-        print("SLP orchestrator degraded:", " | ".join(result.source_errors))
-    if result.source_warnings:
-        print("SLP orchestrator warnings:", " | ".join(result.source_warnings))
-
-    return (
-        (result.events, result.source_errors)
-        if return_errors
-        else result.events
-    )
-
-
-# Existing callbacks in main.py resolve this global at runtime, so replacing it
-# here upgrades schedule/LIVE/notification flows without duplicating handlers.
-app.load_schedule_events = orchestrated_load_schedule_events
-
-
-# Replace only the menu object. Existing /start reads app.main_keyboard at call
-# time, while all original schedule/LIVE/notification callbacks stay intact.
+# Replace only the menu object. Existing handlers resolve app.main_keyboard at
+# runtime, while schedule/LIVE/notifications all keep the shared main loader.
 app.main_keyboard = InlineKeyboardMarkup(
     inline_keyboard=[
         [
