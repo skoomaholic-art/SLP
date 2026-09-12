@@ -6,7 +6,6 @@ from zoneinfo import ZoneInfo
 
 from services.time_logic import KZ_TIMEZONE
 from verifiers.web_search import (
-    PRIMARY_SEARCH_ENGINES,
     build_queries,
     dedupe_results,
     englishize,
@@ -15,13 +14,35 @@ from verifiers.web_search import (
     get_source_weight,
     matches_event,
     normalize,
+    openserp_extract_batch,
     openserp_search,
     result_text,
 )
 
-FAST_TIMEOUT_SECONDS = 12
-MAX_RESULTS = 10
+FAST_TIMEOUT_SECONDS = 14
+MAX_RESULTS = 12
+MAX_EXTRACT_RESULTS = 3
 MAX_CONFIRM_DIFF_MINUTES = 30
+
+# Bing/DDG are frequently throttled from datacenter IPs. Prefer engines that
+# currently survive Railway egress, then fall back to the original pair plus
+# Google. Each group is queried as a single OpenSERP mega request.
+SEARCH_ENGINE_GROUPS = (
+    ("yandex", "baidu", "ecosia"),
+    ("google", "bing", "duckduckgo"),
+)
+
+# Event-owner domains are strong enough to confirm a single occurrence. Keep
+# this list local to the occurrence verifier so generic web verification is not
+# made more permissive.
+OFFICIAL_EVENT_DOMAINS = {
+    "ufc.com", "pflmma.com", "formula1.com", "fia.com", "fiawec.com", "wrc.com",
+    "motogp.com", "khl.ru", "nhl.com", "nba.com", "fiba.basketball", "ijf.org",
+    "uefa.com", "fifa.com", "the-afc.com", "premierleague.com", "laliga.com",
+    "bundesliga.com", "legaseriea.it", "ligue1.com", "kff.kz", "kffleague.kz",
+    "atptour.com", "wtatennis.com", "itftennis.com", "wst.tv", "olympics.com",
+    "worldathletics.org", "worldaquatics.com", "fivb.com", "asianvolleyball.net",
+}
 
 MONTHS = {
     "january": 1, "jan": 1, "января": 1, "январь": 1,
@@ -74,7 +95,8 @@ STOP_TOKENS = {
 
 
 def _parse_hour(hour: str, minute: str | None, ampm: str | None) -> tuple[int, int] | None:
-    h = int(hour); m = int(minute or 0)
+    h = int(hour)
+    m = int(minute or 0)
     if not 0 <= m <= 59:
         return None
     if ampm:
@@ -100,10 +122,14 @@ def extract_explicit_dates(text: str) -> list[tuple[date, int]]:
                     day, month, year = map(int, match.groups())
                 elif index == 2:
                     month_name, day_text, year_text = match.groups()
-                    year = int(year_text); month = MONTHS[month_name.casefold()]; day = int(day_text)
+                    year = int(year_text)
+                    month = MONTHS[month_name.casefold()]
+                    day = int(day_text)
                 else:
                     day_text, month_name, year_text = match.groups()
-                    year = int(year_text); month = MONTHS[month_name.casefold()]; day = int(day_text)
+                    year = int(year_text)
+                    month = MONTHS[month_name.casefold()]
+                    day = int(day_text)
                 found.append((date(year, month, day), match.start()))
             except (ValueError, KeyError):
                 continue
@@ -126,6 +152,13 @@ def _domain_timezone(url: str):
     if domain.endswith(".ru"):
         return ZoneInfo("Europe/Moscow")
     return None
+
+
+def _source_weight(url: str) -> int:
+    domain = get_base_domain(get_domain(url))
+    if domain in OFFICIAL_EVENT_DOMAINS:
+        return max(100, get_source_weight(url))
+    return get_source_weight(url)
 
 
 def _context_score(text: str, start: int, end: int, explicit_tz: bool) -> int:
@@ -165,16 +198,27 @@ def _dated_candidates(result: dict) -> tuple[list[dict], list[date]]:
 
     def add(match, source_tz, explicit_tz):
         groups = match.groups()
-        parsed = _parse_hour(groups[0], groups[1] if len(groups) > 1 else None, groups[2] if len(groups) > 2 else None)
+        parsed = _parse_hour(
+            groups[0],
+            groups[1] if len(groups) > 1 else None,
+            groups[2] if len(groups) > 2 else None,
+        )
         source_date = _nearest_date(dates_with_pos, match.start())
         if not parsed or source_date is None:
             return
         hour, minute = parsed
-        dt = datetime(source_date.year, source_date.month, source_date.day, hour, minute, tzinfo=source_tz).astimezone(KZ_TIMEZONE)
+        dt = datetime(
+            source_date.year,
+            source_date.month,
+            source_date.day,
+            hour,
+            minute,
+            tzinfo=source_tz,
+        ).astimezone(KZ_TIMEZONE)
         candidates.append({
             "dt_kz": dt,
             "url": url,
-            "weight": get_source_weight(url),
+            "weight": _source_weight(url),
             "organization": get_base_domain(get_domain(url)),
             "source_name": get_domain(url) or "Источник",
             "context_score": _context_score(text, match.start(), match.end(), explicit_tz),
@@ -195,16 +239,96 @@ def _dated_candidates(result: dict) -> tuple[list[dict], list[date]]:
     return candidates, explicit_dates
 
 
-def verify_broadcast_occurrence(event: dict) -> dict:
-    query = build_queries(event)[0]
-    try:
-        results, meta = openserp_search(query, engines=PRIMARY_SEARCH_ENGINES, timeout=FAST_TIMEOUT_SECONDS)
-    except Exception as error:
-        return {"state": "unavailable", "error": f"{type(error).__name__}: {error}", "sources": []}
+def _search_resilient(event: dict) -> tuple[list[dict], list[dict], list[str]]:
+    all_results: list[dict] = []
+    meta: list[dict] = []
+    errors: list[str] = []
 
-    results = dedupe_results(results)[:MAX_RESULTS]
+    for query_index, query in enumerate(build_queries(event)):
+        got_results = False
+        for engines in SEARCH_ENGINE_GROUPS:
+            try:
+                results, search_meta = openserp_search(
+                    query,
+                    engines=engines,
+                    timeout=FAST_TIMEOUT_SECONDS,
+                )
+                meta.append({
+                    **search_meta,
+                    "query_index": query_index,
+                    "engine_group": list(engines),
+                })
+                if results:
+                    all_results.extend(results)
+                    got_results = True
+                    break
+            except Exception as error:
+                errors.append(
+                    f"{','.join(engines)}:{type(error).__name__}:{error}"
+                )
+
+        all_results = dedupe_results(all_results)[:MAX_RESULTS]
+        if any(_relaxed_match(result, event) for result in all_results):
+            break
+        if not got_results:
+            continue
+
+    return all_results, meta, errors
+
+
+def _extract_matching_pages(matching: list[dict]) -> list[dict]:
+    selected: list[dict] = []
+    seen_domains: set[str] = set()
+    for result in sorted(
+        matching,
+        key=lambda item: (-_source_weight(str(item.get("url") or item.get("link") or "")), int(item.get("rank") or 9999)),
+    ):
+        url = str(result.get("url") or result.get("link") or "")
+        if not url:
+            continue
+        domain = get_base_domain(get_domain(url))
+        if domain in seen_domains:
+            continue
+        seen_domains.add(domain)
+        selected.append(result)
+        if len(selected) >= MAX_EXTRACT_RESULTS:
+            break
+
+    if not selected:
+        return []
+
+    try:
+        extracted = openserp_extract_batch([
+            str(item.get("url") or item.get("link") or "") for item in selected
+        ])
+    except Exception:
+        return []
+
+    pages: list[dict] = []
+    for result, item in zip(selected, extracted):
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("page_content") or "").strip()
+        if not content:
+            continue
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        url = str(metadata.get("source") or result.get("url") or result.get("link") or "")
+        pages.append({
+            **result,
+            "url": url,
+            "title": str(metadata.get("title") or result.get("title") or ""),
+            "content": content,
+            "extracted": True,
+        })
+    return pages
+
+
+def verify_broadcast_occurrence(event: dict) -> dict:
+    results, search_meta, search_errors = _search_resilient(event)
     matching = [result for result in results if _relaxed_match(result, event)]
-    broadcast = datetime.strptime(f"{event['date']} {event['time']}", "%Y-%m-%d %H:%M").replace(tzinfo=KZ_TIMEZONE)
+    broadcast = datetime.strptime(
+        f"{event['date']} {event['time']}", "%Y-%m-%d %H:%M"
+    ).replace(tzinfo=KZ_TIMEZONE)
 
     candidates: list[dict] = []
     seen_dates: set[date] = set()
@@ -213,7 +337,17 @@ def verify_broadcast_occurrence(event: dict) -> dict:
         candidates.extend(extracted)
         seen_dates.update(dates)
 
-    plausible = []
+    # Search snippets often omit the actual start time. Pull a few independent
+    # event pages and parse their dated content before deciding UNKNOWN.
+    if not candidates and matching:
+        for page in _extract_matching_pages(matching):
+            if not _relaxed_match(page, event):
+                continue
+            extracted, dates = _dated_candidates(page)
+            candidates.extend(extracted)
+            seen_dates.update(dates)
+
+    plausible: list[dict] = []
     for candidate in candidates:
         difference = int((candidate["dt_kz"] - broadcast).total_seconds() / 60)
         enriched = {**candidate, "difference_minutes": difference}
@@ -222,31 +356,50 @@ def verify_broadcast_occurrence(event: dict) -> dict:
 
     if plausible:
         by_org: dict[str, dict] = {}
-        for candidate in sorted(plausible, key=lambda item: (-item["weight"], -item["context_score"])):
+        for candidate in sorted(
+            plausible,
+            key=lambda item: (-item["weight"], -item["context_score"]),
+        ):
             by_org.setdefault(candidate["organization"], candidate)
         sources = list(by_org.values())
         total_weight = sum(item["weight"] for item in sources)
         best = max(sources, key=lambda item: (item["weight"], item["context_score"]))
-        if any(item["weight"] >= 100 for item in sources) or (len(sources) >= 2 and total_weight >= 100):
+        if any(item["weight"] >= 100 for item in sources) or (
+            len(sources) >= 2 and total_weight >= 100
+        ):
             return {
                 "state": "confirmed_direct",
                 "difference_minutes": best["difference_minutes"],
                 "external_time_kz": best["dt_kz"].isoformat(),
                 "sources": [
-                    {"source_name": item["source_name"], "url": item["url"], "difference_minutes": item["difference_minutes"]}
+                    {
+                        "source_name": item["source_name"],
+                        "url": item["url"],
+                        "difference_minutes": item["difference_minutes"],
+                    }
                     for item in sources[:5]
                 ],
-                "search_meta": meta,
+                "search_meta": search_meta,
+                "search_errors": search_errors,
             }
 
     if candidates:
-        closest = min(candidates, key=lambda item: abs((item["dt_kz"] - broadcast).total_seconds()))
+        closest = min(
+            candidates,
+            key=lambda item: abs((item["dt_kz"] - broadcast).total_seconds()),
+        )
         difference = int((closest["dt_kz"] - broadcast).total_seconds() / 60)
         return {
             "state": "mismatch",
             "difference_minutes": difference,
             "external_time_kz": closest["dt_kz"].isoformat(),
-            "sources": [{"source_name": closest["source_name"], "url": closest["url"], "difference_minutes": difference}],
+            "sources": [{
+                "source_name": closest["source_name"],
+                "url": closest["url"],
+                "difference_minutes": difference,
+            }],
+            "search_meta": search_meta,
+            "search_errors": search_errors,
         }
 
     if seen_dates and all(abs((found - broadcast.date()).days) > 1 for found in seen_dates):
@@ -255,11 +408,16 @@ def verify_broadcast_occurrence(event: dict) -> dict:
             "reason": "external_event_date_mismatch",
             "external_dates": sorted(value.isoformat() for value in seen_dates),
             "sources": [],
+            "search_meta": search_meta,
+            "search_errors": search_errors,
         }
 
+    unavailable = bool(search_errors and not results)
     return {
-        "state": "unknown",
+        "state": "unavailable" if unavailable else "unknown",
         "matching_results_count": len(matching),
         "search_results_count": len(results),
         "sources": [],
+        "search_meta": search_meta,
+        "search_errors": search_errors,
     }
