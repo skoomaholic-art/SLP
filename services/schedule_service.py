@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+import logging
+from datetime import date, datetime, timedelta
 
 from agents.orchestrator import ParserOrchestrator, RefreshResult
 from services.schedule_merge import merge_source_schedules
 from services.time_logic import KZ_TIMEZONE, get_event_status
 
 
+logger = logging.getLogger(__name__)
 SOURCE_KEYS = ("qazsport", "sportplus")
+SCHEDULE_LOOKAHEAD_DAYS = 14
 
 
 def is_user_event(event: dict) -> bool:
@@ -27,12 +30,15 @@ def is_user_event(event: dict) -> bool:
     )
 
 
-class ScheduleService:
-    """Single application service for parser refreshes and bot reads.
+def _date_range(start: date, end: date):
+    current = start
+    while current <= end:
+        yield current
+        current += timedelta(days=1)
 
-    Parsers write accepted source snapshots to SQLite through ParserOrchestrator.
-    Telegram reads those accepted snapshots instead of scraping sites on every click.
-    """
+
+class ScheduleService:
+    """Application service for refreshes and database-backed bot reads."""
 
     def __init__(self, orchestrator: ParserOrchestrator | None = None):
         self.orchestrator = orchestrator or ParserOrchestrator()
@@ -55,43 +61,124 @@ class ScheduleService:
             now = now.astimezone(KZ_TIMEZONE)
 
         today = now.date()
-        yesterday = today - timedelta(days=1)
+        first_scope = today - timedelta(days=1)
+        last_scope = today + timedelta(days=SCHEDULE_LOOKAHEAD_DAYS)
 
-        today_schedule = merge_source_schedules(
-            *[
-                self._source_snapshot(source, today.isoformat())
-                for source in SOURCE_KEYS
-            ]
+        snapshots: list[list[dict]] = []
+        for scope_date in _date_range(first_scope, last_scope):
+            scope_text = scope_date.isoformat()
+            for source in SOURCE_KEYS:
+                snapshots.append(self._source_snapshot(source, scope_text))
+
+        merged = merge_source_schedules(*snapshots)
+        result: list[dict] = []
+        skipped = {
+            "not_direct": 0,
+            "non_sport_studio": 0,
+            "past_not_live": 0,
+        }
+
+        for event in merged:
+            if not event.get("is_live", False):
+                skipped["not_direct"] += 1
+                logger.debug(
+                    "[%s] skip reason=not_direct date=%s time=%s title=%r",
+                    event.get("source"),
+                    event.get("date"),
+                    event.get("time"),
+                    event.get("raw_title"),
+                )
+                continue
+
+            if not is_user_event(event):
+                skipped["non_sport_studio"] += 1
+                logger.debug(
+                    "[%s] skip reason=non_sport_studio date=%s time=%s title=%r",
+                    event.get("source"),
+                    event.get("date"),
+                    event.get("time"),
+                    event.get("raw_title"),
+                )
+                continue
+
+            status = get_event_status(event, now=now)
+            if str(event.get("date") or "") < today.isoformat() and status != "live":
+                skipped["past_not_live"] += 1
+                logger.debug(
+                    "[%s] skip reason=past_not_live date=%s time=%s title=%r",
+                    event.get("source"),
+                    event.get("date"),
+                    event.get("time"),
+                    event.get("raw_title"),
+                )
+                continue
+
+            result.append(event)
+
+        live_count = sum(
+            1
+            for event in result
+            if get_event_status(event, now=now) == "live"
         )
-        yesterday_schedule = merge_source_schedules(
-            *[
-                self._source_snapshot(source, yesterday.isoformat())
-                for source in SOURCE_KEYS
-            ]
+        upcoming_count = sum(
+            1
+            for event in result
+            if get_event_status(event, now=now) == "upcoming"
         )
+        finished_count = len(result) - live_count - upcoming_count
 
-        today_events = [
-            event
-            for event in today_schedule
-            if event.get("is_live", False) and is_user_event(event)
-        ]
-        yesterday_events = [
-            event
-            for event in yesterday_schedule
-            if (
-                event.get("is_live", False)
-                and is_user_event(event)
-                and get_event_status(event, now=now) == "live"
-            )
-        ]
-
-        return merge_source_schedules(yesterday_events, today_events)
+        logger.info(
+            "schedule read candidates=%d returned=%d live=%d upcoming=%d "
+            "finished=%d skipped=%s now=%s timezone=Asia/Almaty horizon=%s",
+            len(merged),
+            len(result),
+            live_count,
+            upcoming_count,
+            finished_count,
+            skipped,
+            now.isoformat(timespec="seconds"),
+            last_scope.isoformat(),
+        )
+        return result
 
     def get_live_events(self, *, now: datetime | None = None) -> list[dict]:
         if now is None:
             now = datetime.now(KZ_TIMEZONE)
-        return [
+        elif now.tzinfo is None:
+            now = now.replace(tzinfo=KZ_TIMEZONE)
+        else:
+            now = now.astimezone(KZ_TIMEZONE)
+
+        events = [
             event
             for event in self.get_events(now=now)
             if get_event_status(event, now=now) == "live"
         ]
+        logger.info(
+            "live query count=%d now=%s timezone=Asia/Almaty",
+            len(events),
+            now.isoformat(timespec="seconds"),
+        )
+        return events
+
+    def get_upcoming_events(
+        self,
+        *,
+        now: datetime | None = None,
+        limit: int | None = None,
+    ) -> list[dict]:
+        if now is None:
+            now = datetime.now(KZ_TIMEZONE)
+        elif now.tzinfo is None:
+            now = now.replace(tzinfo=KZ_TIMEZONE)
+        else:
+            now = now.astimezone(KZ_TIMEZONE)
+
+        events = [
+            event
+            for event in self.get_events(now=now)
+            if get_event_status(event, now=now) == "upcoming"
+        ]
+        if limit is not None:
+            return events[: max(int(limit), 0)]
+        return events
