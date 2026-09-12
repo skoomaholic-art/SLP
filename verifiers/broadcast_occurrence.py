@@ -9,10 +9,12 @@ from verifiers.web_search import (
     PRIMARY_SEARCH_ENGINES,
     build_queries,
     dedupe_results,
+    englishize,
     get_base_domain,
     get_domain,
     get_source_weight,
     matches_event,
+    normalize,
     openserp_search,
     result_text,
 )
@@ -36,14 +38,12 @@ MONTHS = {
     "december": 12, "dec": 12, "декабря": 12, "декабрь": 12,
 }
 MONTH_TOKEN = "|".join(sorted((re.escape(k) for k in MONTHS), key=len, reverse=True))
-
 DATE_PATTERNS = (
     re.compile(r"(?<!\d)(20\d{2})-(\d{1,2})-(\d{1,2})(?!\d)"),
     re.compile(r"(?<!\d)(\d{1,2})[./](\d{1,2})[./](20\d{2})(?!\d)"),
     re.compile(rf"\b({MONTH_TOKEN})\s+(\d{{1,2}})(?:st|nd|rd|th)?[,]?\s+(20\d{{2}})\b", re.I),
     re.compile(rf"\b(\d{{1,2}})\s+({MONTH_TOKEN})[,]?\s+(20\d{{2}})\b", re.I),
 )
-
 TZ_PATTERNS = (
     (re.compile(r"(?<!\d)(\d{1,2}):(\d{2})\s*(am|pm)?\s*(?:UTC|GMT)\b", re.I), timezone.utc, True),
     (re.compile(r"(?<!\d)(\d{1,2}):(\d{2})\s*(am|pm)?\s*(?:MSK|МСК)\b", re.I), ZoneInfo("Europe/Moscow"), True),
@@ -51,10 +51,9 @@ TZ_PATTERNS = (
     (re.compile(r"(?<!\d)(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*EST\b", re.I), timezone(timedelta(hours=-5)), True),
     (re.compile(r"(?<!\d)(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*(?:PDT|PT)\b", re.I), ZoneInfo("America/Los_Angeles"), True),
     (re.compile(r"(?<!\d)(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*PST\b", re.I), timezone(timedelta(hours=-8)), True),
-    (re.compile(r"(?<!\d)(\d{1,2}):(\d{2})\s*(?:CEST)\b", re.I), timezone(timedelta(hours=2)), True),
-    (re.compile(r"(?<!\d)(\d{1,2}):(\d{2})\s*(?:CET)\b", re.I), timezone(timedelta(hours=1)), True),
+    (re.compile(r"(?<!\d)(\d{1,2}):(\d{2})\s*CEST\b", re.I), timezone(timedelta(hours=2)), True),
+    (re.compile(r"(?<!\d)(\d{1,2}):(\d{2})\s*CET\b", re.I), timezone(timedelta(hours=1)), True),
 )
-
 DOMAIN_TIMEZONES = {
     "ufc.com": ZoneInfo("America/New_York"),
     "khl.ru": ZoneInfo("Europe/Moscow"),
@@ -65,14 +64,17 @@ DOMAIN_TIMEZONES = {
     "sports.kz": KZ_TIMEZONE,
     "qazsporttv.kz": KZ_TIMEZONE,
 }
-
 LOCAL_TIME_PATTERN = re.compile(r"(?<![\d:])(\d{1,2})(?::(\d{2}))?\s*(am|pm)?(?!\w)", re.I)
 STRONG_CUE = re.compile(r"(?:kick[\s-]?off|start(?:s|ing)?|begins?|main card|prelims|начал[оа]?|старт|начн[её]тся|время|эфир)", re.I)
+STOP_TOKENS = {
+    "match", "матч", "final", "финал", "round", "тур", "season", "сезон",
+    "championship", "чемпионат", "league", "лига", "cup", "кубок", "live",
+    "main", "card", "grand", "prix", "sport", "sports",
+}
 
 
 def _parse_hour(hour: str, minute: str | None, ampm: str | None) -> tuple[int, int] | None:
-    h = int(hour)
-    m = int(minute or 0)
+    h = int(hour); m = int(minute or 0)
     if not 0 <= m <= 59:
         return None
     if ampm:
@@ -83,9 +85,7 @@ def _parse_hour(hour: str, minute: str | None, ampm: str | None) -> tuple[int, i
             h = 0
         elif marker == "pm" and h != 12:
             h += 12
-    if not 0 <= h <= 23:
-        return None
-    return h, m
+    return (h, m) if 0 <= h <= 23 else None
 
 
 def extract_explicit_dates(text: str) -> list[tuple[date, int]]:
@@ -110,14 +110,11 @@ def extract_explicit_dates(text: str) -> list[tuple[date, int]]:
     unique: dict[date, int] = {}
     for parsed, position in found:
         unique.setdefault(parsed, position)
-    return [(key, unique[key]) for key in sorted(unique)]
+    return [(parsed, unique[parsed]) for parsed in sorted(unique)]
 
 
 def _nearest_date(dates: list[tuple[date, int]], position: int) -> date | None:
-    if not dates:
-        return None
-    parsed, _ = min(dates, key=lambda item: abs(item[1] - position))
-    return parsed
+    return min(dates, key=lambda item: abs(item[1] - position))[0] if dates else None
 
 
 def _domain_timezone(url: str):
@@ -131,40 +128,61 @@ def _domain_timezone(url: str):
     return None
 
 
-def _context_score(text: str, start: int, end: int, *, explicit_tz: bool) -> int:
-    left = max(0, start - 100)
-    right = min(len(text), end + 100)
+def _context_score(text: str, start: int, end: int, explicit_tz: bool) -> int:
     score = 100 if explicit_tz else 0
-    if STRONG_CUE.search(text[left:right]):
+    if STRONG_CUE.search(text[max(0, start - 100):min(len(text), end + 100)]):
         score += 80
     return score
 
 
-def _dated_candidates(result: dict, event: dict) -> tuple[list[dict], list[date]]:
+def _relaxed_match(result: dict, event: dict) -> bool:
+    if matches_event(result, event):
+        return True
+    haystack = normalize(englishize(result_text(result)))
+    tournament = str(event.get("tournament") or "").strip()
+    if tournament:
+        needle = normalize(englishize(tournament))
+        if len(needle) >= 5 and needle in haystack:
+            return True
+    expected = " ".join(
+        str(event.get(key) or "") for key in ("title", "raw_title", "tournament", "sport")
+    )
+    tokens = [
+        token for token in normalize(englishize(expected)).split()
+        if len(token) >= 5 and token not in STOP_TOKENS and not token.isdigit()
+    ]
+    unique = list(dict.fromkeys(tokens))
+    matched = sum(token in haystack for token in unique)
+    return matched >= min(2, len(unique)) if unique else False
+
+
+def _dated_candidates(result: dict) -> tuple[list[dict], list[date]]:
     text = result_text(result)
     url = str(result.get("url") or result.get("link") or "")
     dates_with_pos = extract_explicit_dates(text)
     explicit_dates = [item[0] for item in dates_with_pos]
     candidates: list[dict] = []
 
+    def add(match, source_tz, explicit_tz):
+        groups = match.groups()
+        parsed = _parse_hour(groups[0], groups[1] if len(groups) > 1 else None, groups[2] if len(groups) > 2 else None)
+        source_date = _nearest_date(dates_with_pos, match.start())
+        if not parsed or source_date is None:
+            return
+        hour, minute = parsed
+        dt = datetime(source_date.year, source_date.month, source_date.day, hour, minute, tzinfo=source_tz).astimezone(KZ_TIMEZONE)
+        candidates.append({
+            "dt_kz": dt,
+            "url": url,
+            "weight": get_source_weight(url),
+            "organization": get_base_domain(get_domain(url)),
+            "source_name": get_domain(url) or "Источник",
+            "context_score": _context_score(text, match.start(), match.end(), explicit_tz),
+        })
+
     for pattern, source_tz, explicit_tz in TZ_PATTERNS:
         for match in pattern.finditer(text):
-            parsed = _parse_hour(match.group(1), match.group(2), match.group(3) if len(match.groups()) >= 3 else None)
-            if not parsed:
-                continue
-            source_date = _nearest_date(dates_with_pos, match.start())
-            if source_date is None:
-                continue
-            hour, minute = parsed
-            source_dt = datetime(source_date.year, source_date.month, source_date.day, hour, minute, tzinfo=source_tz)
-            candidates.append({
-                "dt_kz": source_dt.astimezone(KZ_TIMEZONE),
-                "url": url,
-                "weight": get_source_weight(url),
-                "organization": get_base_domain(get_domain(url)),
-                "source_name": get_domain(url) or "Источник",
-                "context_score": _context_score(text, match.start(), match.end(), explicit_tz=explicit_tz),
-            })
+            add(match, source_tz, explicit_tz)
 
     local_tz = _domain_timezone(url)
     if local_tz and dates_with_pos:
@@ -172,22 +190,7 @@ def _dated_candidates(result: dict, event: dict) -> tuple[list[dict], list[date]
             suffix = text[match.end():match.end() + 12]
             if re.match(r"\s*(?:UTC|GMT|MSK|МСК|EDT|EST|ET|PDT|PST|PT|CET|CEST)\b", suffix, re.I):
                 continue
-            parsed = _parse_hour(match.group(1), match.group(2), match.group(3))
-            if not parsed:
-                continue
-            source_date = _nearest_date(dates_with_pos, match.start())
-            if source_date is None:
-                continue
-            hour, minute = parsed
-            source_dt = datetime(source_date.year, source_date.month, source_date.day, hour, minute, tzinfo=local_tz)
-            candidates.append({
-                "dt_kz": source_dt.astimezone(KZ_TIMEZONE),
-                "url": url,
-                "weight": get_source_weight(url),
-                "organization": get_base_domain(get_domain(url)),
-                "source_name": get_domain(url) or "Источник",
-                "context_score": _context_score(text, match.start(), match.end(), explicit_tz=False),
-            })
+            add(match, local_tz, False)
 
     return candidates, explicit_dates
 
@@ -200,24 +203,22 @@ def verify_broadcast_occurrence(event: dict) -> dict:
         return {"state": "unavailable", "error": f"{type(error).__name__}: {error}", "sources": []}
 
     results = dedupe_results(results)[:MAX_RESULTS]
-    matching = [result for result in results if matches_event(result, event)]
-    broadcast = datetime.strptime(
-        f"{event['date']} {event['time']}", "%Y-%m-%d %H:%M"
-    ).replace(tzinfo=KZ_TIMEZONE)
+    matching = [result for result in results if _relaxed_match(result, event)]
+    broadcast = datetime.strptime(f"{event['date']} {event['time']}", "%Y-%m-%d %H:%M").replace(tzinfo=KZ_TIMEZONE)
 
     candidates: list[dict] = []
     seen_dates: set[date] = set()
     for result in matching:
-        extracted, dates = _dated_candidates(result, event)
+        extracted, dates = _dated_candidates(result)
         candidates.extend(extracted)
         seen_dates.update(dates)
 
     plausible = []
     for candidate in candidates:
         difference = int((candidate["dt_kz"] - broadcast).total_seconds() / 60)
-        candidate = {**candidate, "difference_minutes": difference}
+        enriched = {**candidate, "difference_minutes": difference}
         if abs(difference) <= MAX_CONFIRM_DIFF_MINUTES:
-            plausible.append(candidate)
+            plausible.append(enriched)
 
     if plausible:
         by_org: dict[str, dict] = {}
@@ -226,9 +227,7 @@ def verify_broadcast_occurrence(event: dict) -> dict:
         sources = list(by_org.values())
         total_weight = sum(item["weight"] for item in sources)
         best = max(sources, key=lambda item: (item["weight"], item["context_score"]))
-        official = any(item["weight"] >= 100 for item in sources)
-        confirmed = official or (len(sources) >= 2 and total_weight >= 100)
-        if confirmed:
+        if any(item["weight"] >= 100 for item in sources) or (len(sources) >= 2 and total_weight >= 100):
             return {
                 "state": "confirmed_direct",
                 "difference_minutes": best["difference_minutes"],
@@ -250,8 +249,7 @@ def verify_broadcast_occurrence(event: dict) -> dict:
             "sources": [{"source_name": closest["source_name"], "url": closest["url"], "difference_minutes": difference}],
         }
 
-    event_date = broadcast.date()
-    if seen_dates and all(abs((found - event_date).days) > 1 for found in seen_dates):
+    if seen_dates and all(abs((found - broadcast.date()).days) > 1 for found in seen_dates):
         return {
             "state": "mismatch",
             "reason": "external_event_date_mismatch",
