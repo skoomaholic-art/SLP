@@ -15,8 +15,10 @@ SOURCE = "tvguide"
 LOOKAHEAD_DAYS = 7
 CACHE_TTL_SECONDS = 180.0
 RECONCILE_LOOKAHEAD_HOURS = 36
-RECONCILE_MAX_NEW_PER_REFRESH = 80
-RECONCILE_CONCURRENCY = 6
+# OpenSERP is a scraper and search engines rate-limit datacenter IPs. Verify a
+# small batch serially on every refresh instead of flooding 18 browser lanes.
+RECONCILE_MAX_NEW_PER_REFRESH = 4
+RECONCILE_CONCURRENCY = 1
 
 _REPLAY_MARKERS = (
     "повтор", "replay", "rerun", "re-run", "архив", "archive", "catch-up",
@@ -49,6 +51,7 @@ _cache_lock = asyncio.Lock()
 _cache_anchor: date | None = None
 _cache_expires_at = 0.0
 _cache_by_date: dict[date, list[dict]] = {}
+_cache_reconciled = False
 _verification_cache: dict[str, tuple[float, dict]] = {}
 
 
@@ -262,7 +265,6 @@ def apply_reconciliation_result(event: dict, result: dict) -> dict:
         item["live_evidence_value"] = str(result.get("reason") or "real-event time/date differs from TV slot")
         item["live_evidence_confidence"] = "high"
     else:
-        # Fail closed: EPG alone is not enough to publish a LIVE event.
         item["is_live_broadcast"] = False
         item["is_live"] = False
         item["is_sport_event"] = False
@@ -277,7 +279,6 @@ async def _reconcile_external(by_date: dict[date, list[dict]]) -> dict[date, lis
     start_window = datetime.combine(now.date(), datetime.min.time(), tzinfo=KZ_TIMEZONE)
     end_window = now + timedelta(hours=RECONCILE_LOOKAHEAD_HOURS)
     semaphore = asyncio.Semaphore(RECONCILE_CONCURRENCY)
-    new_budget = RECONCILE_MAX_NEW_PER_REFRESH
     new_candidates: list[tuple[date, int, dict, str]] = []
 
     for scope_date in sorted(by_date):
@@ -299,6 +300,10 @@ async def _reconcile_external(by_date: dict[date, list[dict]]) -> dict[date, lis
                 continue
             new_candidates.append((scope_date, index, event, key))
 
+    # Verify the nearest TV slots first. This keeps real NOW/NEXT events ahead
+    # of distant EPG entries and makes every periodic refresh useful.
+    new_candidates.sort(key=lambda entry: get_scheduled_datetimes(entry[2])[0])
+
     async def verify_one(entry: tuple[date, int, dict, str]):
         scope_date, index, event, key = entry
         async with semaphore:
@@ -306,13 +311,13 @@ async def _reconcile_external(by_date: dict[date, list[dict]]) -> dict[date, lis
         _verification_cache[key] = (time.monotonic() + _cache_ttl(result), result)
         return scope_date, index, apply_reconciliation_result(event, result)
 
-    selected = new_candidates[:new_budget]
+    selected = new_candidates[:RECONCILE_MAX_NEW_PER_REFRESH]
     if selected:
         verified = await asyncio.gather(*(verify_one(entry) for entry in selected))
         for scope_date, index, event in verified:
             by_date[scope_date][index] = event
 
-    for scope_date, index, event, _ in new_candidates[new_budget:]:
+    for scope_date, index, event, _ in new_candidates[RECONCILE_MAX_NEW_PER_REFRESH:]:
         item = dict(event)
         item["is_sport_event"] = False
         item["reconciliation_state"] = "pending_verification"
@@ -331,18 +336,15 @@ async def _reconcile_external(by_date: dict[date, list[dict]]) -> dict[date, lis
         if str(event.get("reconciliation_state") or "").startswith("pending")
     )
     logger.info(
-        "tvguide reconciliation checked_new=%d confirmed=%d replay_or_mismatch=%d pending=%d window_hours=%d",
-        len(selected), confirmed, replays, pending, RECONCILE_LOOKAHEAD_HOURS,
+        "tvguide reconciliation checked_new=%d confirmed=%d replay_or_mismatch=%d pending=%d window_hours=%d concurrency=%d",
+        len(selected), confirmed, replays, pending, RECONCILE_LOOKAHEAD_HOURS, RECONCILE_CONCURRENCY,
     )
     return by_date
 
 
-async def _refresh_cache(anchor: date) -> None:
-    global _cache_anchor, _cache_by_date, _cache_expires_at
-    dates = [
-        anchor + timedelta(days=offset)
-        for offset in range(-2, LOOKAHEAD_DAYS + 1)
-    ]
+async def _load_cache(anchor: date) -> None:
+    global _cache_anchor, _cache_by_date, _cache_expires_at, _cache_reconciled
+    dates = [anchor + timedelta(days=offset) for offset in range(-2, LOOKAHEAD_DAYS + 1)]
     loaded = await fetch_tvplus_schedules(dates)
     total = sum(len(items) for items in loaded.by_date.values())
     if not total:
@@ -350,39 +352,72 @@ async def _refresh_cache(anchor: date) -> None:
     if loaded.errors:
         logger.warning("tvguide partial errors=%s", loaded.errors[:20])
     _cache_by_date = _normalize_by_date(loaded.by_date)
-    _cache_by_date = await _reconcile_external(_cache_by_date)
     _cache_anchor = anchor
     _cache_expires_at = time.monotonic() + CACHE_TTL_SECONDS
-    direct = sum(
-        1 for events in _cache_by_date.values() for event in events
-        if event.get("is_live_broadcast")
-    )
-    candidates = sum(
-        1 for events in _cache_by_date.values() for event in events
-        if event.get("is_sport_event")
-    )
+    _cache_reconciled = False
     logger.info(
-        "tvguide cache refreshed events=%d publishable_live_events=%d confirmed_direct=%d dates=%d errors=%d timezone=Asia/Almaty",
-        total, candidates, direct, len(dates), len(loaded.errors),
+        "tvguide EPG cache loaded events=%d dates=%d errors=%d reconciliation=pending timezone=Asia/Almaty",
+        total, len(dates), len(loaded.errors),
     )
 
 
-async def get_tvguide_schedule(target_date: date | datetime | str | None = None) -> list[dict]:
+def _coerce_requested_date(target_date: date | datetime | str | None) -> date:
     if target_date is None:
-        requested = datetime.now(KZ_TIMEZONE).date()
-    elif isinstance(target_date, datetime):
-        requested = target_date.astimezone(KZ_TIMEZONE).date() if target_date.tzinfo else target_date.date()
-    elif isinstance(target_date, date):
-        requested = target_date
-    else:
-        requested = datetime.strptime(str(target_date), "%Y-%m-%d").date()
+        return datetime.now(KZ_TIMEZONE).date()
+    if isinstance(target_date, datetime):
+        return target_date.astimezone(KZ_TIMEZONE).date() if target_date.tzinfo else target_date.date()
+    if isinstance(target_date, date):
+        return target_date
+    return datetime.strptime(str(target_date), "%Y-%m-%d").date()
 
+
+async def _get_tvguide_schedule(
+    target_date: date | datetime | str | None,
+    *,
+    reconcile: bool,
+) -> list[dict]:
+    global _cache_by_date, _cache_expires_at, _cache_reconciled
+    requested = _coerce_requested_date(target_date)
     anchor = datetime.now(KZ_TIMEZONE).date()
+
     async with _cache_lock:
-        if (
+        stale = (
             _cache_anchor != anchor
             or time.monotonic() >= _cache_expires_at
             or requested not in _cache_by_date
-        ):
-            await _refresh_cache(anchor)
+        )
+        if stale:
+            await _load_cache(anchor)
+
+        if reconcile and not _cache_reconciled:
+            _cache_by_date = await _reconcile_external(_cache_by_date)
+            _cache_reconciled = True
+            _cache_expires_at = time.monotonic() + CACHE_TTL_SECONDS
+            direct = sum(
+                1 for events in _cache_by_date.values() for event in events
+                if event.get("is_live_broadcast")
+            )
+            publishable = sum(
+                1 for events in _cache_by_date.values() for event in events
+                if event.get("is_sport_event")
+            )
+            logger.info(
+                "tvguide cache reconciled publishable_live_events=%d confirmed_direct=%d timezone=Asia/Almaty",
+                publishable, direct,
+            )
+
         return [dict(event) for event in _cache_by_date.get(requested, [])]
+
+
+async def get_tvguide_schedule(target_date: date | datetime | str | None = None) -> list[dict]:
+    """Return TVGuide EPG after a small external reconciliation batch."""
+    return await _get_tvguide_schedule(target_date, reconcile=True)
+
+
+async def get_tvguide_schedule_fast(target_date: date | datetime | str | None = None) -> list[dict]:
+    """Return normalized EPG immediately; unverified rows remain fail-closed.
+
+    Used only for startup so Telegram polling is never held hostage by web
+    search. A background refresh switches to the full reconciler afterwards.
+    """
+    return await _get_tvguide_schedule(target_date, reconcile=False)
