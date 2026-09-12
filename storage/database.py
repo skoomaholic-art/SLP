@@ -8,7 +8,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
-from services.time_logic import KZ_TIMEZONE, get_event_status, get_scheduled_datetimes
+from services.event_status import (
+    KZ_TIMEZONE,
+    get_event_start,
+    get_event_status,
+    get_scheduled_datetimes,
+    is_live_broadcast,
+)
 
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "slp.db"
@@ -18,14 +24,13 @@ def _now_iso() -> str:
     return datetime.now(KZ_TIMEZONE).isoformat()
 
 
-def _event_storage_id(source: str, scope_date: str, event: dict) -> str:
+def _event_dedup_key(source: str, event: dict) -> str:
     raw_title = str(event.get("raw_title") or event.get("title") or "")
     raw = "|".join(
         (
             source,
-            scope_date,
             str(event.get("date") or ""),
-            str(event.get("time") or ""),
+            str(event.get("start_time") or event.get("time") or ""),
             str(event.get("channel") or ""),
             raw_title,
         )
@@ -33,16 +38,26 @@ def _event_storage_id(source: str, scope_date: str, event: dict) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:24]
 
 
-class SLPDatabase:
-    """Small SQLite persistence layer for parser/agent state.
+def _event_storage_id(source: str, scope_date: str, event: dict) -> str:
+    raw = f"{scope_date}|{_event_dedup_key(source, event)}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:24]
 
-    A new connection is opened for each operation so the object stays safe to
-    use from the bot's async tasks without keeping a shared sqlite cursor alive.
-    """
+
+def _upgrade_payload(payload: dict) -> dict:
+    result = dict(payload)
+    if "is_live_broadcast" not in result:
+        result["is_live_broadcast"] = bool(result.get("is_live", False))
+    result.setdefault("is_live", bool(result.get("is_live_broadcast", False)))
+    result.setdefault("timezone", "Asia/Almaty")
+    return result
+
+
+class SLPDatabase:
+    """SQLite persistence shared by parser refresh and Telegram reads."""
 
     def __init__(self, path: str | Path | None = None):
         configured = path or os.getenv("SLP_DB_PATH") or DEFAULT_DB_PATH
-        self.path = Path(configured)
+        self.path = Path(configured).expanduser().resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.init_schema()
 
@@ -53,12 +68,27 @@ class SLPDatabase:
         connection.execute("PRAGMA foreign_keys=ON")
         return connection
 
+    @staticmethod
+    def _ensure_column(
+        connection: sqlite3.Connection,
+        table: str,
+        column: str,
+        definition: str,
+    ) -> None:
+        columns = {
+            str(row[1])
+            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in columns:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
     def init_schema(self) -> None:
         with self._connect() as connection:
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS events (
                     storage_id TEXT PRIMARY KEY,
+                    dedup_key TEXT NOT NULL DEFAULT '',
                     source TEXT NOT NULL,
                     scope_date TEXT NOT NULL,
                     source_url TEXT NOT NULL DEFAULT '',
@@ -73,6 +103,7 @@ class SLPDatabase:
                     end_at TEXT NOT NULL,
                     timezone TEXT NOT NULL DEFAULT 'Asia/Almaty',
                     is_live INTEGER NOT NULL DEFAULT 0,
+                    is_live_broadcast INTEGER NOT NULL DEFAULT 0,
                     state_at_ingest TEXT NOT NULL,
                     active INTEGER NOT NULL DEFAULT 1,
                     first_seen_at TEXT NOT NULL,
@@ -80,11 +111,6 @@ class SLPDatabase:
                     last_run_id TEXT NOT NULL,
                     payload_json TEXT NOT NULL
                 );
-
-                CREATE INDEX IF NOT EXISTS idx_events_source_scope_active
-                    ON events(source, scope_date, active);
-                CREATE INDEX IF NOT EXISTS idx_events_start_at
-                    ON events(start_at);
 
                 CREATE TABLE IF NOT EXISTS parser_runs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -98,9 +124,6 @@ class SLPDatabase:
                     details_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL
                 );
-
-                CREATE INDEX IF NOT EXISTS idx_parser_runs_source_scope
-                    ON parser_runs(source, scope_date, id DESC);
 
                 CREATE TABLE IF NOT EXISTS agent_runs (
                     run_id TEXT PRIMARY KEY,
@@ -122,6 +145,36 @@ class SLPDatabase:
                     created_at TEXT NOT NULL,
                     resolved_at TEXT
                 );
+                """
+            )
+
+            # Safe in-place migration for databases created by agent-network v1.
+            self._ensure_column(connection, "events", "dedup_key", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(
+                connection,
+                "events",
+                "is_live_broadcast",
+                "INTEGER NOT NULL DEFAULT 0",
+            )
+            connection.execute(
+                """
+                UPDATE events
+                SET is_live_broadcast = is_live
+                WHERE is_live_broadcast = 0 AND is_live = 1
+                """
+            )
+            connection.executescript(
+                """
+                CREATE INDEX IF NOT EXISTS idx_events_source_scope_active
+                    ON events(source, scope_date, active);
+                CREATE INDEX IF NOT EXISTS idx_events_start_at
+                    ON events(start_at);
+                CREATE INDEX IF NOT EXISTS idx_events_date_live_active
+                    ON events(event_date, is_live_broadcast, active);
+                CREATE INDEX IF NOT EXISTS idx_events_dedup_key
+                    ON events(dedup_key);
+                CREATE INDEX IF NOT EXISTS idx_parser_runs_source_scope
+                    ON parser_runs(source, scope_date, id DESC);
                 """
             )
 
@@ -247,9 +300,18 @@ class SLPDatabase:
                 (source, scope_date),
             )
 
-            for event in event_list:
-                storage_id = _event_storage_id(source, scope_date, event)
+            for original_event in event_list:
+                event = _upgrade_payload(original_event)
+                source_live = is_live_broadcast(event)
+                event["is_live_broadcast"] = source_live
+                event["is_live"] = source_live
                 start, end = get_scheduled_datetimes(event)
+                event["timezone"] = "Asia/Almaty"
+                event["start_time"] = start.isoformat()
+                event["end_time"] = end.isoformat()
+
+                storage_id = _event_storage_id(source, scope_date, event)
+                dedup_key = _event_dedup_key(source, event)
                 payload = json.dumps(event, ensure_ascii=False, sort_keys=True)
                 normalized_title = str(
                     event.get("title") or event.get("raw_title") or ""
@@ -258,16 +320,17 @@ class SLPDatabase:
                 connection.execute(
                     """
                     INSERT INTO events(
-                        storage_id, source, scope_date, source_url, channel,
-                        raw_title, normalized_title, sport, tournament,
+                        storage_id, dedup_key, source, scope_date, source_url,
+                        channel, raw_title, normalized_title, sport, tournament,
                         event_date, event_time, start_at, end_at, timezone,
-                        is_live, state_at_ingest, active, first_seen_at,
-                        last_seen_at, last_run_id, payload_json
+                        is_live, is_live_broadcast, state_at_ingest, active,
+                        first_seen_at, last_seen_at, last_run_id, payload_json
                     ) VALUES (
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Asia/Almaty',
-                        ?, ?, 1, ?, ?, ?, ?
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Asia/Almaty',
+                        ?, ?, ?, 1, ?, ?, ?, ?
                     )
                     ON CONFLICT(storage_id) DO UPDATE SET
+                        dedup_key = excluded.dedup_key,
                         source_url = excluded.source_url,
                         channel = excluded.channel,
                         raw_title = excluded.raw_title,
@@ -280,6 +343,7 @@ class SLPDatabase:
                         end_at = excluded.end_at,
                         timezone = excluded.timezone,
                         is_live = excluded.is_live,
+                        is_live_broadcast = excluded.is_live_broadcast,
                         state_at_ingest = excluded.state_at_ingest,
                         active = 1,
                         last_seen_at = excluded.last_seen_at,
@@ -288,6 +352,7 @@ class SLPDatabase:
                     """,
                     (
                         storage_id,
+                        dedup_key,
                         source,
                         scope_date,
                         str(event.get("source_url") or ""),
@@ -300,7 +365,8 @@ class SLPDatabase:
                         str(event.get("time") or ""),
                         start.isoformat(),
                         end.isoformat(),
-                        int(bool(event.get("is_live", False))),
+                        int(source_live),
+                        int(source_live),
                         get_event_status(event),
                         now_iso,
                         now_iso,
@@ -320,16 +386,51 @@ class SLPDatabase:
                 """,
                 (source, scope_date),
             ).fetchall()
-        return [json.loads(row["payload_json"]) for row in rows]
+        return [_upgrade_payload(json.loads(row["payload_json"])) for row in rows]
+
+    def load_active_events(
+        self,
+        *,
+        start_date: str,
+        end_date: str,
+        live_broadcast_only: bool = False,
+    ) -> list[dict]:
+        where = ["active = 1", "event_date >= ?", "event_date <= ?"]
+        params: list[object] = [start_date, end_date]
+        if live_broadcast_only:
+            where.append("is_live_broadcast = 1")
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT dedup_key, source, payload_json, last_seen_at
+                FROM events
+                WHERE {' AND '.join(where)}
+                ORDER BY last_seen_at DESC
+                """,
+                params,
+            ).fetchall()
+
+        by_key: dict[str, dict] = {}
+        for row in rows:
+            payload = _upgrade_payload(json.loads(row["payload_json"]))
+            key = str(row["dedup_key"] or "") or _event_dedup_key(
+                str(row["source"]), payload
+            )
+            by_key.setdefault(key, payload)
+
+        return sorted(
+            by_key.values(),
+            key=lambda event: (
+                get_event_start(event),
+                str(event.get("channel") or ""),
+            ),
+        )
 
     def latest_source_runs(self) -> dict[str, dict]:
         with self._connect() as connection:
             rows = connection.execute(
-                """
-                SELECT * FROM parser_runs
-                ORDER BY id DESC
-                LIMIT 100
-                """
+                "SELECT * FROM parser_runs ORDER BY id DESC LIMIT 100"
             ).fetchall()
 
         result: dict[str, dict] = {}
@@ -347,11 +448,7 @@ class SLPDatabase:
     def latest_agent_run(self) -> dict | None:
         with self._connect() as connection:
             row = connection.execute(
-                """
-                SELECT * FROM agent_runs
-                ORDER BY started_at DESC
-                LIMIT 1
-                """
+                "SELECT * FROM agent_runs ORDER BY started_at DESC LIMIT 1"
             ).fetchone()
         if not row:
             return None
