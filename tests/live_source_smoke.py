@@ -24,6 +24,12 @@ from services.live_evidence import event_is_live_broadcast
 from services.time_logic import KZ_TIMEZONE, get_event_status
 
 
+def _compact_html(node, limit: int = 700) -> str:
+    if node is None:
+        return ""
+    return " ".join(str(node).split())[:limit]
+
+
 async def _vsetv_signature() -> str:
     url = build_week_url(771)
     timeout = aiohttp.ClientTimeout(total=20)
@@ -51,10 +57,15 @@ async def _vsetv_signature() -> str:
                         anchor_date=datetime.now(KZ_TIMEZONE).date(),
                     )
                     first_text = " ".join(first_live.stripped_strings)[:140]
+                    prev_time = first_live.find_previous("div", class_="time")
+                    parent_html = _compact_html(first_live.parent)
+                    prev_html = _compact_html(prev_time, 260)
                 else:
                     first_time = None
                     first_date = None
                     first_text = ""
+                    parent_html = ""
+                    prev_html = ""
                 return (
                     f"status={response.status} final_url={response.url} bytes={len(html.encode('utf-8'))} "
                     f"title={title!r} prname2={len(programmes)} live_prname2={len(live_programmes)} "
@@ -62,7 +73,8 @@ async def _vsetv_signature() -> str:
                     f"ico_live={html.casefold().count('ico_live.gif')} "
                     f"direct_text={visible.casefold().count('прямая трансляция')} "
                     f"first_live_time={first_time!r} first_live_date={first_date!r} "
-                    f"first_live_text={first_text!r} preview={visible[:120]!r}"
+                    f"first_live_text={first_text!r} prev_time_html={prev_html!r} "
+                    f"parent_html={parent_html!r}"
                 )
     except Exception as error:
         return f"probe_error={type(error).__name__}:{error}"
