@@ -7,6 +7,10 @@ TOOLS_REPO="https://github.com/skoomaholic-art/claude-code.git"
 TOOLS_REF="${SLP_CLAUDE_TOOLS_REF:-main}"
 PERMISSION_MODE="${SLP_CLAUDE_PERMISSION_MODE:-auto}"
 
+# Avoid an extra LLM security review after every turn by default. Pattern rules
+# and the commit-time review stay enabled; users can opt back in explicitly.
+export ENABLE_STOP_REVIEW="${ENABLE_STOP_REVIEW:-0}"
+
 cd "$ROOT"
 
 if ! command -v claude >/dev/null 2>&1; then
@@ -36,8 +40,9 @@ plugins=(
 plugin_args=()
 for plugin in "${plugins[@]}"; do
   path="$TOOLS_ROOT/plugins/$plugin"
-  if [[ ! -d "$path" ]]; then
-    echo "Missing Claude plugin: $path" >&2
+  manifest="$path/.claude-plugin/plugin.json"
+  if [[ ! -f "$manifest" ]]; then
+    echo "Missing Claude plugin manifest: $manifest" >&2
     exit 2
   fi
   plugin_args+=(--plugin-dir "$path")
@@ -45,6 +50,7 @@ done
 
 echo "SLP Claude tools ref: $(git -C "$TOOLS_ROOT" rev-parse --short HEAD)"
 echo "Permission mode: $PERMISSION_MODE"
+echo "Security stop review: $ENABLE_STOP_REVIEW"
 echo "Workspace: $ROOT"
 
 exec claude \
