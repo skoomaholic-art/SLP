@@ -6,6 +6,14 @@ This file tells Codex how to turn the repository's existing engineering rules an
 
 Use Codex as the primary coding agent for scoped SLP engineering tasks. The `tools/claude-code` repository is supplemental source material: read its prompts, review checklists and iterative-development techniques, but do not assume Claude-specific hooks or slash commands execute under Codex.
 
+## Native ChatGPT/Codex plugin import
+
+OpenAI's plugin marketplace importer supports both native Codex marketplace manifests and Claude-compatible manifests. The connected toolkit repository already contains `.claude-plugin/marketplace.json`, so an eligible ChatGPT/Codex workspace can import `https://github.com/skoomaholic-art/claude-code` directly as a marketplace without installing Claude Code.
+
+When that marketplace is available in the workspace, prefer installing only the useful workflow plugins for the current engineering job (for example feature development, code review, PR review, or security guidance) rather than enabling everything blindly. Workspace/plugin availability is an account-level capability; repository code alone cannot enable it.
+
+Even when marketplace import is unavailable, the same files remain available through the pinned `tools/claude-code` submodule and can be used as read-only playbooks by Codex.
+
 ## Task routing
 
 Before editing, classify the task and read only the relevant toolkit material:
