@@ -1,9 +1,13 @@
+import asyncio
 import unittest
 from datetime import date
+from unittest.mock import AsyncMock, patch
 
+from parsers.championat import ChampionatCalendar
 from parsers.tvplus import EUROSPORT_CHANNELS, TARGET_CHANNELS
 from parsers.tvguide_cached import (
     SOURCE,
+    _reconcile_external,
     infer_direct_event,
     normalize_provider_timezone,
 )
@@ -113,6 +117,36 @@ class TVGuideTests(unittest.TestCase):
                 )
                 self.assertFalse(parsed["is_live_broadcast"])
                 self.assertFalse(parsed["is_sport_event"])
+
+    def test_q_channel_does_not_use_official_fallback(self):
+        event = infer_direct_event(
+            self.event(
+                "Футбол. Челси - Астон Вилла",
+                channel="Q Football",
+            ),
+            target_date=date(2026, 9, 12),
+            seen=set(),
+        )
+        calendar = ChampionatCalendar(events=[], errors=[], fetched_dates=[])
+
+        async def run():
+            with patch(
+                "parsers.tvguide_cached.get_championat_calendar",
+                new=AsyncMock(return_value=calendar),
+            ), patch(
+                "parsers.tvguide_cached.verify_official_fallback"
+            ) as fallback:
+                result = await _reconcile_external(
+                    {date(2026, 9, 12): [event]}
+                )
+                fallback.assert_not_called()
+                return result
+
+        reconciled = asyncio.run(run())
+        item = reconciled[date(2026, 9, 12)][0]
+        self.assertEqual(item["reconciliation_state"], "pending_championat_match")
+        self.assertFalse(item["is_live_broadcast"])
+        self.assertFalse(item["is_live"])
 
 
 if __name__ == "__main__":
