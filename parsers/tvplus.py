@@ -46,6 +46,12 @@ TARGET_CHANNELS = (
     TVPlusChannel("МАТЧ! Планета", "5d385ea755153152ba34f60e"),
 )
 
+# Q channels are intentionally kept as a separate policy group.  Their TV+
+# EPG is useful for discovering a slot, but a slot may enter the public
+# schedule only after the same date and minute are found in Championat's
+# sporting calendar.
+Q_CHANNEL_NAMES = frozenset({"Q Arena", "Q Football", "Q League"})
+
 EUROSPORT_CHANNELS = (
     TVPlusChannel(
         "Eurosport",

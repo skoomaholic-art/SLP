@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import date, datetime
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -10,7 +10,12 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from agents.health import build_health_text
 from bot.formatters import build_live_messages, build_schedule_messages
-from bot.keyboards import BACK_TO_MENU, MAIN_KEYBOARD, event_check_keyboard
+from bot.keyboards import (
+    BACK_TO_MENU,
+    MAIN_KEYBOARD,
+    event_check_keyboard,
+    schedule_navigation_keyboard,
+)
 from bot.verification import build_verification_text
 from config import Settings
 from services.export_xlsx import (
@@ -38,9 +43,15 @@ def _admin_allowed(settings: Settings, user_id: int) -> bool:
 def _schedule_view_events(
     schedule_service: ScheduleService,
     *,
-    limit: int = TELEGRAM_SCHEDULE_EVENT_LIMIT,
+    limit: int | None = TELEGRAM_SCHEDULE_EVENT_LIMIT,
+    target_date: date | datetime | str | None = None,
 ) -> tuple[list[dict], int]:
-    events = schedule_service.get_events()
+    if target_date is None:
+        events = schedule_service.get_events()
+    else:
+        events = schedule_service.get_events(target_date=target_date)
+    if limit is None:
+        return events, len(events)
     safe_limit = max(int(limit), 0)
     return events[:safe_limit], len(events)
 
@@ -55,17 +66,53 @@ async def _send_messages(message: Message, chunks: list[str], *, reply_markup=No
 async def _send_schedule_view(
     message: Message,
     schedule_service: ScheduleService,
+    *,
+    target_date: date | datetime | str | None = None,
 ) -> None:
-    events, total_count = _schedule_view_events(schedule_service)
-    chunks = build_schedule_messages(events, total_count=total_count)
+    now = datetime.now(KZ_TIMEZONE)
+    if target_date is None:
+        selected_date = now.date()
+    elif isinstance(target_date, datetime):
+        selected_date = (
+            target_date.astimezone(KZ_TIMEZONE).date()
+            if target_date.tzinfo
+            else target_date.date()
+        )
+    elif isinstance(target_date, date):
+        selected_date = target_date
+    else:
+        selected_date = date.fromisoformat(str(target_date))
+
+    events, total_count = _schedule_view_events(
+        schedule_service,
+        target_date=selected_date,
+        limit=None,
+    )
+    dates = schedule_service.get_schedule_dates(now=now)
+    first_date = dates[0] if dates else selected_date
+    last_date = dates[-1] if dates else selected_date
+    chunks = build_schedule_messages(
+        events,
+        total_count=total_count,
+        target_date=selected_date,
+    )
     logger.info(
-        "telegram schedule view total=%d shown=%d chunks=%d limit=%d",
+        "telegram schedule view date=%s total=%d shown=%d chunks=%d last_date=%s",
+        selected_date.isoformat(),
         total_count,
         len(events),
         len(chunks),
-        TELEGRAM_SCHEDULE_EVENT_LIMIT,
+        last_date.isoformat(),
     )
-    await _send_messages(message, chunks, reply_markup=MAIN_KEYBOARD)
+    await _send_messages(
+        message,
+        chunks,
+        reply_markup=schedule_navigation_keyboard(
+            selected_date,
+            first_date=first_date,
+            last_date=last_date,
+        ),
+    )
 
 
 @router.message(Command("start"))
@@ -95,6 +142,27 @@ async def schedule_callback(
 ) -> None:
     await callback.answer()
     await _send_schedule_view(callback.message, schedule_service)
+
+
+@router.callback_query(F.data.startswith("schedule:"))
+async def schedule_date_callback(
+    callback: CallbackQuery,
+    schedule_service: ScheduleService,
+) -> None:
+    await callback.answer()
+    try:
+        selected_date = date.fromisoformat(str(callback.data).split(":", 1)[1])
+    except (TypeError, ValueError):
+        await callback.message.answer(
+            "Список устарел. Откройте «Расписание» заново.",
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return
+    await _send_schedule_view(
+        callback.message,
+        schedule_service,
+        target_date=selected_date,
+    )
 
 
 @router.message(Command("live"))

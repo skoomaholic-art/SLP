@@ -56,6 +56,44 @@ class ScheduleHorizonTests(unittest.TestCase):
         )
         self.assertEqual([item["title"] for item in events], ["Future Match"])
 
+    def test_database_read_can_select_one_calendar_day(self):
+        first = date(2026, 9, 13)
+        second = date(2026, 9, 14)
+        self.db.upsert_source_snapshot(
+            run_id="daily",
+            source="sportplus",
+            scope_date=first.isoformat(),
+            events=[make_event("sportplus", first, 18, "First Day")],
+        )
+        self.db.upsert_source_snapshot(
+            run_id="daily",
+            source="sportplus",
+            scope_date=second.isoformat(),
+            events=[make_event("sportplus", second, 19, "Second Day")],
+        )
+
+        selected = self.service.get_events(
+            now=datetime(2026, 9, 13, 12, 0, tzinfo=KZ),
+            target_date=second,
+        )
+        self.assertEqual([item["title"] for item in selected], ["Second Day"])
+
+    def test_schedule_dates_are_consecutive_until_last_known_event(self):
+        first = date(2026, 9, 13)
+        last = date(2026, 9, 15)
+        self.db.upsert_source_snapshot(
+            run_id="daily",
+            source="sportplus",
+            scope_date=last.isoformat(),
+            events=[make_event("sportplus", last, 19, "Last Day")],
+        )
+        self.assertEqual(
+            self.service.get_schedule_dates(
+                now=datetime(2026, 9, 13, 12, 0, tzinfo=KZ)
+            ),
+            [date(2026, 9, 13), date(2026, 9, 14), date(2026, 9, 15)],
+        )
+
     def test_qazsport_horizon_reaches_nearest_monday_from_saturday(self):
         saturday = date(2026, 9, 12)
         self.assertGreaterEqual(source_lookahead_days("qazsport", saturday), 2)

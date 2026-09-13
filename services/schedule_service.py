@@ -52,13 +52,40 @@ class ScheduleService:
     def _source_snapshot(self, source: str, scope_date: str) -> list[dict]:
         return self.database.load_active_source_snapshot(source, scope_date)
 
-    def get_events(self, *, now: datetime | None = None) -> list[dict]:
+    @staticmethod
+    def _normalize_now(now: datetime | None) -> datetime:
         if now is None:
             now = datetime.now(KZ_TIMEZONE)
         elif now.tzinfo is None:
             now = now.replace(tzinfo=KZ_TIMEZONE)
         else:
             now = now.astimezone(KZ_TIMEZONE)
+        return now
+
+    @staticmethod
+    def _normalize_target_date(
+        target_date: date | datetime | str | None,
+    ) -> date | None:
+        if target_date is None:
+            return None
+        if isinstance(target_date, datetime):
+            return (
+                target_date.astimezone(KZ_TIMEZONE).date()
+                if target_date.tzinfo
+                else target_date.date()
+            )
+        if isinstance(target_date, date):
+            return target_date
+        return date.fromisoformat(str(target_date))
+
+    def get_events(
+        self,
+        *,
+        now: datetime | None = None,
+        target_date: date | datetime | str | None = None,
+    ) -> list[dict]:
+        now = self._normalize_now(now)
+        requested_date = self._normalize_target_date(target_date)
 
         today = now.date()
         first_scope = today - timedelta(days=1)
@@ -80,6 +107,12 @@ class ScheduleService:
         }
 
         for event in merged:
+            if (
+                requested_date is not None
+                and str(event.get("date") or "") != requested_date.isoformat()
+            ):
+                continue
+
             # SLP is a LIVE-broadcast parser, not a generic EPG browser. Unknown
             # TV programmes and catch-up/replay rows stay in source snapshots for
             # diagnostics but never enter the public schedule/export.
@@ -96,7 +129,11 @@ class ScheduleService:
                 continue
 
             status = get_event_status(event, now=now)
-            if str(event.get("date") or "") < today.isoformat() and status != "live":
+            if (
+                requested_date is None
+                and str(event.get("date") or "") < today.isoformat()
+                and status != "live"
+            ):
                 skipped["past_not_on_air"] += 1
                 continue
 
@@ -123,6 +160,21 @@ class ScheduleService:
             last_scope.isoformat(),
         )
         return result
+
+    def get_schedule_dates(self, *, now: datetime | None = None) -> list[date]:
+        """Return the consecutive day buttons from today to the last known event."""
+        normalized_now = self._normalize_now(now)
+        today = normalized_now.date()
+        events = self.get_events(now=normalized_now)
+        last_date = max(
+            (
+                date.fromisoformat(str(event["date"]))
+                for event in events
+                if str(event.get("date") or "")
+            ),
+            default=today,
+        )
+        return list(_date_range(today, max(last_date, today)))
 
     def get_live_events(self, *, now: datetime | None = None) -> list[dict]:
         if now is None:

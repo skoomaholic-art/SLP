@@ -31,12 +31,19 @@ False-positive categories such as replay, review, preview, archive/classic and c
 
 If the source does not provide enough direct-broadcast evidence, the event may still be a valid sports schedule candidate without becoming a direct LIVE event.
 
+Q Arena, Q Football and Q League are fail-closed: a TV+ EPG row is accepted
+into the user-visible `SOON` schedule only when Championat has the same event
+on the same `Asia/Almaty` date and minute. An ordinary TV+ row or a generic
+official-source fallback is not sufficient for these channels.
+
 ## Telegram outcomes
 
 The current command/button contract includes:
 
 - `/start` — usable main menu;
 - `/today` — accepted current/future sports schedule;
+- the schedule view shows one selected calendar day at a time and offers a
+  button labelled with the next date through the last known accepted event;
 - `/live` — only events that are temporally LIVE **and** have direct-broadcast evidence;
 - `/check` — independent verification flow for one event;
 - `/health` / `/status` — operational state;

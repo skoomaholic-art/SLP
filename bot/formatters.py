@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import date, datetime
 
 from services.schedule_merge import group_simulcasts, unique_channels
 from services.time_logic import KZ_TIMEZONE, MONTHS, get_event_status, get_time_window_text
@@ -199,12 +199,28 @@ def split_blocks(header: str, blocks: list[str], footer: str = "", limit: int = 
     return messages
 
 
+def _coerce_schedule_date(
+    value: date | datetime | str | None,
+    *,
+    fallback: date,
+) -> date:
+    if value is None:
+        return fallback
+    if isinstance(value, datetime):
+        return value.astimezone(KZ_TIMEZONE).date() if value.tzinfo else value.date()
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value))
+
+
 def build_schedule_messages(
     events: list[dict],
     *,
     total_count: int | None = None,
+    target_date: date | datetime | str | None = None,
 ) -> list[str]:
     now = datetime.now(KZ_TIMEZONE)
+    display_date = _coerce_schedule_date(target_date, fallback=now.date())
     shown_count = len(events)
     effective_total = shown_count if total_count is None else max(int(total_count), shown_count)
     count_text = f"событий: {effective_total}"
@@ -212,7 +228,7 @@ def build_schedule_messages(
         count_text += f" · показано: {shown_count}"
     header = (
         "📅 SLP · Расписание\n"
-        f"{now.day} {MONTHS[now.month]} {now.year} · "
+        f"{display_date.day} {MONTHS[display_date.month]} {display_date.year} · "
         f"{count_text} · каналов в выдаче: {len(unique_channels(events))}"
     )
     footer = "\n\n🔴 LIVE · 🟡 SOON · ⚪ OVER"

@@ -1,4 +1,5 @@
 import unittest
+from datetime import date
 
 from bot.formatters import build_schedule_messages
 from bot.handlers import (
@@ -6,7 +7,11 @@ from bot.handlers import (
     _schedule_view_events,
     _send_messages,
 )
-from bot.keyboards import MAIN_KEYBOARD, event_check_keyboard
+from bot.keyboards import (
+    MAIN_KEYBOARD,
+    event_check_keyboard,
+    schedule_navigation_keyboard,
+)
 
 
 class FakeMessage:
@@ -65,6 +70,35 @@ class TelegramMenuTests(unittest.IsolatedAsyncioTestCase):
                 "23:50 · Фиорентина – Пиза",
             ],
         )
+
+    def test_schedule_navigation_uses_next_date_as_button_label(self):
+        keyboard = schedule_navigation_keyboard(
+            date(2026, 9, 13),
+            first_date=date(2026, 9, 13),
+            last_date=date(2026, 9, 15),
+        )
+        self.assertEqual(keyboard.inline_keyboard[0][0].text, "14.09")
+        self.assertEqual(
+            keyboard.inline_keyboard[0][0].callback_data,
+            "schedule:2026-09-14",
+        )
+
+    def test_schedule_messages_use_selected_date_in_header(self):
+        event = {
+            "source": "qazsport",
+            "channel": "Qazsport",
+            "date": "2026-09-14",
+            "time": "18:00",
+            "title": "Тараз – Тобол",
+            "sport": "Футбол",
+            "tournament": "QJ League",
+            "estimated_broadcast_end_date": "2026-09-14",
+            "estimated_broadcast_end": "20:00",
+        }
+        text = "\n".join(
+            build_schedule_messages([event], target_date=date(2026, 9, 14))
+        )
+        self.assertIn("14 сентября 2026", text)
 
     async def test_schedule_header_explains_truncation(self):
         event = {
