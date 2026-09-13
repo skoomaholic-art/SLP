@@ -87,4 +87,13 @@ Every agent session that changes behavior should leave this section updated:
 - **Verification:** `<commands + production check>`
 - **Still open:** `<next single P0 item>`
 
+## Latest verified candidate
+
+- **Verified commit:** `c87a79011717951d55eb665f5ea75f4ff4ec711f` on PR #34; `SLP v2 CI` run #105 succeeded.
+- **Original symptom:** `/health` collapsed the 14 TV+/Mobikino channels into one provider row instead of reporting all 16 channels separately.
+- **Root cause:** `agents/health.py` iterated the three provider entries in `SOURCE_LABELS`; it did not use the canonical channel inventory or count active snapshot rows by channel.
+- **Changed:** `/health` now lists every channel separately, inherits the owning provider status, and reports the active SQLite event count for that channel; regression coverage asserts the 16-channel inventory and per-channel counts.
+- **Verification:** targeted compile and `python -m unittest tests.test_health -v` passed locally; full `SLP v2 CI` run #105 passed on the candidate commit.
+- **Still open:** merge PR #34, release the resulting current `main` SHA through `.github/workflows/production-release.yml`, then verify `/health` in Telegram and continue the three-cycle P0 observation.
+
 Until production verification is completed, status is: **NOT DONE**.
