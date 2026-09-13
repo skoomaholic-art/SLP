@@ -96,4 +96,14 @@ Every agent session that changes behavior should leave this section updated:
 - **Verification:** targeted compile and `python -m unittest tests.test_health -v` passed locally; full `SLP v2 CI` run #105 passed on the candidate commit.
 - **Still open:** merge PR #34, release the resulting current `main` SHA through `.github/workflows/production-release.yml`, then verify `/health` in Telegram and continue the three-cycle P0 observation.
 
+
+## Current presentation fix candidate
+
+- **Candidate commit:** `fafd61b4d02c83bc8694b21f9dda87307d13df24` on PR #35.
+- **Original symptom:** event names in the `/check` inline keyboard were still displayed in provider-supplied ALL CAPS even though schedule messages were normalized.
+- **Root cause:** `bot.keyboards.event_check_keyboard()` read `title`/`raw_title` directly and bypassed the existing Telegram presentation normalizer.
+- **Changed:** `/check` button labels now use `display_title(event)`; regression coverage includes uppercase Italian and Turkish club names.
+- **Verification:** isolated compile/call-path test passed; full PR CI and deployed Telegram verification remain pending.
+- **Still open:** pass PR CI, merge only on explicit user instruction, release the resulting current `main` SHA through the production gate, then verify `/check` in Telegram.
+
 Until production verification is completed, status is: **NOT DONE**.
