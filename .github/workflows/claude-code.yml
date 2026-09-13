@@ -27,6 +27,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      - name: Checkout SLP
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Checkout Claude Code tooling fork
+        uses: actions/checkout@v6
+        with:
+          repository: skoomaholic-art/claude-code
+          path: .claude-tools/claude-code
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Run Claude Code
         uses: anthropics/claude-code-action@v1
         with:
@@ -36,6 +49,11 @@ jobs:
           additional_permissions: |
             actions: read
           claude_args: |
+            --plugin-dir .claude-tools/claude-code/plugins/feature-dev
+            --plugin-dir .claude-tools/claude-code/plugins/code-review
+            --plugin-dir .claude-tools/claude-code/plugins/pr-review-toolkit
+            --plugin-dir .claude-tools/claude-code/plugins/security-guidance
+            --plugin-dir .claude-tools/claude-code/plugins/commit-commands
             --max-turns 30
             --allowedTools "Bash Read Edit Write"
             --append-system-prompt "Read CLAUDE.md and AGENTS.md before making changes. Work only on the requested task. Run the repository verification ladder. Never access secrets, never deploy Railway production, never push directly to main, and never merge your own PR. Finish with concrete verification evidence and remaining blockers."
