@@ -1,13 +1,28 @@
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime
 
 from agents.orchestrator import SOURCE_LABELS
+from parsers.tvplus import EUROSPORT_CHANNELS, TARGET_CHANNELS
 from services.time_logic import KZ_TIMEZONE
 from storage.database import SLPDatabase
 
 
 SOURCE_NAMES = SOURCE_LABELS
+CHANNEL_SOURCES = tuple(
+    sorted(
+        (
+            ("Qazsport", "qazsport"),
+            ("Sport+ Qazaqstan", "sportplus"),
+            *(
+                (channel.name, "tvguide")
+                for channel in TARGET_CHANNELS + EUROSPORT_CHANNELS
+            ),
+        ),
+        key=lambda item: item[0].casefold(),
+    )
+)
 
 
 STATUS_ICON = {
@@ -18,9 +33,27 @@ STATUS_ICON = {
 }
 
 
+def _active_channel_counts(
+    database: SLPDatabase,
+    runs: dict[str, dict],
+) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for source in {source for _, source in CHANNEL_SOURCES}:
+        run = runs.get(source) or {}
+        scope_date = str(run.get("scope_date") or "")
+        if not scope_date:
+            continue
+        for event in database.load_active_source_snapshot(source, scope_date):
+            channel = str(event.get("channel") or "").strip()
+            if channel:
+                counts[channel] += 1
+    return counts
+
+
 def build_health_text(database: SLPDatabase) -> str:
     now = datetime.now(KZ_TIMEZONE)
     runs = database.latest_source_runs()
+    channel_counts = _active_channel_counts(database, runs)
     agent_run = database.latest_agent_run()
     incidents = database.unresolved_incidents(limit=5)
 
@@ -30,7 +63,7 @@ def build_health_text(database: SLPDatabase) -> str:
         "",
     ]
 
-    for source, name in SOURCE_NAMES.items():
+    for name, source in CHANNEL_SOURCES:
         run = runs.get(source)
         if not run:
             lines.append(f"⚪ {name} · ещё нет запусков")
@@ -38,21 +71,16 @@ def build_health_text(database: SLPDatabase) -> str:
 
         status = str(run.get("status") or "unknown")
         icon = STATUS_ICON.get(status, "⚪")
-        current = run.get("event_count")
-        previous = run.get("previous_count")
+        current = channel_counts.get(name, 0)
         scope_date = run.get("scope_date")
         details = run.get("details") or {}
         reason = details.get("reason") or status
         fallback = " · fallback" if details.get("used_fallback") else ""
 
-        comparison = f"{current} событий"
-        if previous is not None:
-            comparison += f" (было {previous})"
-
         lines.extend(
             [
                 f"{icon} {name}",
-                f"   {scope_date} · {comparison}{fallback}",
+                f"   {scope_date} · {current} событий{fallback}",
                 f"   {reason}",
             ]
         )
