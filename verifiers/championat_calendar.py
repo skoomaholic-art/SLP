@@ -63,11 +63,21 @@ def _plausible_difference(minutes: int) -> bool:
     return -MAX_LATE_JOIN_MINUTES <= minutes <= MAX_PRE_SHOW_MINUTES
 
 
-def match_championat_calendar(event: dict, calendar_events: list[dict]) -> dict:
+def match_championat_calendar(
+    event: dict,
+    calendar_events: list[dict],
+    *,
+    exact_time: bool = False,
+) -> dict:
     """Match one TV EPG row against an already-fetched Championat calendar.
 
     This function performs no network I/O. Championat is the reference for the
     real occurrence; TV EPG remains only evidence that a channel plans to show it.
+
+    ``exact_time`` is used for the Q channels.  They publish a broad TV+ EPG,
+    so a Q slot is accepted only when Championat has the same local date and
+    minute.  Other channels retain the small pre-show/late-join tolerance used
+    by the existing reconciliation policy.
     """
     broadcast = _broadcast_datetime(event)
     matches: list[dict] = []
@@ -98,8 +108,13 @@ def match_championat_calendar(event: dict, calendar_events: list[dict]) -> dict:
         }
 
     plausible = [
-        item for item in matches
-        if _plausible_difference(int(item["difference_minutes"]))
+        item
+        for item in matches
+        if (
+            int(item["difference_minutes"]) == 0
+            if exact_time
+            else _plausible_difference(int(item["difference_minutes"]))
+        )
     ]
     if plausible:
         best = min(
