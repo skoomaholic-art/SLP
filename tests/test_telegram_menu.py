@@ -6,7 +6,7 @@ from bot.handlers import (
     _schedule_view_events,
     _send_messages,
 )
-from bot.keyboards import MAIN_KEYBOARD
+from bot.keyboards import MAIN_KEYBOARD, event_check_keyboard
 
 
 class FakeMessage:
@@ -38,6 +38,33 @@ class TelegramMenuTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(total, len(events))
         self.assertEqual(len(shown), TELEGRAM_SCHEDULE_EVENT_LIMIT)
         self.assertEqual(shown, events[:TELEGRAM_SCHEDULE_EVENT_LIMIT])
+
+    def test_check_buttons_use_display_normalization(self):
+        keyboard = event_check_keyboard(
+            [
+                {
+                    "time": "21:55",
+                    "title": "ГАЛАТАСАРАЙ – КОДЖАЭЛИСПОР",
+                },
+                {
+                    "time": "20:50",
+                    "title": "ДЖЕНОА – ЗЮДТИРОЛЬ",
+                },
+                {
+                    "time": "23:50",
+                    "title": "ФИОРЕНТИНА – ПИЗА",
+                },
+            ]
+        )
+
+        self.assertEqual(
+            [row[0].text for row in keyboard.inline_keyboard[:3]],
+            [
+                "21:55 · Галатасарай – Коджаэлиспор",
+                "20:50 · Дженоа – Зюдтироль",
+                "23:50 · Фиорентина – Пиза",
+            ],
+        )
 
     async def test_schedule_header_explains_truncation(self):
         event = {
