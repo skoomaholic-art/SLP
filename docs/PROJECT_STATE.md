@@ -103,7 +103,7 @@ Every agent session that changes behavior should leave this section updated:
 - **Original symptom:** event names in the `/check` inline keyboard were still displayed in provider-supplied ALL CAPS even though schedule messages were normalized.
 - **Root cause:** `bot.keyboards.event_check_keyboard()` read `title`/`raw_title` directly and bypassed the existing Telegram presentation normalizer.
 - **Changed:** `/check` button labels now use `display_title(event)`; regression coverage includes uppercase Italian and Turkish club names.
-- **Verification:** isolated compile/call-path test passed; full PR CI and deployed Telegram verification remain pending.
+- **Verification:** isolated compile/call-path test passed; full `SLP v2 CI` run #111 passed (compile, production imports and complete regression suite). Deployed Telegram verification remains pending.
 - **Still open:** pass PR CI, merge only on explicit user instruction, release the resulting current `main` SHA through the production gate, then verify `/check` in Telegram.
 
 Until production verification is completed, status is: **NOT DONE**.
