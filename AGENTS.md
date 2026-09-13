@@ -10,7 +10,8 @@ The repository, not chat history, is the source of truth. Start every session by
 4. `docs/PRODUCT_SPEC.md`
 5. `docs/known-issues/bugs.md`
 6. `docs/RELEASE_PROCESS.md`
-7. this file again before making broad architectural changes
+7. `docs/CODEX_PLAYBOOK.md` when the coding agent is Codex
+8. this file again before making broad architectural changes
 
 ## Mission
 
@@ -23,6 +24,12 @@ python main.py
 ```
 
 Do not create a second production entrypoint, a parallel bot, a replacement parser stack, or monkey-patch the running Telegram application.
+
+## Codex + repository toolkit
+
+Codex is the preferred coding agent for scoped implementation/review tasks. `tools/claude-code` is a pinned repository toolkit, not a running Claude service. Codex may read the relevant prompts/checklists there as supplemental playbooks, following `docs/CODEX_PLAYBOOK.md`, but Claude-specific hooks/slash commands are not assumed to execute under Codex.
+
+Use only the smallest relevant toolkit section for the current task. SLP's own `AGENTS.md`, architecture, product contract, active plan and release rules always take precedence.
 
 ## Git workflow — one writer, one P0
 
