@@ -7,7 +7,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 
 from parsers.championat import get_championat_calendar
-from parsers.tvplus import fetch_tvplus_schedules
+from parsers.tvplus import Q_CHANNEL_NAMES, fetch_tvplus_schedules
 from services.time_logic import KZ_TIMEZONE, get_scheduled_datetimes
 from verifiers.championat_calendar import (
     match_championat_calendar,
@@ -132,6 +132,10 @@ _cache_anchor: date | None = None
 _cache_expires_at = 0.0
 _cache_by_date: dict[date, list[dict]] = {}
 _fallback_cache: dict[str, tuple[float, dict]] = {}
+
+
+def _is_q_channel(event: dict) -> bool:
+    return str(event.get("channel") or "").strip() in Q_CHANNEL_NAMES
 
 
 def _text(event: dict) -> str:
@@ -423,7 +427,12 @@ async def _reconcile_external(
                 continue
 
             local_checked += 1
-            result = match_championat_calendar(event, calendar.events)
+            is_q_channel = _is_q_channel(event)
+            result = match_championat_calendar(
+                event,
+                calendar.events,
+                exact_time=is_q_channel,
+            )
             state = str(result.get("state") or "unknown")
             if state == "confirmed_direct":
                 local_confirmed += 1
@@ -441,6 +450,20 @@ async def _reconcile_external(
                 continue
 
             local_unknown += 1
+
+            # Q Arena/Q Football/Q League have a dedicated fail-closed rule:
+            # TV+ EPG alone must never create a SOON row.  Do not use the
+            # generic official-source fallback for these channels; only an
+            # exact Championat date+minute match is acceptable.
+            if is_q_channel:
+                pending = apply_reconciliation_result(event, result)
+                pending["reconciliation_state"] = "pending_championat_match"
+                pending["reconciliation_verification_source"] = (
+                    "championat_calendar"
+                )
+                by_date[scope_date][index] = pending
+                continue
+
             start, _ = get_scheduled_datetimes(event)
             key = _verification_key(event)
             cached = _fallback_cache.get(key)
