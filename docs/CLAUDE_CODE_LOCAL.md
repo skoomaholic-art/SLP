@@ -44,6 +44,8 @@ The launcher clones/updates `skoomaholic-art/claude-code` under the user's cache
 
 It starts Claude in an isolated git worktree and uses `auto` permission mode by default. It never uses `bypassPermissions`. Override the permission mode with `SLP_CLAUDE_PERMISSION_MODE=default` when you want every sensitive action confirmed.
 
+The security plugin's regex warnings and commit-time review stay enabled locally, but its extra LLM review after every turn is disabled by default to avoid unnecessary usage. Set `ENABLE_STOP_REVIEW=1` before launching if you explicitly want that additional review layer. In GitHub Actions, the plugin runs only its low-cost pattern layer by default.
+
 `CLAUDE.md` and `AGENTS.md` remain the authoritative SLP operating rules.
 
 ## Useful commands
@@ -81,4 +83,4 @@ Use parallel agents for separate investigations or reviews, not for two agents e
 
 ## GitHub agent mode
 
-SLP also contains `.github/workflows/claude-code.yml`. Once the Claude GitHub App and `CLAUDE_CODE_OAUTH_TOKEN` repository secret are configured, an issue or PR comment containing `@claude` can assign work remotely. Claude may implement and push a branch/PR, but it must not merge its own PR or release Railway production.
+SLP also contains `.github/workflows/claude-code.yml`. Once the Claude GitHub App and `CLAUDE_CODE_OAUTH_TOKEN` repository secret are configured, an issue or PR comment containing `@claude` can assign work remotely. The workflow checks out both SLP and `skoomaholic-art/claude-code`, then loads the feature/review/security plugins from the fork. Claude may implement and push a branch/PR, but it must not merge its own PR or release Railway production.
