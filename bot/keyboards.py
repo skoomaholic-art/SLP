@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.formatters import display_title
@@ -35,6 +37,38 @@ def event_check_keyboard(events: list[dict], *, limit: int = 20) -> InlineKeyboa
                 InlineKeyboardButton(
                     text=f"{time_text} · {title}",
                     callback_data=f"check_event:{index}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="↩️ Меню", callback_data="menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def schedule_navigation_keyboard(
+    current_date: date,
+    *,
+    first_date: date,
+    last_date: date,
+) -> InlineKeyboardMarkup:
+    """Build date navigation without losing the one-day-per-view invariant."""
+    rows: list[list[InlineKeyboardButton]] = []
+    if current_date > first_date:
+        previous_date = current_date.fromordinal(current_date.toordinal() - 1)
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=previous_date.strftime("%d.%m"),
+                    callback_data=f"schedule:{previous_date.isoformat()}",
+                )
+            ]
+        )
+    if current_date < last_date:
+        next_date = current_date.fromordinal(current_date.toordinal() + 1)
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=next_date.strftime("%d.%m"),
+                    callback_data=f"schedule:{next_date.isoformat()}",
                 )
             ]
         )
