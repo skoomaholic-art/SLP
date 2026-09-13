@@ -84,6 +84,8 @@ From the actual deployed bot:
 - [ ] `/errors` surfaces unresolved incidents rather than hiding them;
 - [ ] empty results are semantically correct, not caused by stale/empty DB or swallowed source errors.
 
+Presentation regression recorded 2026-09-13: PR #35 normalizes `/check` inline-button titles through the shared Telegram formatter. Deterministic coverage is included; deployed `/check` verification remains part of this gate.
+
 ### P0.6 Stability gate
 
 - [ ] observe at least 3 consecutive scheduled refresh cycles;
