@@ -28,6 +28,19 @@ Use this file for confirmed defects and verification gaps that materially affect
 
 ---
 
+
+## P0 — `/check` button titles bypass display normalization
+
+**Status:** FIX IN PR #35 / NOT RELEASED
+
+**Symptom:** inline event-selection buttons display provider-supplied club names in ALL CAPS.
+
+**Root cause:** `event_check_keyboard()` used raw `title`/`raw_title` values instead of the shared Telegram display formatter.
+
+**Resolution candidate:** route button labels through `display_title(event)` and keep a regression test for uppercase source titles. Close only after CI, release-gate deployment and Telegram verification.
+
+---
+
 ## Closed / regression-protected
 
 ### 2026-09-12 data-correctness audit
