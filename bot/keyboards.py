@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from bot.formatters import display_title
+
 
 MAIN_KEYBOARD = InlineKeyboardMarkup(
     inline_keyboard=[
@@ -25,7 +27,7 @@ def event_check_keyboard(events: list[dict], *, limit: int = 20) -> InlineKeyboa
     rows = []
     for index, event in enumerate(events[:limit]):
         time_text = str(event.get("time") or "--:--")
-        title = str(event.get("title") or event.get("raw_title") or "Без названия")
+        title = display_title(event)
         if len(title) > 42:
             title = title[:39].rstrip() + "…"
         rows.append(
