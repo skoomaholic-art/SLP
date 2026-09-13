@@ -3,6 +3,7 @@ from datetime import date
 from unittest.mock import patch
 
 from parsers.tvguide_cached import RECONCILE_LOOKAHEAD_HOURS, infer_direct_event
+from verifiers.championat_calendar import match_championat_calendar
 from verifiers.championat_occurrence import verify_championat_occurrence
 
 
@@ -31,6 +32,35 @@ def base_event(**overrides):
 
 
 class ChampionatOccurrenceTests(unittest.TestCase):
+    def test_exact_time_policy_requires_same_date_and_minute(self):
+        event = base_event(channel="Q Arena", date="2026-09-13", time="15:25")
+        same_time = {
+            "title": "Силва - Дельгадо",
+            "raw_title": "Noche UFC. Силва - Дельгадо",
+            "sport": "MMA",
+            "date": "2026-09-13",
+            "time": "15:25",
+            "source_url": "https://www.championat.com/boxing/_ufc/match/12345/",
+        }
+        shifted_time = {**same_time, "time": "15:26"}
+
+        self.assertEqual(
+            match_championat_calendar(
+                event,
+                [same_time],
+                exact_time=True,
+            )["state"],
+            "confirmed_direct",
+        )
+        self.assertEqual(
+            match_championat_calendar(
+                event,
+                [shifted_time],
+                exact_time=True,
+            )["state"],
+            "mismatch",
+        )
+
     @patch("verifiers.championat_occurrence._openserp_search_any")
     def test_championat_matching_event_and_time_confirms_live(self, search):
         search.return_value = ([{
