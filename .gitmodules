@@ -1,0 +1,4 @@
+[submodule "tools/claude-code"]
+	path = tools/claude-code
+	url = https://github.com/skoomaholic-art/claude-code.git
+	branch = main
