@@ -83,4 +83,4 @@ Use parallel agents for separate investigations or reviews, not for two agents e
 
 ## GitHub agent mode
 
-SLP also contains `.github/workflows/claude-code.yml`. Once the Claude GitHub App and `CLAUDE_CODE_OAUTH_TOKEN` repository secret are configured, an issue or PR comment containing `@claude` can assign work remotely. The workflow checks out both SLP and `skoomaholic-art/claude-code`, then loads the feature/review/security plugins from the fork. Claude may implement and push a branch/PR, but it must not merge its own PR or release Railway production.
+SLP also contains `.github/workflows/claude-code.yml`. Once the Claude GitHub App and `CLAUDE_CODE_OAUTH_TOKEN` repository secret are configured, an issue or PR comment containing `@claude` can assign work remotely. The workflow registers `https://github.com/skoomaholic-art/claude-code.git` as a Claude plugin marketplace through the action's native `plugin_marketplaces` input and installs selected plugins from its `claude-code-plugins` catalog. Claude may implement and push a branch/PR, but it must not merge its own PR or release Railway production.
