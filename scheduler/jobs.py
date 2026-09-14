@@ -5,6 +5,7 @@ import logging
 
 from aiogram import Bot
 
+from services.schedule_change_guard import systemic_one_day_shift
 from services.schedule_service import ScheduleService
 from services.schedule_watch import (
     build_change_messages,
@@ -52,7 +53,19 @@ async def refresh_and_notify(schedule_service: ScheduleService, bot: Bot) -> Non
         return
 
     changes = diff_schedule_snapshots(previous, current)
+    systemic_shift = systemic_one_day_shift(changes)
+
     update_snapshot(current)
+
+    if systemic_shift:
+        logger.warning(
+            "scheduler suppressed systemic one-day remap channel=%s delta_minutes=%d events=%d",
+            systemic_shift["channel"],
+            systemic_shift["delta_minutes"],
+            systemic_shift["event_count"],
+        )
+        return
+
     await _send_changes(bot, changes)
     if changes:
         logger.info("scheduler schedule_changes=%d", len(changes))
