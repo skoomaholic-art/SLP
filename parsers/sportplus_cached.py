@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 import time
@@ -20,9 +21,13 @@ from services.broadcast_evidence import add_broadcast_evidence
 
 logger = logging.getLogger(__name__)
 _CACHE_TTL_SECONDS = 45.0
+_STABLE_CHANGE_CONFIRMATIONS = 2
 _cache_html: str | None = None
 _cache_monotonic = 0.0
 _cache_lock: asyncio.Lock | None = None
+_candidate_html: str | None = None
+_candidate_signature: str | None = None
+_candidate_seen = 0
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -31,6 +36,68 @@ def _get_lock() -> asyncio.Lock:
     if _cache_lock is None:
         _cache_lock = asyncio.Lock()
     return _cache_lock
+
+
+def _canonical_schedule_signature(html: str) -> str:
+    """Hash visible schedule text while ignoring transient DOM attributes.
+
+    Sport+ can switch the current ``blink/LIVE`` marker without changing the
+    schedule itself. Those attribute-only changes must not make a new guide
+    revision. Visible text changes, including date headers and programme rows,
+    do make a new revision.
+    """
+    soup = BeautifulSoup(str(html or ""), "html.parser")
+    strings = [
+        " ".join(value.split())
+        for value in soup.stripped_strings
+    ]
+    payload = "\n".join(strings).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _select_stable_html(html: str) -> tuple[str, bool]:
+    """Require the same changed guide twice before replacing the stable guide.
+
+    The Sport+ page has occasionally exposed a transient one-day tab/content
+    mismatch. Without this guard one refresh can move every future event by
+    exactly 24 hours and the notification layer interprets it as real schedule
+    changes. A genuine guide revision is accepted on the second consecutive
+    observation (normally one scheduler interval later).
+    """
+    global _candidate_html, _candidate_signature, _candidate_seen
+
+    if _cache_html is None:
+        _candidate_html = None
+        _candidate_signature = None
+        _candidate_seen = 0
+        return html, True
+
+    signature = _canonical_schedule_signature(html)
+    stable_signature = _canonical_schedule_signature(_cache_html)
+
+    if signature == stable_signature:
+        _candidate_html = None
+        _candidate_signature = None
+        _candidate_seen = 0
+        # Keep the newest DOM so the current on-air marker can still update.
+        return html, True
+
+    if signature == _candidate_signature:
+        _candidate_seen += 1
+        _candidate_html = html
+    else:
+        _candidate_signature = signature
+        _candidate_html = html
+        _candidate_seen = 1
+
+    if _candidate_seen >= _STABLE_CHANGE_CONFIRMATIONS:
+        selected = _candidate_html or html
+        _candidate_html = None
+        _candidate_signature = None
+        _candidate_seen = 0
+        return selected, True
+
+    return _cache_html, False
 
 
 async def _fetch_tvguide_html() -> str:
@@ -65,14 +132,23 @@ async def _fetch_tvguide_html() -> str:
                 if not html.strip():
                     raise RuntimeError("Sport+ returned empty HTML")
 
-                _cache_html = html
+                selected_html, promoted = _select_stable_html(html)
+                _cache_html = selected_html
                 _cache_monotonic = time.monotonic()
-                logger.debug(
-                    "[SPORTPLUS] tvguide fetched bytes=%d attempt=%d",
-                    len(html),
-                    attempt,
-                )
-                return html
+
+                if promoted:
+                    logger.debug(
+                        "[SPORTPLUS] tvguide accepted bytes=%d attempt=%d",
+                        len(html),
+                        attempt,
+                    )
+                else:
+                    logger.warning(
+                        "[SPORTPLUS] tvguide revision held for confirmation candidate_seen=%d required=%d",
+                        _candidate_seen,
+                        _STABLE_CHANGE_CONFIRMATIONS,
+                    )
+                return _cache_html
             except Exception as error:
                 last_error = error
                 if attempt >= 3:
