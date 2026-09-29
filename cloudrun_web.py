@@ -22,13 +22,17 @@ import sqlite3
 import tempfile
 import time
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from openpyxl import load_workbook
 from pydantic import BaseModel
 
 from agents.runtime_orchestrator import RuntimeParserOrchestrator
 from services.live_evidence import event_is_live_broadcast, event_is_schedule_candidate
+from services.epg_excel import (MAX_WORKBOOK_BYTES, InvalidEPG, import_parsed_epg,
+                               imported_epg_status, initialize_epg_imports,
+                               parse_epg_xlsx)
+from services.schedule_merge import same_sporting_event, normalize_match_text
 from services.schedule_service import ScheduleService, is_user_event
 from services.time_logic import KZ_TIMEZONE, get_scheduled_datetimes
 from storage.database import SLPDatabase
@@ -269,6 +273,7 @@ async def lifespan(application: FastAPI):
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     application.state.backup = BucketSnapshot(GCS_BUCKET) if GCS_BUCKET else None
     database = SLPDatabase(DB_PATH)
+    initialize_epg_imports(database)
     application.state.database = database
     application.state.schedule = ScheduleService(
         RuntimeParserOrchestrator(database=database)
@@ -291,6 +296,12 @@ def healthz(request: Request):
 @app.get("/")
 def home():
     return FileResponse(ROOT / "cloudrun_ui" / "index.html")
+
+
+@app.get("/assets/logos.js")
+def channel_logos():
+    return FileResponse(ROOT / "cloudrun_ui" / "logos.js",
+                        media_type="text/javascript; charset=utf-8")
 
 
 @app.post("/api/login")
@@ -336,23 +347,79 @@ def events(request: Request, start: str = "", end: str = ""):
             "timezone": "Asia/Almaty"}
 
 
+def _source_status(request: Request) -> dict:
+    database = request.app.state.database
+    today = datetime.now(KZ_TIMEZONE).date()
+    files = imported_epg_status(
+        database, first=today, last=today + timedelta(days=6)
+    )
+    source_runs = database.latest_source_runs()
+    websites = []
+    for source, label in (
+        ("qazsport", "QAZSPORT HD"),
+        ("sportplus", "SPORT+ Qazaqstan"),
+        ("tvguide", "TVGuide (проверенные LIVE)"),
+    ):
+        latest = source_runs.get(source)
+        websites.append({
+            "channel": label, "kind": "website",
+            "status": (latest or {}).get("status", "not_checked"),
+            "checked_at": (latest or {}).get("created_at"),
+            "event_count": (latest or {}).get("event_count", 0),
+        })
+    return {
+        "websites": websites, "excel": files,
+        "missing_channels": [
+            x["channel"] for x in files
+            if x["status"] in ("missing", "outdated")
+        ], "gmail_connected": False,
+        "note": "Excel сейчас загружаются вручную. Gmail OAuth ещё не подключён.",
+    }
+
+
 @app.get("/api/sources")
 def sources(request: Request):
     current_user(request)
-    return {"available_now": ["QAZSPORT HD", "SPORT+ Qazaqstan",
-                              "источники TVGuide из SLP"],
-            "not_connected": list(Q_SETANTA),
-            "gmail_connected": False,
-            "note": "Почтовый импорт и запросы ещё не подключены к веб-сервису"}
+    return _source_status(request)
+
+
+@app.post("/api/import-epg")
+async def import_epg(request: Request, upload: UploadFile = File(...)):
+    user = current_user(request)
+    origin_guard(request)
+    if user["role"] not in ("editor", "admin"):
+        raise HTTPException(403, "Недостаточно прав на импорт")
+    filename = upload.filename or ""
+    try:
+        data = await upload.read(MAX_WORKBOOK_BYTES + 1)
+    finally:
+        await upload.close()
+    try:
+        parsed = parse_epg_xlsx(data, filename)
+    except InvalidEPG as exc:
+        raise HTTPException(422, str(exc)) from exc
+    async with request.app.state.collect_lock:
+        result = import_parsed_epg(request.app.state.database, parsed)
+        if request.app.state.backup and result["status"] == "imported":
+            try:
+                await asyncio.to_thread(request.app.state.backup.save)
+            except Exception as exc:
+                raise HTTPException(503, "Импорт выполнен, но резервная копия "
+                                    "в GCS не сохранена: " + type(exc).__name__) from exc
+    result["durable_storage"] = bool(request.app.state.backup)
+    return result
 
 
 @app.post("/api/collect")
 async def collect(request: Request, options: CollectOptions):
     current_user(request)
     origin_guard(request)
-    if not options.allow_partial:
-        raise HTTPException(409, {"message": "Нет файлов QSport и Setanta. Собрать без них?",
-                                  "missing_channels": list(Q_SETANTA)})
+    status = _source_status(request)
+    if status["missing_channels"] and not options.allow_partial:
+        raise HTTPException(409, {
+            "message": "Нет актуальных Excel некоторых телеканалов. Собрать без них?",
+            "missing_channels": status["missing_channels"],
+        })
     async with request.app.state.collect_lock:
         try:
             await request.app.state.schedule.refresh()
