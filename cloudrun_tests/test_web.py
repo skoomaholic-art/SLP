@@ -82,6 +82,24 @@ class WebTests(unittest.TestCase):
         self.assertNotEqual(logos["SETANTA SPORTS 1"], logos["SETANTA SPORTS 2"])
         self.assertNotEqual(logos["EUROSPORT 1"], logos["EUROSPORT 2"])
 
+    def test_source_inventory_has_exactly_14_distinct_channels(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = SLPDatabase(Path(directory) / "sport.db")
+            request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+                database=database, backup=None
+            )))
+            status = web._source_status(request)
+            channels = [item["channel"] for item in (
+                status["websites"] + status["excel"]
+            )]
+            self.assertEqual(len(channels), 14)
+            self.assertEqual(len(set(channels)), 14)
+            self.assertNotIn("TVGuide (проверенные LIVE)", channels)
+            self.assertIn("KHL PRIME", channels)
+            self.assertIn("KHL HD", channels)
+            self.assertIn("EUROSPORT 1", channels)
+            self.assertIn("EUROSPORT 2", channels)
+
     def test_direct_only_dedup_barys_and_time(self):
         with tempfile.TemporaryDirectory() as folder:
             database = SLPDatabase(Path(folder) / "sports.db")
