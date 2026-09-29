@@ -70,6 +70,7 @@ SPORTS = (
     (r"велоспорт", "Велоспорт"),
     (r"баскетбол", "Баскетбол"),
     (r"волейбол", "Волейбол"),
+    (r"бәйге|ат\s+шабыс", "Конный спорт"),
 )
 SPORT_RE = [(re.compile(pat, re.I), sport) for pat, sport in SPORTS]
 TITLE_END = re.compile(
