@@ -39,7 +39,7 @@ from services.epg_excel import (MAX_WORKBOOK_BYTES, InvalidEPG, import_parsed_ep
                                imported_epg_status, imported_official_epg_status,
                                initialize_epg_imports,
                                parse_epg_xlsx, parse_epg_xlsx_channels,
-                               parse_supported_epg_channels)
+                               parse_supported_epg_channels, preview_parsed_epg)
 from services.schedule_merge import same_sporting_event, normalize_match_text
 from services.schedule_service import ScheduleService, is_user_event
 from services.time_logic import KZ_TIMEZONE, get_scheduled_datetimes
@@ -581,6 +581,40 @@ def _source_status(request: Request) -> dict:
 def sources(request: Request):
     current_user(request)
     return _source_status(request)
+
+
+@app.post("/api/preview-epg")
+async def preview_epg(request: Request, upload: UploadFile = File(...)):
+    """Show an editor the actual diff without mutating accepted schedules."""
+    user = current_user(request)
+    origin_guard(request)
+    if user["role"] not in ("editor", "admin"):
+        raise HTTPException(403, "Недостаточно прав на просмотр импорта")
+    filename = upload.filename or ""
+    try:
+        data = await upload.read(MAX_WORKBOOK_BYTES + 1)
+    finally:
+        await upload.close()
+    try:
+        parsed_batches = parse_supported_epg_channels(data, filename)
+    except InvalidEPG as exc:
+        raise HTTPException(422, str(exc)) from exc
+    async with request.app.state.collect_lock:
+        previews = [
+            preview_parsed_epg(request.app.state.database, parsed)
+            for parsed in parsed_batches
+        ]
+    return {
+        "filename": filename,
+        "previews": previews,
+        "channels": [parsed.channel for parsed in parsed_batches],
+        "total_live": sum(len(parsed.events) for parsed in parsed_batches),
+        "durable_storage": bool(request.app.state.backup),
+        "warning": (
+            "Постоянное хранилище не подключено: после перезапуска импорт может исчезнуть."
+            if not request.app.state.backup else ""
+        ),
+    }
 
 
 @app.post("/api/import-epg")
