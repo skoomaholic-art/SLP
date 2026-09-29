@@ -45,6 +45,12 @@ The Gmail UI supports manual sync, a pending XLSX review list, manual import
 of confirmed Setanta/QSport XLSX, dismissal, and review of text-only change
 notifications. Ambiguous attachments (e.g. a generic SPORT+ "сетка Канала.xlsx"
 without a confirmed schema/timezone) must NOT be imported automatically.
+Before accepting a pending XLSX, the editor can preview a real
+same-channel difference (new fixtures, one-to-one kickoff changes, ambiguous
+repeated fixtures, or programmes no longer listed). The diff does not update
+the database. Approving an older received email is blocked if a newer
+approved supplier email overlaps its dates; the user may inspect historical
+source versions without rolling back the active programme.
 The browser checks for new mail approximately every 15 minutes only while the
 authorized application is open; continuous background polling is NOT active.
 
@@ -70,7 +76,9 @@ start, and end time. Editing or inspecting change history needs an
 authenticated editor. This is not yet an exhaustive guarantee of all
 provider corrections (e.g. changed fixture ID may appear removed + added).
 The 25-column export preserves existing editorial rows, translations,
-IDs and supplied titles, applies stored editorial corrections, escapes
+IDs and supplied titles, applies stored editorial corrections, and reuses
+only unambiguous approved RU/KZ TEAM/SUBTITLE mappings from the private
+template (not from a generic machine translation). It escapes
 potential spreadsheet formulas and sorts events in UTC+5. Unknown Kazakh
 translations remain blank for review, not guessed or copied from Russian.
 Priorities follow the supplied workbook's 50000, 49900 ... step.
