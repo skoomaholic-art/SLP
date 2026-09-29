@@ -257,6 +257,88 @@ class EPGExcelTests(unittest.TestCase):
                 "email_epg_qarena", "2026-09-30"
             )), 1)
 
+    def test_unique_supplier_kickoff_change_preserves_manual_editorial(self):
+        from services import editorial_store
+        def workbook_at(clock):
+            return workbook_bytes([
+                (3, 3, "29 сентября"), (2, 4, "AST"),
+                (2, 5, clock),
+                (3, 5, "LIVE. Футбол. Лига, Команда А - Команда Б"),
+                (2, 6, clock + .1), (3, 6, "Обзор матча"),
+            ])
+        filename = "EPG QSport Arena 29.09.26 - 05.10.26_MEDIA.xlsx"
+        with tempfile.TemporaryDirectory() as folder:
+            database = SLPDatabase(Path(folder) / "sport.db")
+            first = parse_epg_xlsx(workbook_at(.5), filename,
+                                   today=date(2026, 9, 29))
+            import_parsed_epg(database, first)
+            with database._connect() as conn:
+                old_id = conn.execute(
+                    "SELECT storage_id FROM events WHERE active=1"
+                ).fetchone()["storage_id"]
+            editorial_store.apply_edit(
+                database, storage_id=old_id,
+                values={"team1_kz": "А КОМАНДАСЫ", "subtitle_ru": "Исправлено"},
+                username="Skoomaholic",
+            )
+            second = parse_epg_xlsx(workbook_at(.55), filename,
+                                    today=date(2026, 9, 29))
+            import_parsed_epg(database, second)
+            with database._connect() as conn:
+                new_id = conn.execute(
+                    "SELECT storage_id FROM events WHERE active=1"
+                ).fetchone()["storage_id"]
+            self.assertNotEqual(old_id, new_id)
+            self.assertEqual(
+                editorial_store.get_editorial(database, [new_id])[new_id],
+                {"team1_kz": "А КОМАНДАСЫ", "subtitle_ru": "Исправлено"},
+            )
+            self.assertEqual(
+                editorial_store.get_editorial(database, [old_id])[old_id]
+                ["team1_kz"], "А КОМАНДАСЫ",
+            )
+            history = editorial_store.edit_history(
+                database, storage_id=new_id
+            )
+            self.assertTrue(any(
+                item["editor"] == "SLP_IMPORT_TRANSFER" for item in history
+            ))
+
+    def test_repeated_same_day_fixture_does_not_inherit_ambiguous_edit(self):
+        from services import editorial_store
+        def grid(times):
+            rows = [(3, 3, "29 сентября"), (2, 4, "AST")]
+            for row_num, clock in enumerate(times, 5):
+                rows.extend([
+                    (2, row_num, clock),
+                    (3, row_num, "LIVE. Футбол. Лига, Команда А - Команда Б"),
+                ])
+            return workbook_bytes(rows)
+        filename = "EPG QSport Arena 29.09.26 - 05.10.26_MEDIA.xlsx"
+        with tempfile.TemporaryDirectory() as folder:
+            database = SLPDatabase(Path(folder) / "sport.db")
+            first = parse_epg_xlsx(grid([.5, .6]), filename,
+                                   today=date(2026, 9, 29))
+            import_parsed_epg(database, first)
+            with database._connect() as conn:
+                old_ids = [x["storage_id"] for x in conn.execute(
+                    "SELECT storage_id FROM events WHERE active=1"
+                )]
+            editorial_store.apply_edit(
+                database, storage_id=old_ids[0],
+                values={"team1_kz": "А КОМАНДАСЫ"}, username="Skoomaholic",
+            )
+            second = parse_epg_xlsx(grid([.7]), filename,
+                                    today=date(2026, 9, 29))
+            import_parsed_epg(database, second)
+            with database._connect() as conn:
+                new_id = conn.execute(
+                    "SELECT storage_id FROM events WHERE active=1"
+                ).fetchone()["storage_id"]
+            self.assertNotIn(new_id, editorial_store.get_editorial(
+                database, [new_id],
+            ))
+
     def test_preview_shows_changed_time_without_inventing_cancellation(self):
         def supplier(minutes):
             return workbook_bytes([
