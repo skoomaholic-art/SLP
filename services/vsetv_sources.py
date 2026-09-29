@@ -156,13 +156,33 @@ async def refresh_vsetv_web_sources(database, *, today: date | None = None) -> d
             status = "ok" if events and not error else (
                 "warning" if events else "error" if error else "warning"
             )
-            # Empty/unreachable pages cannot wipe valid previous LIVE events.
-            if events:
-                for day, day_rows in by_day.items():
-                    database.upsert_source_snapshot(
-                        run_id=run_id, source=source,
-                        scope_date=day, events=day_rows,
+            # A partial weekly response is not a complete replacement.
+            # Preserve accepted rows that are absent from this scrape:
+            # a missing LIVE badge does not establish a cancellation.
+            held_days = []
+            accepted_days = []
+            for day, day_rows in by_day.items():
+                previous = database.load_active_source_snapshot(source, day)
+                def identity(row):
+                    return (
+                        str(row.get("time") or ""),
+                        str(row.get("title") or "").casefold().strip(),
                     )
+                old_keys = {identity(row) for row in previous}
+                new_keys = {identity(row) for row in day_rows}
+                if old_keys - new_keys:
+                    held_days.append(day)
+                    continue
+                database.upsert_source_snapshot(
+                    run_id=run_id, source=source,
+                    scope_date=day, events=day_rows,
+                )
+                accepted_days.append(day)
+            if held_days:
+                status = "warning"
+                error = (error + "; " if error else "") + (
+                    "partial_update_held:" + ",".join(held_days)
+                )
             database.record_parser_run(
                 run_id=run_id, source=source, scope_date=today.isoformat(),
                 status=status, event_count=len(events),
@@ -172,7 +192,9 @@ async def refresh_vsetv_web_sources(database, *, today: date | None = None) -> d
                 error=error, details={
                     "channel": channel, "days": sorted(by_day),
                     "timezone": "Europe/Moscow -> Asia/Almaty",
-                    "stale_data_kept": not bool(events),
+                    "stale_data_kept": not bool(events) or bool(held_days),
+                    "held_days": held_days,
+                    "accepted_days": accepted_days,
                 },
             )
             stats.append({"channel": channel, "count": len(events),
