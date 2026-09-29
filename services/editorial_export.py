@@ -8,12 +8,14 @@ from __future__ import annotations
 from copy import copy
 from datetime import datetime, timedelta
 import hashlib
+import os
 import re
 import unicodedata
 
 from openpyxl import Workbook
 
 from services.schedule_merge import normalize_match_text
+from services import ai_pipeline
 
 HEADERS = (
     "Приоритет", "date", "time", "Вид спорта", "Турнир",
@@ -251,6 +253,25 @@ def _new_row(event: dict) -> list:
     serial = int(hashlib.sha1(stable_key.encode()).hexdigest()[:8], 16) % 10000
     slug = f"{datecode}_{code}_{suffix}_{serial:04d}"
     team1, team2, subtitle = _editorial_fields(event)
+    # Only the locally configured AI_EDITOR can suggest missing translations.
+    # RU/source/fixture/timing fields stay deterministic and immutable.
+    kz = {
+        "team1_kz": str(event.get("team1_kz") or ""),
+        "team2_kz": str(event.get("team2_kz") or ""),
+        "subtitle_kz": str(event.get("subtitle_kz") or ""),
+    }
+    if os.environ.get("SPORT_AI_EDITOR_AUTO_TRANSLATE", "").casefold() == "true":
+        suggestions = ai_pipeline.editor_suggestions({
+            "sport": sport, "tournament": tournament, "title": title,
+            "team1_ru": team1, "team2_ru": team2, "subtitle_ru": subtitle,
+            **kz,
+        })
+        if team1 and not kz["team1_kz"]:
+            kz["team1_kz"] = suggestions.get("team1_kz", "")
+        if team2 and not kz["team2_kz"]:
+            kz["team2_kz"] = suggestions.get("team2_kz", "")
+        if subtitle and not kz["subtitle_kz"]:
+            kz["subtitle_kz"] = suggestions.get("subtitle_kz", "")
     return [
         None, start.strftime("%d.%m"), start.strftime("%H:%M"),
         _excel_safe(sport), _excel_safe(tournament), _excel_safe(title),
@@ -260,9 +281,9 @@ def _new_row(event: dict) -> list:
         slug + "_SOON_RU", slug + "_SOON_KZ",
         "", "", "", _excel_safe(" ".join(x for x in (sport, tournament) if x)),
         slug + "_ARCH_RU", slug + "_ARCH_KZ",
-        _excel_safe(team1), _excel_safe(str(event.get("team1_kz") or "")),
-        _excel_safe(team2), _excel_safe(str(event.get("team2_kz") or "")),
-        _excel_safe(subtitle), _excel_safe(str(event.get("subtitle_kz") or "")),
+        _excel_safe(team1), _excel_safe(kz["team1_kz"]),
+        _excel_safe(team2), _excel_safe(kz["team2_kz"]),
+        _excel_safe(subtitle), _excel_safe(kz["subtitle_kz"]),
     ]
 
 
