@@ -222,7 +222,7 @@ async def _schedule_ids(
             media.get(key) for key in ("name", "title", "channelName", "channelTitle")
         ]
         normalized = {
-            re.sub(r"\\s+", " ", str(value or "")).strip().casefold()
+            re.sub(r"\s+", " ", str(value or "")).strip().casefold()
             for value in names
         }
         if normalized & {"fight club", "fight club hd", "fightclub", "fightclub hd"}:
