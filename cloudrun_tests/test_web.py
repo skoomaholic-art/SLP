@@ -91,7 +91,7 @@ class WebTests(unittest.TestCase):
         self.assertNotEqual(logos["SETANTA SPORTS 1"], logos["SETANTA SPORTS 2"])
         self.assertNotEqual(logos["EUROSPORT 1"], logos["EUROSPORT 2"])
 
-    def test_source_inventory_has_exactly_14_distinct_channels(self):
+    def test_source_inventory_covers_all_16_channels_without_duplicate_web_cards(self):
         with tempfile.TemporaryDirectory() as directory:
             database = SLPDatabase(Path(directory) / "sport.db")
             request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
@@ -101,8 +101,10 @@ class WebTests(unittest.TestCase):
             channels = [item["channel"] for item in (
                 status["websites"] + status["excel"]
             )]
-            self.assertEqual(len(channels), 14)
-            self.assertEqual(len(set(channels)), 14)
+            self.assertEqual(len(status["websites"]), 16)
+            self.assertEqual(len(status["excel"]), 6)
+            self.assertEqual(len(set(channels)), 16)
+            self.assertEqual(len({item["channel"] for item in status["websites"]}), 16)
             self.assertNotIn("TVGuide (проверенные LIVE)", channels)
             self.assertIn("KHL PRIME", channels)
             self.assertIn("KHL HD", channels)
