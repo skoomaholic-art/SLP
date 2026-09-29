@@ -138,6 +138,12 @@ class GmailOfflineTests(unittest.TestCase):
         self.assertFalse(next(x for x in gmail.list_notices(self.db)
                               if x["id"] == pending["id"])["has_attachment"])
 
+    def test_forwarded_mojibake_is_repaired_before_change_detection(self):
+        broken = "РќР° 6 РѕРєС‚СЏР±СЂСЏ РґРѕР±Р°РІРёР»Рё РџСЂСЏРјРѕР№ СЌС„РёСЂ РўРµРЅРЅРёСЃР°"
+        repaired = gmail._repair_forwarded_text(broken)
+        self.assertIn("На 6 октября", repaired)
+        self.assertIn("Прямой эфир Тенниса", repaired)
+
     def test_forwarded_generic_attachment_uses_body_context_and_workbook(self):
         workbook = Workbook()
         sheet = workbook.active
