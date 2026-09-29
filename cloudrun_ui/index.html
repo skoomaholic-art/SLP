@@ -46,12 +46,8 @@ h1{font-size:30px;margin:0 0 7px}h2{font-size:19px;margin:0 0 12px}.subtitle,.mu
   width:86px;height:38px;flex:0 0 86px;overflow:visible;background:#142032;
   border-radius:8px;padding:3px}
 .channel-logo{display:block;width:100%;height:100%;object-fit:contain;object-position:center}
-.logo-variant{position:absolute;bottom:-3px;right:-3px;z-index:1;padding:1px 4px;
-  border:1px solid #607891;border-radius:4px;background:#102037;
-  font-size:10px;line-height:1.3;font-weight:800;color:#f0f6ff;letter-spacing:.02em}
 .channel-pill .logo-frame{width:67px;height:30px;flex-basis:67px;padding:2px}
-.channel-pill .logo-variant{font-size:8px;padding:0 2px;bottom:-3px;right:-2px}
-.channel-label{overflow-wrap:anywhere;word-break:normal}
+.channel-pill .channel-label{overflow-wrap:anywhere;word-break:normal}
 .source-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px;margin:12px 0}
 .source-item{display:flex;gap:11px;align-items:center;border:1px solid var(--line);border-radius:10px;padding:9px;min-width:0;min-height:68px}
 .source-item .logo-frame{width:105px;flex-basis:105px;height:47px}
@@ -246,11 +242,6 @@ function channelLogo(channel){
  const img=document.createElement("img");img.className="channel-logo";
  img.src=uri;img.alt="";img.setAttribute("aria-hidden","true");img.loading="lazy";
  frame.append(img);
- if(channel==="KHL PRIME"||channel==="KHL HD"){
-  const label=document.createElement("span");label.className="logo-variant";
-  label.textContent=channel==="KHL PRIME"?"PRIME":"HD";
-  frame.append(label);
- }
  return frame;
 }
 function channelPill(channel){
