@@ -29,6 +29,7 @@ from pydantic import BaseModel
 
 from agents.runtime_orchestrator import RuntimeParserOrchestrator
 from services.live_evidence import event_is_live_broadcast, event_is_schedule_candidate
+from services.editorial_export import InvalidTemplate, build_working_xlsx
 from services.epg_excel import (MAX_WORKBOOK_BYTES, InvalidEPG, import_parsed_epg,
                                imported_epg_status, initialize_epg_imports,
                                parse_epg_xlsx)
@@ -501,38 +502,13 @@ def load_template():
 
 
 def xlsx_content(data: list[dict]) -> bytes:
-    wb = load_template()
-    sheet = wb.worksheets[0]
-    styles = [copy(sheet.cell(2, col)._style) for col in range(1, 26)]
-    if sheet.max_row > 1:
-        sheet.delete_rows(2, sheet.max_row - 1)
-    for n, event in enumerate(data, 2):
-        start = datetime.fromisoformat(event["start_at"])
-        platform_start = datetime.fromisoformat(event["platform_start_at"])
-        end = datetime.fromisoformat(event["end_at"])
-        title = event["title"]
-        teams = re.split(r"\s+[-–]\s+", title, maxsplit=1)
-        team1, team2 = (teams[0], teams[1]) if len(teams) == 2 else (title, "")
-        label = (start.strftime("%d%m%y") + "_" +
-                 hashlib.sha1((title + event["start_at"]).encode()).hexdigest()[:12].upper())
-        subtitle = event["sport"] + (
-            ". " + event["tournament"] if event["tournament"] else ""
-        )
-        values = [
-            60000 - (n - 2) * 10, start.strftime("%d.%m"), start.strftime("%H:%M"),
-            event["sport"], event["tournament"], title, event["channel"],
-            platform_start.replace(tzinfo=None), end.replace(tzinfo=None),
-            label + "_LIVE_RU", label + "_LIVE_KZ", label + "_SOON_RU",
-            label + "_SOON_KZ", "", "", "", subtitle,
-            label + "_ARCH_RU", label + "_ARCH_KZ",
-            team1, team1, team2, team2, subtitle, subtitle,
-        ]
-        for col, value in enumerate(values, 1):
-            cell = sheet.cell(n, col)
-            cell._style = copy(styles[col - 1])
-            cell.value = value
+    try:
+        workbook = build_working_xlsx(load_template(), data)
+    except InvalidTemplate as exc:
+        raise HTTPException(422, str(exc)) from exc
     output = BytesIO()
-    wb.save(output)
+    workbook.save(output)
+    workbook.close()
     return output.getvalue()
 
 
