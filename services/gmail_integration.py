@@ -117,6 +117,7 @@ def init_gmail_schema(database) -> None:
                 created_at TEXT NOT NULL,
                 reviewed_by TEXT NOT NULL DEFAULT '',
                 reviewed_at TEXT NOT NULL DEFAULT '',
+                imported_hash TEXT NOT NULL DEFAULT '',
                 attachment_bytes BLOB,
                 UNIQUE(message_id, attachment_id)
             );
@@ -132,6 +133,14 @@ def init_gmail_schema(database) -> None:
                 sent_at TEXT NOT NULL
             );
         """)
+        existing_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(gmail_notices)")
+        }
+        if "imported_hash" not in existing_columns:
+            conn.execute(
+                "ALTER TABLE gmail_notices ADD COLUMN imported_hash "
+                "TEXT NOT NULL DEFAULT ''"
+            )
 
 
 def _json_http(url: str, *, data: dict | None = None,
@@ -435,23 +444,44 @@ def approve_notice(database, notice_id: int, *, username: str) -> dict:
     init_gmail_schema(database)
     with database._connect() as conn:
         row = conn.execute(
-            "SELECT id,filename,attachment_bytes,status,detected_channel "
-            "FROM gmail_notices WHERE id=?", (notice_id,),
+            "SELECT id,filename,attachment_bytes,status,detected_channel,"
+            "received_at FROM gmail_notices WHERE id=?", (notice_id,),
         ).fetchone()
         if row is None:
             raise GmailTransportError("Уведомление не найдено")
         if row["status"] != "pending" or not row["attachment_bytes"]:
             raise GmailTransportError("Вложение недоступно для импорта")
         filename, raw = row["filename"], bytes(row["attachment_bytes"])
-    # Call the existing importer only after an explicit editor action.
-    from services.epg_excel import import_parsed_epg
+    from services.epg_excel import import_parsed_epg, initialize_epg_imports
     parsed = parse_epg_xlsx(raw, filename)
+    initialize_epg_imports(database)
+    # If the editor already approved a more recently received supplier file
+    # for any overlapping day on this SAME channel, reject this older file.
+    # Manual per-event review is still possible, without reverting an entire
+    # current programme to a stale attachment.
+    placeholders = ",".join("?" for _ in parsed.scope_dates)
+    with database._connect() as conn:
+        newer_mail = conn.execute(
+            "SELECT 1 FROM gmail_notices n JOIN epg_import_days d "
+            "ON d.file_hash=n.imported_hash "
+            "WHERE n.status='imported' AND n.detected_channel=? "
+            "AND n.received_at>? AND d.scope_date IN (" + placeholders + ") "
+            "LIMIT 1",
+            (parsed.channel, row["received_at"], *parsed.scope_dates),
+        ).fetchone()
+    if newer_mail:
+        raise GmailTransportError(
+            "Более новое расписание этого канала уже загружено. "
+            "Старый файл нельзя применять поверх него."
+        )
     outcome = import_parsed_epg(database, parsed)
     with database._connect() as conn:
         conn.execute(
             "UPDATE gmail_notices SET status='imported',attachment_bytes=NULL,"
-            "reviewed_by=?, reviewed_at=? WHERE id=? AND status='pending'",
-            (username, datetime.now(KZ_TIMEZONE).isoformat(), notice_id),
+            "imported_hash=?,reviewed_by=?, reviewed_at=? "
+            "WHERE id=? AND status='pending'",
+            (parsed.content_hash, username, datetime.now(KZ_TIMEZONE).isoformat(),
+             notice_id),
         )
     return outcome
 
