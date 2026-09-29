@@ -114,6 +114,13 @@ def _participants(sport: str, title: str) -> tuple[str, str]:
     return (pair[0].strip(), pair[1].strip()) if len(pair) == 2 else ("", "")
 
 
+def _excel_safe(text: str) -> str:
+    value = str(text or "")
+    # Preserve literal user/source strings instead of allowing spreadsheet
+    # formula interpretation from an untrusted event title.
+    return "'" + value if value.lstrip().startswith(("=", "+", "-", "@")) else value
+
+
 def _new_row(event: dict) -> list:
     start = datetime.fromisoformat(event["start_at"])
     platform_start = datetime.fromisoformat(event["platform_start_at"])
@@ -137,19 +144,23 @@ def _new_row(event: dict) -> list:
     if tournament:
         suffix_hash = hashlib.sha1(tournament.encode()).hexdigest()[:6].upper()
         slug += "_" + suffix_hash
-    team1, team2 = _participants(sport, title)
-    subtitle = ". ".join(x for x in (sport, tournament) if x)
+    inferred_team1, inferred_team2 = _participants(sport, title)
+    team1 = str(event.get("team1_ru") or inferred_team1)
+    team2 = str(event.get("team2_ru") or inferred_team2)
+    subtitle = str(event.get("subtitle_ru") or
+                   ". ".join(x for x in (sport, tournament) if x))
     return [
         None, start.strftime("%d.%m"), start.strftime("%H:%M"),
-        sport, tournament, title, str(event["channel"]),
+        _excel_safe(sport), _excel_safe(tournament), _excel_safe(title),
+        _excel_safe(str(event["channel"])),
         platform_start, end,
         slug + "_LIVE_RU", slug + "_LIVE_KZ",
         slug + "_SOON_RU", slug + "_SOON_KZ",
-        "", "", "", " ".join(x for x in (sport, tournament) if x),
+        "", "", "", _excel_safe(" ".join(x for x in (sport, tournament) if x)),
         slug + "_ARCH_RU", slug + "_ARCH_KZ",
-        team1, str(event.get("team1_kz") or ""),
-        team2, str(event.get("team2_kz") or ""),
-        subtitle, str(event.get("subtitle_kz") or ""),
+        _excel_safe(team1), _excel_safe(str(event.get("team1_kz") or "")),
+        _excel_safe(team2), _excel_safe(str(event.get("team2_kz") or "")),
+        _excel_safe(subtitle), _excel_safe(str(event.get("subtitle_kz") or "")),
     ]
 
 
@@ -206,5 +217,7 @@ def build_working_xlsx(workbook: Workbook, events: list[dict]) -> Workbook:
             cell = sheet.cell(n, col)
             cell.value = value
             cell._style = copy(style)
-        sheet.cell(n, 1).value = 60000 - (n-2)*10
+        # The supplied OTT template uses priorities 50000, 49900, ...
+        # Preserve that granularity while making room for long schedules.
+        sheet.cell(n, 1).value = max(50000, len(original)*100) - (n-2)*100
     return workbook
