@@ -188,3 +188,19 @@ persistent GCS, authenticated 24/7 Cloud Scheduler, site deployment and
 verified live broadcasts on all 14 sources. Sport+ / Qazsport incoming XLSX
 require real format samples before claiming automatic parsing. No paid
 cloud resource was created. Existing Telegram production is unchanged.
+
+## 2026-09-29 continuation: legacy Excel and source coverage
+
+- Branch `feature/cloud-run-sports-web`, PR #39; latest commit must be checked
+  directly before release. This is a code-only candidate, not deployed.
+- Added bounded legacy `.xls` to `.xlsx` in-memory parsing for known supplier
+  layouts. Original raw bytes remain the import identity so repeat scans are
+  idempotent. Gmail and rules-first mail classification now recognize `.xls`.
+- Source availability combines accepted day coverage from all supplier files,
+  rather than only the newest file. Tests cover source identity and the
+  multi-file coverage regression.
+- Unsupported supplier layouts (including not-yet-proven viju+ Sport `.xls`
+  and generic QAZSPORT/SPORT+ Excel) remain unverified; do not claim
+  automatic ingest until real samples are checked.
+- Cloud Run deployment, GCS persistence, Gmail OAuth, Scheduler, user/secret
+  provisioning and real-source correctness are still open.
