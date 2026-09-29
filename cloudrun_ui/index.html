@@ -657,6 +657,25 @@ $("epgForm").addEventListener("submit",async event=>{
  try{
   for(const file of files){
    const form=new FormData();form.append("upload",file,file.name);
+   const previewResponse=await fetch("/api/preview-epg",{method:"POST",body:form,credentials:"same-origin"});
+   const preview=await previewResponse.json().catch(()=>({}));
+   if(!previewResponse.ok){
+    outcomes.push(file.name+": "+(preview.detail||"Ошибка предпросмотра"));
+    continue;
+   }
+   const summary=(preview.previews||[]).map(item=>{
+    const counts=item.counts||{};
+    return item.channel+": LIVE "+item.new_count+
+      ", новых "+(counts.new||0)+
+      ", переносов "+(counts.time_changed||0)+
+      ", исчезли из файла "+(counts.missing_from_update||0)+
+      ", неоднозначных "+(counts.ambiguous||0);
+   }).join("\n");
+   if(!window.confirm("Предпросмотр "+file.name+"\n"+summary+"\n"+
+       (preview.warning||"")+"\nПрименить изменения?")){
+    outcomes.push(file.name+": отменено");
+    continue;
+   }
    const response=await fetch("/api/import-epg",{method:"POST",body:form,credentials:"same-origin"});
    const data=await response.json().catch(()=>({}));
    if(!response.ok){
