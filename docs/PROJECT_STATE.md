@@ -348,3 +348,18 @@ cloud resource was created. Existing Telegram production is unchanged.
   server-enforced two-phase transaction. A later deployment should
   consider signed previews / optimistic concurrency for multi-editor
   races. No production instance was redeployed.
+
+## 2026-09-30 - Safety for incomplete supplier updates
+
+- A replacement XLSX that still has LIVE events on a date but omits
+  individual previously accepted fixtures now leaves that date's accepted
+  source snapshot intact and reports partial_review/held_dates. A missing
+  row is not a verified cancellation. Previously only fully empty dates
+  were held; partially populated dates could silently erase old matches.
+- A focused regression covers a two-match Setanta day updated with only
+  one of those matches. Preview flags missing_from_update and import
+  preserves both previously accepted matches for editorial reconciliation.
+- This is a conservative fail-closed behavior: new fixtures on a held day
+  are not accepted until the supplier revision is reconciled. It does
+  not claim that old matches remain current indefinitely.
+- Gmail OAuth, scheduler and temporary Render deployment remain untouched.
