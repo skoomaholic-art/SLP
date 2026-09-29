@@ -306,3 +306,22 @@ cloud resource was created. Existing Telegram production is unchanged.
   production LIVE source and OAuth end-to-end remain unverified.
 - Render preview remains unchanged; no Telegram deployment or
   paid cloud provisioning is included.
+
+## 2026-09-30 real-workbook layout audit
+
+- Inspected the full owner-provided SPORT+ Qazaqstan and QAZSPORT
+  worksheets locally, without uploading proprietary files to Git.
+- SPORT+ first day uses B3="Уақыт" beside C3="СӘРСЕНБІ,
+  30 ҚЫРКҮЙЕК"; the original untimed-header condition silently skipped
+  30 September. The parser now accepts this explicit header label.
+  The corresponding synthetic regression now reproduces this layout.
+- SPORT+ also carries a direct Kazakh horse-racing programme using
+  "БӘЙГЕ ... ТІКЕЛЕЙ ЭФИР". The sport recognizer now includes
+  "Конный спорт", with an explicit regression example.
+- QAZSPORT source uses Excel serial dates with date-formatted A-column
+  cells, fractional B-column clocks, C titles and D durations.
+  Only explicit same-row LIVE text is accepted; studio and Barys hockey
+  exclusions remain unchanged.
+- Source originals and the approved 25-column template are not
+  committed, not uploaded to Render and not emailed onward.
+  Successful CI alone does not establish production Gmail/OAuth readiness.
