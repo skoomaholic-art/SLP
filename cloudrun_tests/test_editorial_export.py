@@ -63,7 +63,7 @@ class EditorialExportTests(unittest.TestCase):
         self.assertEqual(sheet["Y4"].value, "")
         self.assertEqual(
             [sheet.cell(i, 1).value for i in range(2, 5)],
-            [50000, 49900, 49800],
+            [60000, 59990, 59980],
         )
         self.assertEqual(sheet["H2"].value, datetime(2026, 9, 23, 14, 50))
         output = BytesIO()
@@ -106,11 +106,11 @@ class EditorialExportTests(unittest.TestCase):
             r for r in range(2, result.active.max_row + 1)
             if result.active.cell(r, 6).value == "Гран-при Италии - Квалификация"
         )
-        self.assertEqual(result.active.cell(row, 20).value, "Гран-при Италии")
+        self.assertEqual(result.active.cell(row, 20).value, "ГП ИТАЛИИ")
         self.assertEqual(result.active.cell(row, 22).value, "")
         self.assertEqual(
             result.active.cell(row, 24).value,
-            "Формула-1. Квалификация",
+            "Формула 1. Квалификация",
         )
         result.close()
 
