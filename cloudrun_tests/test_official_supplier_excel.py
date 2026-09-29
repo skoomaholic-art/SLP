@@ -28,6 +28,7 @@ def sportplus_sheet():
     sheet = book.active
     sheet["C1"] = '"SPORT PLUS QAZAQSTAN" АРНАСЫНЫҢ ТЕЛЕБАҒДАРЛАМАСЫ'
     sheet["C2"] = "СӘРСЕНБІ, 30 ҚЫРКҮЙЕК"
+    sheet["B2"] = "Уақыт"
     sheet["B3"] = .2916666667
     sheet["C3"] = "ҚР Әнұраны"
     sheet["B4"] = .5
