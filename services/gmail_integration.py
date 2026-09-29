@@ -2,8 +2,8 @@
 
 The connected personal Gmail account is authorized by its owner with Google
 OAuth. Never use the assistant's connector token as the Cloud Run credential.
-No message is deleted, labeled or forwarded. New attachments wait for an
-editor to approve import; mail without an XLSX remains review-only.
+No message is deleted, labeled or forwarded. Unambiguous XLSX attachments
+are imported automatically when enabled; conflicts remain review-only.
 """
 from __future__ import annotations
 
@@ -347,14 +347,41 @@ def _message_text(message: dict) -> str:
 
 
 def _candidate(filename: str, subject: str) -> bool:
+    # Unknown attachment names can still carry a valid channel inside XLSX.
+    # Never classify unrelated documents as sport on the filename alone.
     name = filename.casefold()
-    if not name.endswith(".xlsx"):
-        return False
+    return name.endswith(".xlsx") and (
+        bool(REVIEW_TOKENS.search(subject + " " + filename))
+        or bool(re.search(r"сетка|программ|epg|schedule", name, re.I))
+        or bool(re.search(r"setanta|q[ _-]?sport|viju|qsport", name, re.I))
+    )
+
+
+def _auto_import_enabled() -> bool:
+    # OAuth and durable storage are configured separately. The operator can
+    # temporarily stop automatic imports without interrupting the inbox scan.
+    return _env("SPORT_GMAIL_AUTO_IMPORT").casefold() != "false"
+
+
+def _safe_auto_apply(database, notice_id: int, parsed) -> tuple[bool, str]:
+    """Accept one verified supplier XLSX only if there are no ambiguities.
+
+    Disappearance from an EPG is never interpreted as a confirmed cancellation.
+    Avoid promoting an older file over an accepted newer snapshot.
+    """
+    from services.epg_excel import preview_parsed_epg
+    diff = preview_parsed_epg(database, parsed)
+    counts = diff["counts"]
+    if counts["ambiguous"]:
+        return False, "Неоднозначные совпадения событий: требуется проверка"
+    # A brand-new empty grid cannot establish an actual live broadcast.
+    if not parsed.events and diff["current_count"]:
+        return False, "В обновлённой сетке нет LIVE: прежнее расписание сохранено"
     try:
-        detect_channel(filename)
-        return True
-    except InvalidEPG:
-        return bool(REVIEW_TOKENS.search(subject + " " + filename))
+        result = approve_notice(database, notice_id, username="SLP_AUTO")
+    except (GmailTransportError, InvalidEPG) as exc:
+        return False, str(exc)[:200]
+    return result["status"] in ("imported", "already_imported"), ""
 
 
 def list_notices(database, *, limit: int = 100) -> list[dict]:
@@ -389,6 +416,7 @@ def sync_inbox(database) -> dict:
                 message_ids[str(item["id"])] = item
     created = 0
     reviewed = 0
+    auto_imported = 0
     for item in message_ids.values():
         msg_id = str(item.get("id") or "")
         if not re.fullmatch(r"[a-f0-9]{10,32}", msg_id):
@@ -454,12 +482,17 @@ def sync_inbox(database) -> dict:
                     raw, filename, context=context,
                 )
             except InvalidEPG as exc:
+                # Avoid spamming the user's ordinary correspondence about
+                # non-sporting workbooks discovered by broad EPG search.
+                if not relevant:
+                    continue
                 status_value, channel, reason = "review", "", str(exc)[:200]
                 reviewed += 1
+                parsed = None
             else:
                 status_value, channel, reason = "pending", parsed.channel, ""
             with database._connect() as conn:
-                conn.execute(
+                cur = conn.execute(
                     "INSERT OR IGNORE INTO gmail_notices("
                     "message_id,attachment_id,filename,subject,sender,snippet,"
                     "detected_channel,status,reason,received_at,created_at,attachment_bytes"
@@ -468,9 +501,22 @@ def sync_inbox(database) -> dict:
                      channel, status_value, reason, received,
                      datetime.now(KZ_TIMEZONE).isoformat(), raw),
                 )
+                notice_id = cur.lastrowid if cur.rowcount else None
+            if notice_id and parsed is not None and _auto_import_enabled():
+                accepted, why = _safe_auto_apply(database, notice_id, parsed)
+                if accepted:
+                    auto_imported += 1
+                else:
+                    reviewed += 1
+                    with database._connect() as conn:
+                        conn.execute(
+                            "UPDATE gmail_notices SET status='review', reason=? "
+                            "WHERE id=? AND status='pending'",
+                            (why or "Нужна проверка версии расписания", notice_id),
+                        )
             created += 1
-    return {"new_attachments": created, "requires_review": reviewed,
-            "pending": status(database)["pending"],
+    return {"new_attachments": created, "auto_imported": auto_imported,
+            "requires_review": reviewed, "pending": status(database)["pending"],
             "scanned_messages": len(message_ids)}
 
 
