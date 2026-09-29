@@ -33,25 +33,69 @@ uses a full contain-fit logo frame: KHL PRIME and KHL HD have separate
 identity labels, as do all three Setanta stations. The favicon is the
 approved puppet-and-football icon, not a generated replacement.
 
-Mail request preview config: SPORT_MAIL_TEST_TO defaults to the owner's
-work mailbox (alexandr.petrossov@fmedia.kz), while
-SPORT_MAIL_FUTURE_CC reserves the same address for a future CC field.
-The previously supplied Anton addresses are NOT an active recipient in
-the web code. This does not enable sending or Gmail OAuth.
+## Gmail implementation and approval boundary
+
+The authenticated web service now has a Google OAuth authorization-code flow,
+a per-admin one-time state, verification of the exact owner Gmail identity,
+and an encrypted refresh token stored in the application SQLite/GCS backup.
+It uses the owner's own Google OAuth credentials; **this code does not reuse
+the ChatGPT-connected Gmail token**.
+
+The Gmail UI supports manual sync, a pending XLSX review list, manual import
+of confirmed Setanta/QSport XLSX, dismissal, and review of text-only change
+notifications. Ambiguous attachments (e.g. a generic SPORT+ "сетка Канала.xlsx"
+without a confirmed schema/timezone) must NOT be imported automatically.
+The browser checks for new mail approximately every 15 minutes only while the
+authorized application is open; continuous background polling is NOT active.
+
+Test-only outbound request code uses exactly the owner's preapproved work
+mailbox alexandr.petrossov@fmedia.kz as recipient, after the user explicitly
+confirms the selected fixed template and SPORT_GMAIL_ENABLE_TEST_SEND=true.
+The switch defaults to false. Anton addresses are not present in the active
+recipient configuration. SPORT_MAIL_FUTURE_CC reserves the same work mailbox
+as a later copy recipient; no production recipient routing is enabled.
+No email was sent during development.
+
+The token exchange, Gmail scope checks and send path need an authorized
+owner run against the actual Google project to verify end-to-end behavior.
 
 GET /api/archive includes inactive saved source snapshots, and
 GET /api/export-archive exports separate confirmed channel broadcasts.
-This is NOT a complete record of every historical change: existing database
-upsert can overwrite the payload for an identical storage ID.
-The 25-column export now preserves existing editorial rows, translations
-and IDs rather than erasing the workbook's prefilled events. Unknown Kazakh
-translations remain blank for review. The exact owner's template still must
-be provisioned at SPORT_TEMPLATE_OBJECT and checked against its headers.
+Append-only source revisions (added, changed, removed from EPG) are saved
+in event_revisions; a removed listing is NOT marked as a cancelled event.
+Manual editor corrections are stored in separate editorial_overrides plus
+editorial_audit tables so an EPG update does not wipe editorial texts.
+Browser correction fields include RU/KZ teams, subtitles, title, tournament,
+start, and end time. Editing or inspecting change history needs an
+authenticated editor. This is not yet an exhaustive guarantee of all
+provider corrections (e.g. changed fixture ID may appear removed + added).
+The 25-column export preserves existing editorial rows, translations,
+IDs and supplied titles, applies stored editorial corrections, escapes
+potential spreadsheet formulas and sorts events in UTC+5. Unknown Kazakh
+translations remain blank for review, not guessed or copied from Russian.
+Priorities follow the supplied workbook's 50000, 49900 ... step.
+An admin-only /api/template upload endpoint validates the 25 approved headers
+and saves the original workbook in GCS with a write-generation precondition.
+The exact owner's template is NOT committed to the public repository;
+admin must upload it after securing GCS. A strict production completeness
+check for all 25 translated fields still requires editorial signoff.
 
-STILL NOT CONNECTED: automatic Gmail ingestion, sending request emails,
-automatic email/EPG change detection, full audit-history persistence and
-background scheduling. The mail-request button remains disabled rather than
-pretending to send. The existing site/ is informational, not this web app.
+The standalone web collector now also fetches six independently
+identified LIVE-only VseTV week sources: KHL PRIME (806), KHL HD (1641),
+EUROSPORT 1 (535), EUROSPORT 2 (1082), МАТЧ! ПЛАНЕТА (32),
+and viju+ Sport (332). It detects the source's LIVE image on the individual
+programme, filters studio/replays, strips bookmaker words, normalizes
+Europe/Moscow to Asia/Almaty and preserves last-good rows when a site fails.
+Those six web-source real-world results are NOT yet verified after deployment.
+The existing Telegram parser and its unrelated Setanta VseTV channels remain
+unchanged.
+
+STILL NOT CONNECTED OR NOT PROVEN: owner OAuth authorization, real outbound
+test message, 24/7 Cloud Scheduler/OIDC job, automatic parsing of unrecognized
+Sport+ mail spreadsheets, full multi-provider end-to-end LIVE correctness,
+editorial signoff on translations/25 columns, Google Cloud deployment,
+GCS durable backup and actual user/secret provisioning. None were performed
+or represented as complete. The existing site/ is informational.
 
 ## On the Cloud Run build screen
 
@@ -84,6 +128,13 @@ SPORT_GCS_BUCKET: existing private bucket accessible by the service account
 SPORT_GCS_OBJECT: optional, defaults to sport-epg/slp-web.db
 SPORT_TEMPLATE_OBJECT: optional, defaults to sport-epg/template.xlsx
 SPORT_TEMPLATE_PATH: alternative local Excel template path for development
+SPORT_GMAIL_CLIENT_ID: OAuth 2.0 Web application Client ID from owner's GCP
+SPORT_GMAIL_CLIENT_SECRET: same OAuth 2.0 Client secret
+SPORT_GMAIL_TOKEN_KEY: stable private Fernet symmetric key (Secret Manager)
+SPORT_GMAIL_ENABLE_TEST_SEND: false (default); enable only for authorized test
+SPORT_MAIL_TEST_TO: alexandr.petrossov@fmedia.kz (fixed test recipient)
+SPORT_MAIL_FUTURE_CC: same address, reserved but not used for real sends
+SPORT_SCHEDULER_SERVICE_ACCOUNT: optional email of dedicated OIDC job identity
 
 Create account hashes locally using:
 python scripts/cloudrun_users.py /private/path/sport-users.json
@@ -96,13 +147,38 @@ into Cloud Build. The provisioner sets up Skoomaholic (admin), Дания (🇩�
 passwords must be replaced before deployment.
 
 Use a least-privilege Cloud Run service account with object access limited to
-the chosen bucket. Upload the exact approved 25-column Excel workbook to
-SPORT_TEMPLATE_OBJECT. The repo does not contain the workbook or Gmail tokens.
+the chosen bucket. The admin may upload the exact approved XLSX workbook
+through the UI after GCS is configured. The repo does not contain personal
+workbooks or Gmail tokens.
+
+To activate Gmail in the existing Google Cloud project:
+1. Enable Gmail API on that project and configure an OAuth consent screen;
+   use an eligible owner account or a Google test-user entry as required.
+2. Create a Web application OAuth client with authorized redirect URI
+   https://<actual-service-origin>/api/gmail/callback .
+3. Store client ID, client secret, long-lived Fernet key, web secret and
+   salted users JSON in Secret Manager. Do not expose them in GitHub Actions.
+4. Set SPORT_PUBLIC_URL to the exact HTTPS origin, configure the private
+   GCS bucket, and authenticate to the protected UI as Skoomaholic (admin).
+5. Select "Подключить Gmail владельца". OAuth checks that the returned
+   Google profile is alexandr.petrossov@gmail.com. At this point sending
+   is still disabled.
+6. Authorize a one-time test request only if desired, by explicitly setting
+   SPORT_GMAIL_ENABLE_TEST_SEND=true. A browser confirmation is required.
+   Only alexandr.petrossov@fmedia.kz may receive that test request.
+7. Optional: create a dedicated OIDC Cloud Scheduler job that POSTs to
+   /api/jobs/gmail-sync, with the audience set to the exact URL including
+   the path and SPORT_SCHEDULER_SERVICE_ACCOUNT to that job's verified
+   service account. A schedule is NOT provisioned by this code.
+   Scheduler, Cloud Run, Secret Manager and GCS may incur billing; get the
+   owner's explicit approval before creating resources.
 
 When SPORT_GCS_BUCKET is absent, the app can start and warn, but Cloud Run's
 local SQLite database is ephemeral and may disappear on restart. Do not treat
-that mode as a permanent archive. GCS snapshots are saved after manual refresh or a successful Excel import
-only. A complete production archival/retention policy needs backups
+that mode as a permanent archive. GCS snapshots are saved after accepted imports, web source refresh,
+editorial changes, Gmail OAuth, inbox notice scans, test send logging and
+admin actions that mutate the local database. A network interruption
+between mail send and journal backup may require manual reconciliation. A complete production archival/retention policy needs backups
 and transactional storage if more instances are required. Storage and Cloud
 Run can incur costs; this PR creates no billable infrastructure.
 
@@ -112,9 +188,13 @@ First configure the approved Cloud Run edge access, then sign in with the
 application account. Rotating an account hash invalidates existing sessions.
 Login returns 503 until the secrets are configured.
 
-Gmail OAuth is not configured or used by this web app. No email will be sent.
-Authorized editors can temporarily import actual downloaded supplier XLSX files
-with the manual upload control. Gmail attachments are not auto-ingested yet.
+Gmail features are implemented but remain inactive until the owner
+configures OAuth and GCS, completes the consent screen and authorizes the
+connection. Without those credentials no emails can be read or sent.
+Authorized editors can always import an actual verified XLSX manually.
+Gmail incoming files are staged for review and never automatically applied
+until the editor explicitly accepts them. Outbound mail stays disabled until
+the test-only flag and browser confirmation are both supplied.
 
 Existing SLP parsers and current-snapshot semantics are inherited.
 No new channel/source is silently invented. The standard event view reads current accepted source snapshots; archive
