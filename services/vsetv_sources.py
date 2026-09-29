@@ -129,8 +129,9 @@ async def refresh_vsetv_web_sources(database, *, today: date | None = None) -> d
         for channel, channel_id in WEB_CHANNEL_IDS.items():
             source = _SOURCE[channel]
             try:
-                rows, error = await _fetch_week_channel(
-                    session, channel, channel_id, today
+                rows, error = await asyncio.wait_for(
+                    _fetch_week_channel(session, channel, channel_id, today),
+                    timeout=18,
                 )
             except Exception as exc:
                 rows, error = [], type(exc).__name__
