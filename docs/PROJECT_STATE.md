@@ -252,3 +252,33 @@ cloud resource was created. Existing Telegram production is unchanged.
 - Gmail OAuth, vendor auto-import, provider mail contacts, persistent storage,
   24/7 scheduling, exact approved workbook upload and full live-source
   validation are NOT finished. Production Telegram release is untouched.
+
+## 2026-09-30 verified supplier workbook formats (isolated web candidate)
+
+- Read-only examination of the user's current QAZSPORT and SPORT+ supplier
+  XLSX attachments identified two additional, different official table
+  layouts. Their actual original workbook bytes are NOT in the repository.
+- `services/official_supplier_excel.py` now parses explicit station headers
+  for QAZSPORT HD and SPORT+ Qazaqstan. Only individual programmes bearing
+  explicit direct-broadcast text are accepted. Genre labels, sports themes,
+  repeats and studio LIVE text alone are not direct-match evidence.
+- Kazakh-language undated SPORT+ week headers are resolved conservatively
+  relative to message receipt; old/uncertain weeks fail closed. Overnight
+  time slots are rolled forward once. QAZSPORT hockey involving Barys is
+  excluded in the same way as the existing web event filter.
+- A shared dispatcher routes manual XLSX and Gmail supplier attachments to
+  this provider-specific parser only after confirming the channel INSIDE
+  the workbook. The existing six Setanta/QSport parsers are unchanged.
+- First official XLSX from any new sender/worksheet fingerprint stays
+  pending for editor approval. Subsequent matching formats reuse the
+  established confirmation and still go through overlap/ambiguity guards.
+  No Gmail OAuth credentials or inbox polling were provisioned here.
+- The source UI remains exactly 14 channels; accepted official supplier
+  Excel is shown as a secondary data source on the QAZSPORT/SPORT+ cards,
+  not as two invented additional channels.
+- Synthetic regressions cover explicit direct sport, replay/studio removal,
+  Barys exclusion, date inference, midnight rollover and idempotent import.
+  These are code-level tests, not proof of vendor freshness in production.
+- No auto-deploy to ephemeral Render, no production mail, and no Telegram
+  release. Runtime imports are not persistent until a real durable backend
+  is selected.
