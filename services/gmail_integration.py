@@ -297,6 +297,40 @@ def _decode(data: str) -> bytes:
     return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
 
 
+def _message_text(message: dict) -> str:
+    """Extract bounded human-readable context from forwarded mail.
+
+    Corporate forwarding often replaces Gmail's From header with the user's
+    mailbox while preserving the original sender and provider in the quoted
+    body. Classification therefore must not depend on the outer From alone.
+    """
+    fragments: list[str] = []
+
+    def walk(part: dict) -> None:
+        mime = str(part.get("mimeType") or "").casefold()
+        body = part.get("body") or {}
+        encoded = str(body.get("data") or "")
+        if encoded and mime in ("text/plain", "text/html"):
+            try:
+                raw = _decode(encoded)[:MAX_BODY_BYTES * 3]
+                text = raw.decode("utf-8", errors="replace")
+            except (ValueError, UnicodeError):
+                text = ""
+            if mime == "text/html":
+                text = re.sub(r"(?is)<(?:script|style).*?>.*?</(?:script|style)>", " ", text)
+                text = re.sub(r"(?s)<[^>]+>", " ", text)
+                text = (text.replace("&nbsp;", " ").replace("&amp;", "&")
+                            .replace("&lt;", "<").replace("&gt;", ">"))
+            cleaned = " ".join(text.split())
+            if cleaned:
+                fragments.append(cleaned[:MAX_BODY_BYTES])
+        for child in part.get("parts") or []:
+            walk(child)
+
+    walk(message.get("payload") or {})
+    return " ".join(fragments)[:MAX_BODY_BYTES]
+
+
 def _candidate(filename: str, subject: str) -> bool:
     name = filename.casefold()
     if not name.endswith(".xlsx"):
@@ -349,20 +383,22 @@ def sync_inbox(database) -> dict:
         subject = str(headers.get("subject", ""))[:400]
         sender = str(headers.get("from", ""))[:250]
         snippet = str(message.get("snippet") or "")[:MAX_BODY_BYTES]
+        body_context = _message_text(message)
         millis = str(message.get("internalDate") or "0")
         try:
             received = datetime.fromtimestamp(int(millis) / 1000, KZ_TIMEZONE).isoformat()
         except (ValueError, OverflowError):
             received = datetime.now(KZ_TIMEZONE).isoformat()
         parts = list(_walk_parts(message.get("payload", {})))
-        relevant = bool(REVIEW_TOKENS.search(subject + " " + snippet))
+        context = " ".join((subject, sender, snippet, body_context))
+        relevant = bool(REVIEW_TOKENS.search(context))
         if not relevant and not any(
-            _candidate(p.get("filename", ""), subject) for p in parts
+            _candidate(p.get("filename", ""), context) for p in parts
         ):
             continue
         # A text-only announcement is a review notification. Neither a
         # subject nor a snippet proves that a fixture has been cancelled.
-        if not parts and relevant and CHANGE_TOKENS.search(subject + " " + snippet):
+        if not parts and relevant and CHANGE_TOKENS.search(context):
             with database._connect() as conn:
                 cur = conn.execute(
                     "INSERT OR IGNORE INTO gmail_notices("
@@ -378,7 +414,7 @@ def sync_inbox(database) -> dict:
         for part in parts:
             filename = str(part.get("filename") or "")[:200]
             attachment_id = str(part["body"].get("attachmentId") or "")
-            if not filename or not attachment_id or not _candidate(filename, subject):
+            if not filename or not attachment_id or not _candidate(filename, context):
                 continue
             with database._connect() as conn:
                 if conn.execute(
@@ -400,8 +436,7 @@ def sync_inbox(database) -> dict:
                 continue
             try:
                 parsed = parse_epg_xlsx(
-                    raw, filename,
-                    context=" ".join((subject, sender, snippet)),
+                    raw, filename, context=context,
                 )
             except InvalidEPG as exc:
                 status_value, channel, reason = "review", "", str(exc)[:200]
