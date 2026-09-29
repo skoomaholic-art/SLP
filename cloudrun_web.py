@@ -674,6 +674,42 @@ async def gmail_sync(request: Request):
     return result
 
 
+
+@app.post("/api/jobs/gmail-sync")
+async def scheduled_gmail_sync(request: Request):
+    # Optional Cloud Scheduler OIDC trigger. No public cron secret, no
+    # unauthenticated internet requests and no browser cookie needed.
+    allowed_email = os.getenv("SPORT_SCHEDULER_SERVICE_ACCOUNT", "").strip()
+    if not allowed_email or not PUBLIC_URL:
+        raise HTTPException(503, "Cloud Scheduler ещё не настроен")
+    authorization = request.headers.get("authorization", "")
+    if not authorization.startswith("Bearer ") or len(authorization) > 8192:
+        raise HTTPException(401, "Требуется OIDC-токен Cloud Scheduler")
+    try:
+        from google.oauth2 import id_token
+        from google.auth.transport.requests import Request as GoogleRequest
+        claims = await asyncio.to_thread(
+            id_token.verify_oauth2_token, authorization[7:],
+            GoogleRequest(), PUBLIC_URL + "/api/jobs/gmail-sync",
+        )
+    except Exception:
+        raise HTTPException(401, "OIDC-токен не прошёл проверку") from None
+    if str(claims.get("email") or "").casefold() != allowed_email.casefold() or (
+        not claims.get("email_verified", False)
+    ):
+        raise HTTPException(403, "Неизвестный сервисный аккаунт")
+    async with request.app.state.collect_lock:
+        try:
+            result = await asyncio.to_thread(
+                gmail.sync_inbox, request.app.state.database
+            )
+        except (gmail.GmailTransportError, gmail.GmailNotConfigured) as exc:
+            raise _gmail_failure(exc) from exc
+        if result["new_attachments"] or result["requires_review"]:
+            await _save_state(request)
+    return result
+
+
 @app.get("/api/gmail/notices")
 def gmail_notices(request: Request):
     current_user(request)
