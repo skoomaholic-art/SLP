@@ -386,17 +386,37 @@ def logout(request: Request, response: Response):
     return {"ok": True}
 
 
-@app.get("/api/events")
-def events(request: Request, start: str = "", end: str = ""):
-    current_user(request)
+def _validate_period(start: str, end: str) -> None:
     for value in (start, end):
         if value:
             try:
                 date.fromisoformat(value)
             except ValueError:
                 raise HTTPException(400, "Неверная дата") from None
+    if start and end and start > end:
+        raise HTTPException(400, "Начальная дата позже конечной")
+
+
+@app.get("/api/events")
+def events(request: Request, start: str = "", end: str = ""):
+    current_user(request)
+    _validate_period(start, end)
     return {"events": event_rows(request.app.state.database, start, end),
             "timezone": "Asia/Almaty"}
+
+
+@app.get("/api/archive")
+def archive(request: Request, start: str = "", end: str = ""):
+    current_user(request)
+    _validate_period(start, end)
+    return {
+        "events": event_rows(
+            request.app.state.database, start, end, include_inactive=True
+        ), "timezone": "Asia/Almaty",
+        "history_complete": False,
+        "note": "Доступны сохранённые версии источников. Полный журнал "
+                "каждого изменения одного и того же поля ещё не подключён.",
+    }
 
 
 def _source_status(request: Request) -> dict:
@@ -515,6 +535,7 @@ def xlsx_content(data: list[dict]) -> bytes:
 @app.get("/api/export")
 def export(request: Request, start: str = "", end: str = ""):
     current_user(request)
+    _validate_period(start, end)
     data = event_rows(request.app.state.database, start, end)
     raw = xlsx_content(data)
     filename = "sport_epg_schedule.xlsx"
@@ -522,4 +543,54 @@ def export(request: Request, start: str = "", end: str = ""):
         BytesIO(raw),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": 'attachment; filename="' + filename + '"'},
+    )
+
+
+
+@app.get("/api/export-archive")
+def export_archive(request: Request, start: str = "", end: str = "",
+                   channel: str = ""):
+    current_user(request)
+    _validate_period(start, end)
+    from openpyxl import Workbook
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "История трансляций"
+    sheet.append([
+        "Дата события", "Время события", "Вид спорта", "Турнир",
+        "Событие", "Канал", "Начало (Алматы)", "Окончание (Алматы)",
+        "Активная запись", "Источник", "Впервые получено", "Последняя версия",
+    ])
+    for entry in event_rows(
+        request.app.state.database, start, end, include_inactive=True
+    ):
+        for broadcast in entry["broadcasts"]:
+            if channel and channel != broadcast["channel"]:
+                continue
+            sheet.append([
+                entry["date"], entry["time"], entry["sport"],
+                entry["tournament"], entry["title"], broadcast["channel"],
+                datetime.fromisoformat(broadcast["start_at"]).replace(tzinfo=None),
+                datetime.fromisoformat(broadcast["end_at"]).replace(tzinfo=None),
+                "Да" if broadcast["active"] else "Нет",
+                broadcast["source"], broadcast["first_seen_at"],
+                broadcast["last_seen_at"],
+            ])
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
+    sheet.column_dimensions["E"].width = 45
+    sheet.column_dimensions["F"].width = 24
+    for label in ("G", "H"):
+        sheet.column_dimensions[label].width = 23
+        for row in sheet.iter_rows(min_row=2, min_col=ord(label)-64,
+                                   max_col=ord(label)-64):
+            row[0].number_format = "DD.MM.YYYY HH:MM"
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return StreamingResponse(
+        BytesIO(output.getvalue()),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition":
+                 'attachment; filename="sport_epg_archive.xlsx"'},
     )
