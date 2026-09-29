@@ -29,7 +29,7 @@ from pydantic import BaseModel
 
 from agents.runtime_orchestrator import RuntimeParserOrchestrator
 from services.live_evidence import event_is_live_broadcast, event_is_schedule_candidate
-from services.editorial_export import InvalidTemplate, build_working_xlsx
+from services.editorial_export import InvalidTemplate, build_working_xlsx, validate_template
 from services import gmail_integration as gmail
 from services import editorial_store as editorial
 from services.epg_excel import (MAX_WORKBOOK_BYTES, InvalidEPG, import_parsed_epg,
@@ -749,6 +749,79 @@ async def collect(request: Request, options: CollectOptions):
     return {"ok": True, "event_count": db.active_event_count(),
             "durable_storage": bool(request.app.state.backup),
             "last_run": db.latest_agent_run()}
+
+
+
+@app.get("/api/template/status")
+def template_status(request: Request):
+    current_user(request)
+    local = os.getenv("SPORT_TEMPLATE_PATH", "")
+    if local and Path(local).is_file():
+        return {"available": True, "location": "local", "name": Path(local).name}
+    if not GCS_BUCKET:
+        return {"available": False, "location": "not_configured",
+                "message": "Нужно подключить GCS"}
+    try:
+        from google.cloud import storage
+        blob = storage.Client().bucket(GCS_BUCKET).blob(TEMPLATE_OBJECT)
+        return {"available": bool(blob.exists()), "location": "gcs",
+                "name": TEMPLATE_OBJECT if blob.exists() else ""}
+    except Exception as exc:
+        return {"available": False, "location": "error",
+                "message": type(exc).__name__}
+
+
+@app.post("/api/template")
+async def upload_template(request: Request, upload: UploadFile = File(...)):
+    require_admin(request)
+    origin_guard(request)
+    if not GCS_BUCKET or not request.app.state.backup:
+        raise HTTPException(503, "Загрузка шаблона требует постоянного GCS-хранилища")
+    if not str(upload.filename or "").casefold().endswith(".xlsx"):
+        raise HTTPException(422, "Требуется XLSX-шаблон")
+    try:
+        raw = await upload.read(12 * 1024 * 1024 + 1)
+    finally:
+        await upload.close()
+    if not raw or len(raw) > 12 * 1024 * 1024:
+        raise HTTPException(422, "Шаблон пуст или превышает 12 МБ")
+    from zipfile import ZipFile, BadZipFile
+    try:
+        with ZipFile(BytesIO(raw)) as zipped:
+            parts = zipped.infolist()
+            if len(parts) > 600 or sum(x.file_size for x in parts) > 60 * 1024 * 1024:
+                raise HTTPException(422, "Подозрительный XLSX")
+            if any(x.filename.endswith(("vbaProject.bin", ".exe")) for x in parts):
+                raise HTTPException(422, "Шаблон не должен содержать макросов")
+        workbook = load_workbook(BytesIO(raw), read_only=False, data_only=False)
+        try:
+            validate_template(workbook)
+        finally:
+            workbook.close()
+    except (BadZipFile, ValueError, InvalidTemplate) as exc:
+        raise HTTPException(422, "Неверный шаблон: " + str(exc)) from exc
+    # A replacement is explicit and generation-checked, so simultaneous
+    # uploads cannot silently overwrite an approved workbook.
+    try:
+        from google.cloud import storage
+        from google.api_core.exceptions import NotFound, PreconditionFailed
+        blob = storage.Client().bucket(GCS_BUCKET).blob(TEMPLATE_OBJECT)
+        try:
+            blob.reload()
+            generation = blob.generation
+        except NotFound:
+            generation = 0
+        blob.upload_from_string(
+            raw,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            if_generation_match=generation,
+        )
+    except PreconditionFailed as exc:
+        raise HTTPException(409, "Шаблон изменился параллельно. Повторите загрузку") from exc
+    except Exception as exc:
+        raise HTTPException(503, "Не удалось сохранить шаблон: " + type(exc).__name__) from exc
+    return {"uploaded": True, "name": str(upload.filename),
+            "bytes": len(raw), "destination": TEMPLATE_OBJECT}
 
 
 def load_template():
