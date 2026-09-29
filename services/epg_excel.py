@@ -793,6 +793,45 @@ def imported_epg_status(database: SLPDatabase, *, first: date, last: date) -> li
     return result
 
 
+
+def imported_official_epg_status(database: SLPDatabase, *,
+                                 first: date, last: date) -> dict[str, dict]:
+    """Website channels may ALSO have approved independent supplier XLSX.
+
+    Enrich their existing channel cards instead of inventing a 15th/16th
+    channel or hiding website collection failures.
+    """
+    initialize_epg_imports(database)
+    result = {}
+    with database._connect() as conn:
+        for channel, source in OFFICIAL_SOURCE_KEY.items():
+            latest = conn.execute(
+                "SELECT filename,imported_at FROM epg_imports WHERE channel=? "
+                "ORDER BY imported_at DESC, rowid DESC LIMIT 1",
+                (channel,),
+            ).fetchone()
+            if latest is None:
+                continue
+            coverage = [
+                row[0] for row in conn.execute(
+                    "SELECT DISTINCT days.scope_date FROM epg_import_days days "
+                    "JOIN epg_imports imports ON days.file_hash=imports.file_hash "
+                    "WHERE imports.channel=? AND days.scope_date BETWEEN ? AND ? "
+                    "ORDER BY days.scope_date",
+                    (channel, first.isoformat(), last.isoformat()),
+                ).fetchall()
+            ]
+            result[channel] = {
+                "filename": latest["filename"],
+                "imported_at": latest["imported_at"],
+                "coverage": coverage,
+                "live_events": sum(
+                    len(database.load_active_source_snapshot(source, day))
+                    for day in coverage
+                ),
+            }
+    return result
+
 def preview_parsed_epg(database: SLPDatabase, parsed: ParsedEPG) -> dict:
     """Compare one real supplier file to accepted rows without writing.
 
