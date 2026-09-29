@@ -31,6 +31,20 @@ jobs:
         run: python -m compileall -q cloudrun_web.py services/epg_excel.py services/editorial_export.py cloudrun_tests scripts/cloudrun_users.py
       - name: Web-only regression
         run: PYTHONPATH=. python -m unittest discover -s cloudrun_tests -p "test_*.py" -v
+      - name: Check browser script syntax and separate logo registry
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+          html = Path("cloudrun_ui/index.html").read_text()
+          blocks = re.findall(r"<script(?:\\s[^>]*)?>(.*?)</script>", html, re.S)
+          inline = [item.strip() for item in blocks if item.strip()]
+          if len(inline) != 1:
+              raise SystemExit(f"Expected one inline UI script, got {len(inline)}")
+          Path("/tmp/slp-web-ui.js").write_text(inline[0])
+          PY
+          node --check /tmp/slp-web-ui.js
+          node --check cloudrun_ui/logos.js
       - name: Build Cloud Run image (without deployment)
         run: docker build -t slp-cloudrun-web-ci .
       - name: Verify container uses web entrypoint
