@@ -117,11 +117,11 @@ class WebTests(unittest.TestCase):
         parsed = SimpleNamespace(channel="QAZSPORT HD", events=({"title": "LIVE"},))
         summary = {"channel": "QAZSPORT HD", "new_count": 1,
                    "counts": {"new": 1}, "changes": []}
-        with patch.object(web, "current_user", return_value={"role": "editor"}), \\
-             patch.object(web, "origin_guard"), \\
+        with patch.object(web, "current_user", return_value={"role": "editor"}), \
+             patch.object(web, "origin_guard"), \
              patch.object(web, "parse_supported_epg_channels",
-                          return_value=(parsed,)), \\
-             patch.object(web, "preview_parsed_epg", return_value=summary), \\
+                          return_value=(parsed,)), \
+             patch.object(web, "preview_parsed_epg", return_value=summary), \
              patch.object(web, "import_parsed_epg") as importer:
             result = asyncio.run(web.preview_epg(request, upload))
         self.assertEqual(result["previews"], [summary])
