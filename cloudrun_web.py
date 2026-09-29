@@ -485,6 +485,15 @@ def _source_status(request: Request) -> dict:
     files = imported_epg_status(
         database, first=today, last=today + timedelta(days=6)
     )
+    pending_notices = gmail.list_notices(database, limit=200)
+    pending_channels = {
+        item["detected_channel"] for item in pending_notices
+        if item["status"] == "pending" and item["detected_channel"]
+    }
+    for item in files:
+        if (item["channel"] in pending_channels
+                and item["status"] in ("missing", "outdated", "partial")):
+            item["status"] = "awaiting_approval"
     source_runs = database.latest_source_runs()
     websites = []
     for source, label in (
@@ -505,6 +514,9 @@ def _source_status(request: Request) -> dict:
         "websites": websites, "excel": files,
         "mail_request": {"enabled": bool(gmail.status(database)["send_enabled"] and gmail.status(database)["connected"]),
                          "test_to": MAIL_TEST_TO, "future_cc": MAIL_FUTURE_CC},
+        "pending_channels": [
+            x["channel"] for x in files if x["status"] == "awaiting_approval"
+        ],
         "missing_channels": [
             x["channel"] for x in files
             if x["status"] in ("missing", "outdated", "partial")
@@ -870,11 +882,31 @@ async def send_test_request(request: Request, options: MailRequest):
 async def collect(request: Request, options: CollectOptions):
     current_user(request)
     origin_guard(request)
+    # One-button flow: first look for newly arrived mail, but never import
+    # attachments before the editor approves the supplier file.
+    if gmail.status(request.app.state.database)["connected"]:
+        async with request.app.state.collect_lock:
+            try:
+                mail_sync = await asyncio.to_thread(
+                    gmail.sync_inbox, request.app.state.database
+                )
+            except (gmail.GmailTransportError, gmail.GmailNotConfigured):
+                mail_sync = {"new_attachments": 0, "requires_review": 0}
+            if mail_sync.get("new_attachments") or mail_sync.get("requires_review"):
+                await _save_state(request)
     status = _source_status(request)
+    if status["pending_channels"]:
+        raise HTTPException(409, {
+            "message": "Новые расписания уже получены по почте и ждут подтверждения.",
+            "pending_channels": status["pending_channels"],
+            "missing_channels": status["missing_channels"],
+            "requires_approval": True,
+        })
     if status["missing_channels"] and not options.allow_partial:
         raise HTTPException(409, {
             "message": "Нет актуальных Excel некоторых телеканалов. Собрать без них?",
             "missing_channels": status["missing_channels"],
+            "requires_approval": False,
         })
     async with request.app.state.collect_lock:
         try:
