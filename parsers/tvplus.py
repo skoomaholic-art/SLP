@@ -198,25 +198,38 @@ async def _get_json(
 async def _schedule_ids(
     session: aiohttp.ClientSession,
     api_base: str,
-) -> dict[str, str]:
+) -> tuple[dict[str, str], TVPlusChannel | None]:
     token_data = await _get_json(session, api_base, "/user/v1/asset-tokens")
     token = str(token_data.get("tvAssetToken") or "")
     if not token:
         raise RuntimeError("TV+: не получен tvAssetToken")
 
     media_data = await _get_json(
-        session,
-        api_base,
-        "/tv/v2/medias",
+        session, api_base, "/tv/v2/medias",
         params={"tv-asset-token": token},
     )
     result = {}
+    fight_club = None
     for media in media_data.get("medias", []):
         channel_id = str(media.get("channelId") or "")
         schedule_id = str(media.get("scheduleId") or "")
-        if channel_id and schedule_id:
-            result[channel_id] = schedule_id
-    return result
+        if not channel_id or not schedule_id:
+            continue
+        result[channel_id] = schedule_id
+        # Fight Club has no verified static TV+ identifier. Bind it only when
+        # the provider itself identifies an exact channel, never by ID guess.
+        names = [
+            media.get(key) for key in ("name", "title", "channelName", "channelTitle")
+        ]
+        normalized = {
+            re.sub(r"\\s+", " ", str(value or "")).strip().casefold()
+            for value in names
+        }
+        if normalized & {"fight club", "fight club hd", "fightclub", "fightclub hd"}:
+            fight_club = TVPlusChannel(
+                "Fight Club", channel_id, "MMA", api_base=api_base,
+            )
+    return result, fight_club
 
 
 def _event_from_epg(channel: TVPlusChannel, item: dict) -> dict:
@@ -317,9 +330,13 @@ async def fetch_tvplus_schedules(target_dates: Iterable[date | datetime | str]) 
     async with aiohttp.ClientSession(headers=headers, timeout=timeout, connector=connector) as session:
         channels = TARGET_CHANNELS + EUROSPORT_CHANNELS
         schedule_ids_by_api: dict[str, dict[str, str]] = {}
+        discovered_channels: list[TVPlusChannel] = []
         for api_base in sorted({channel.api_base for channel in channels}):
             try:
-                schedule_ids_by_api[api_base] = await _schedule_ids(session, api_base)
+                ids, fight_club = await _schedule_ids(session, api_base)
+                schedule_ids_by_api[api_base] = ids
+                if fight_club is not None and not discovered_channels:
+                    discovered_channels.append(fight_club)
             except Exception as error:
                 schedule_ids_by_api[api_base] = {}
                 errors.append(f"Provider API {api_base}: {type(error).__name__}")
@@ -327,7 +344,7 @@ async def fetch_tvplus_schedules(target_dates: Iterable[date | datetime | str]) 
 
         jobs = []
         metadata = []
-        for channel in channels:
+        for channel in channels + tuple(discovered_channels):
             schedule_id = schedule_ids_by_api.get(channel.api_base, {}).get(channel.channel_id)
             if not schedule_id:
                 errors.append(f"{channel.name}: scheduleId не найден")
