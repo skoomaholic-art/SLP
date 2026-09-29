@@ -621,6 +621,96 @@ def archive_revisions(request: Request, storage_id: str = ""):
     return {"revisions": request.app.state.database.event_revisions(storage_id)}
 
 
+def _notification_items(database: SLPDatabase, limit: int = 80) -> list[dict]:
+    """Unify actionable supplier/source notices without inventing cancellations."""
+    items: list[dict] = []
+    gmail.init_gmail_schema(database)
+    with database._connect() as conn:
+        mail_rows = conn.execute(
+            "SELECT id,status,filename,subject,detected_channel,reason,"
+            "received_at,created_at FROM gmail_notices "
+            "WHERE status IN ('pending','review') ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        incident_rows = conn.execute(
+            "SELECT id,source,scope_date,incident_type,severity,message,"
+            "created_at FROM incidents WHERE resolved_at IS NULL "
+            "ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        revision_rows = conn.execute(
+            "SELECT id,storage_id,source,scope_date,change_kind,before_json,"
+            "after_json,created_at FROM event_revisions "
+            "ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+    for row in mail_rows:
+        items.append({
+            "kind": "mail", "id": f"mail:{row['id']}",
+            "level": "attention" if row["status"] == "review" else "info",
+            "title": (
+                (row["detected_channel"] or "Письмо требует проверки") +
+                (" · " + row["filename"] if row["filename"] else "")
+            ),
+            "message": row["reason"] or row["subject"],
+            "created_at": row["received_at"] or row["created_at"],
+            "action": "gmail",
+        })
+    for row in incident_rows:
+        items.append({
+            "kind": "incident", "id": f"incident:{row['id']}",
+            "level": row["severity"] or "warning",
+            "title": f"{row['source']} · {row['scope_date']}",
+            "message": row["message"],
+            "created_at": row["created_at"],
+            "action": "sources",
+        })
+    for row in revision_rows:
+        try:
+            before = json.loads(row["before_json"]) if row["before_json"] else {}
+            after = json.loads(row["after_json"]) if row["after_json"] else {}
+        except (TypeError, json.JSONDecodeError):
+            before, after = {}, {}
+        event = after or before
+        title = clean(event.get("title") or event.get("raw_title") or "Событие")
+        channel = channel_name(event.get("channel") or "")
+        change = row["change_kind"]
+        if change == "removed_from_source":
+            message = "Запись исчезла из новой сетки. Это не подтверждает отмену."
+            level = "attention"
+        elif change == "source_changed":
+            fields = []
+            for field, label in (
+                ("time", "время"), ("date", "дата"),
+                ("title", "название"), ("tournament", "турнир"),
+            ):
+                if before.get(field) != after.get(field):
+                    fields.append(label)
+            message = "Источник изменил: " + (", ".join(fields) or "данные события")
+            level = "attention"
+        else:
+            message = "Новое подтверждённое событие в источнике"
+            level = "info"
+        items.append({
+            "kind": "source_change", "id": f"revision:{row['id']}",
+            "level": level,
+            "title": " · ".join(x for x in (channel, title) if x),
+            "message": message, "created_at": row["created_at"],
+            "action": "archive", "storage_id": row["storage_id"],
+        })
+    items.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    return items[:limit]
+
+
+@app.get("/api/notifications")
+def notifications(request: Request, limit: int = 80):
+    current_user(request)
+    return {"notifications": _notification_items(
+        request.app.state.database, min(max(limit, 1), 150)
+    )}
+
+
 @app.get("/api/gmail/status")
 def gmail_status(request: Request):
     current_user(request)
