@@ -518,7 +518,6 @@ def _source_status(request: Request) -> dict:
     for source, label in (
         ("qazsport", "QAZSPORT HD"),
         ("sportplus", "SPORT+ Qazaqstan"),
-        ("tvguide", "TVGuide (проверенные LIVE)"),
         *((("web_vsetv_" + str(channel_id), channel)
             for channel, channel_id in WEB_CHANNEL_IDS.items())),
     ):
