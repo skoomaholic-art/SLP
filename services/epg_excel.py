@@ -950,6 +950,7 @@ def import_parsed_epg(database: SLPDatabase, parsed: ParsedEPG) -> dict:
         database.upsert_source_snapshot(
             run_id="epg:" + parsed.content_hash[:20],
             source=source, scope_date=day, events=day_events,
+            preserve_editorial=True,
         )
         accepted_days.append(day)
     with database._connect() as conn:
