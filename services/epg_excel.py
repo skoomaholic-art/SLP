@@ -63,6 +63,48 @@ CHANNELS = {
     "qfootball": "Q FOOTBALL",
 }
 SOURCE_KEY = {channel: "email_epg_" + key for key, channel in CHANNELS.items()}
+# The two additional official supplier formats are intentionally separate
+# from the six Setanta/QSport channels shown as mailbox coverage in the UI.
+OFFICIAL_SOURCE_KEY = {
+    "QAZSPORT HD": "email_epg_qazsport",
+    "SPORT+ Qazaqstan": "email_epg_sportplus",
+}
+
+
+def source_key_for(channel: str) -> str:
+    source = SOURCE_KEY.get(channel) or OFFICIAL_SOURCE_KEY.get(channel)
+    if not source:
+        raise InvalidEPG("Неизвестный телеканал поставщика")
+    return source
+
+
+def parse_supported_epg_channels(
+    data: bytes, filename: str, *, today: date | None = None,
+    context: str = "", confirmed_channel: str = "",
+) -> tuple["ParsedEPG", ...]:
+    """Route by the actual worksheet's channel label before email context.
+
+    QAZSPORT and SPORT+ have provider-specific XLSX layouts and cannot be
+    represented as a generic Setanta/QSport grid. Their first imports must
+    always be approved by an editor in the Gmail flow.
+    """
+    from services.official_supplier_excel import (
+        parse_official_epg, probe_official_channel,
+    )
+
+    official = probe_official_channel(data, filename)
+    if official:
+        if confirmed_channel and confirmed_channel != official:
+            raise InvalidEPG("Подтверждённый канал противоречит заголовку Excel")
+        other_filename_channels = _channel_matches(filename)
+        if other_filename_channels and official not in other_filename_channels:
+            raise InvalidEPG("Имя файла противоречит каналу внутри Excel")
+        return (parse_official_epg(data, filename, today=today),)
+    return parse_epg_xlsx_channels(
+        data, filename, today=today, context=context,
+        confirmed_channel=confirmed_channel,
+    )
+
 
 
 class InvalidEPG(ValueError):
@@ -760,7 +802,7 @@ def preview_parsed_epg(database: SLPDatabase, parsed: ParsedEPG) -> dict:
     """
     from services.schedule_merge import normalize_match_text
 
-    source = SOURCE_KEY[parsed.channel]
+    source = source_key_for(parsed.channel)
     existing: list[dict] = []
     for day in parsed.scope_dates:
         existing.extend(database.load_active_source_snapshot(source, day))
@@ -838,7 +880,7 @@ def import_parsed_epg(database: SLPDatabase, parsed: ParsedEPG) -> dict:
     by_day = defaultdict(list)
     for event in parsed.events:
         by_day[event["date"]].append(event)
-    source = SOURCE_KEY[parsed.channel]
+    source = source_key_for(parsed.channel)
     # An empty date in an update is not evidence that every earlier LIVE
     # broadcast vanished. Preserve the last-good day and flag it for review.
     accepted_days: list[str] = []
