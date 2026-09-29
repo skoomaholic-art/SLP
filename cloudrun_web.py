@@ -172,8 +172,13 @@ def event_rows(database: SLPDatabase, first: str, last: str) -> list[dict]:
             if channel == "QAZSPORT HD" and re.search(r"барыс|barys", title, re.I):
                 continue
             start, end = get_scheduled_datetimes(raw)
-            known_end = bool(raw.get("estimated_broadcast_end_date")
-                             and raw.get("estimated_broadcast_end"))
+            known_end = bool(
+                raw.get("estimated_broadcast_end_date")
+                and raw.get("estimated_broadcast_end")
+                and str(raw.get("end_estimation_method") or "").casefold()
+                in ("next_program", "provider_epg", "epg", "source_epg",
+                    "explicit", "explicit_end")
+            )
             record = {
                 "title": title, "sport": sport, "tournament": tournament,
                 "channel": channel, "source": raw.get("source", ""),
