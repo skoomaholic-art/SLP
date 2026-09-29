@@ -64,7 +64,7 @@ class EditorialExportTests(unittest.TestCase):
         self.assertEqual(sheet["Y4"].value, "")
         self.assertEqual(
             [sheet.cell(i, 1).value for i in range(2, 5)],
-            [60000, 59990, 59980],
+            [60100, 60000, 59900],
         )
         self.assertEqual(sheet["H2"].value, datetime(2026, 9, 23, 14, 50))
         output = BytesIO()
@@ -92,6 +92,55 @@ class EditorialExportTests(unittest.TestCase):
         )
         self.assertEqual(result.active.cell(4, 6).value, "Следующий матч")
         result.close()
+
+    def test_insert_between_approved_25_and_9_point_gaps(self):
+        workbook = self._source()
+        sheet = workbook.active
+        for row in (3, 4):
+            for col in range(1, 26):
+                sheet.cell(row, col).value = sheet.cell(2, col).value
+        # Approved source priorities need not follow a global increment.
+        sheet["A2"], sheet["A3"], sheet["A4"] = 50000, 49975, 49966
+        sheet["F2"].value = "Первый утверждённый матч"
+        sheet["F3"].value = "Второй утверждённый матч"
+        sheet["F4"].value = "Третий утверждённый матч"
+        sheet["H2"].value = datetime(2026, 9, 24, 23, 35)
+        sheet["H3"].value = datetime(2026, 9, 25, 11, 50)
+        sheet["H4"].value = datetime(2026, 9, 26, 11, 50)
+        extra_a = self._event("2026-09-25", "05:00", "Вставка А")
+        extra_b = self._event("2026-09-26", "05:00", "Вставка Б")
+        result = build_working_xlsx(workbook, [extra_b, extra_a])
+        pairs = {
+            result.active.cell(row, 6).value: result.active.cell(row, 1).value
+            for row in range(2, result.active.max_row + 1)
+        }
+        self.assertEqual(
+            [pairs["Первый утверждённый матч"],
+             pairs["Второй утверждённый матч"],
+             pairs["Третий утверждённый матч"]],
+            [50000, 49975, 49966],
+        )
+        self.assertEqual(pairs["Вставка А"], 49988)
+        self.assertEqual(pairs["Вставка Б"], 49971)
+        self.assertEqual(len(set(pairs.values())), len(pairs))
+        result.close()
+
+    def test_exhausted_integer_gap_requires_approval_not_renumber(self):
+        workbook = self._source()
+        sheet = workbook.active
+        for col in range(1, 26):
+            sheet.cell(3, col).value = sheet.cell(2, col).value
+        sheet["A2"], sheet["A3"] = 50000, 49999
+        sheet["F2"].value = "Первый утверждённый матч"
+        sheet["F3"].value = "Второй утверждённый матч"
+        sheet["H3"].value = datetime(2026, 9, 26, 11, 50)
+        new = self._event("2026-09-25", "12:00", "Вставка")
+        with self.assertRaisesRegex(InvalidTemplate, "Недостаточно свободных"):
+            build_working_xlsx(workbook, [new])
+        # The original workbook has not been renumbered.
+        self.assertEqual(sheet["A2"].value, 50000)
+        self.assertEqual(sheet["A3"].value, 49999)
+        workbook.close()
 
     def test_translation_from_approved_existing_rows(self):
         workbook = self._source()
