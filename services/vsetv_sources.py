@@ -84,10 +84,20 @@ def normalize_live_record(row: dict, *, channel: str) -> dict | None:
     # Preserve full fixture title; do not invent teams or imply every race is
     # a two-team match.
     parts = [p.strip() for p in cleaned.split(". ") if p.strip()]
-    tournament = ". ".join(parts[1:-1]) if len(parts) >= 3 else (
-        parts[1] if len(parts) == 2 else parts[0]
-    )
-    event_title = parts[-1] if len(parts) >= 3 else cleaned
+    if len(parts) >= 2:
+        # A page may begin with "Футбол. АПЛ. Команда А - Команда Б"
+        # or with "Чемпионат КХЛ. Спартак - Барыс", with no sport prefix.
+        initial_is_sport = parts[0].casefold() in {
+            "футбол", "хоккей", "теннис", "бокс", "мма", "снукер",
+            "велоспорт", "баскетбол", "волейбол", "дзюдо",
+            "формула-1", "мотоспорт", "автоспорт",
+        }
+        core = parts[1:] if initial_is_sport else parts
+        tournament = ". ".join(core[:-1]) if len(core) > 1 else core[0]
+        event_title = core[-1] if len(core) > 1 else core[0]
+    else:
+        tournament = parts[0]
+        event_title = cleaned
     if not event_title or len(event_title) < 3:
         return None
     try:
