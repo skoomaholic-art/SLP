@@ -8,7 +8,7 @@ are imported automatically when enabled; conflicts remain review-only.
 from __future__ import annotations
 
 import base64
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from email.utils import parseaddr
 import hashlib
 import json
@@ -23,8 +23,8 @@ from urllib.request import Request, urlopen
 from cryptography.fernet import Fernet, InvalidToken
 
 from services.epg_excel import (
-    InvalidEPG, MAX_WORKBOOK_BYTES, parse_epg_xlsx_channels,
-    workbook_fingerprint,
+    InvalidEPG, MAX_WORKBOOK_BYTES, OFFICIAL_SOURCE_KEY,
+    parse_supported_epg_channels, source_key_for, workbook_fingerprint,
 )
 from services import ai_pipeline
 from services.time_logic import KZ_TIMEZONE
@@ -658,8 +658,7 @@ def _safe_auto_apply(database, notice_id: int, parsed) -> tuple[bool, str]:
     # A brand-new empty grid cannot establish an actual live broadcast.
     if not parsed.events and diff["current_count"]:
         return False, "В обновлённой сетке нет LIVE: прежнее расписание сохранено"
-    from services.epg_excel import SOURCE_KEY
-    source = SOURCE_KEY[parsed.channel]
+    source = source_key_for(parsed.channel)
     for day in parsed.scope_dates:
         if (not any(e.get("date") == day for e in parsed.events)
                 and database.load_active_source_snapshot(source, day)):
@@ -842,9 +841,9 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
                 database, fingerprint, sender_identity
             )
             try:
-                parsed_list = parse_epg_xlsx_channels(
-                    raw, filename, context=context,
-                    confirmed_channel=confirmed_channel,
+                parsed_list = parse_supported_epg_channels(
+                    raw, filename, today=date.fromisoformat(received[:10]),
+                    context=context, confirmed_channel=confirmed_channel,
                 )
                 parse_error = ""
             except InvalidEPG as exc:
@@ -906,7 +905,17 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
                         database, thread_id=thread_id, message_id=msg_id,
                         channel=parsed.channel, sender_key=sender_identity,
                     )
+                # First observation of a new official provider format
+                # remains pending for human approval. Later files from the
+                # same confirmed sender and worksheet layout may auto-import
+                # through the existing ambiguity/age guards.
+                trusted_official_format = (
+                    parsed is None
+                    or parsed.channel not in OFFICIAL_SOURCE_KEY
+                    or confirmed_channel == parsed.channel
+                )
                 if (notice_id and parsed is not None and allow_auto_import
+                        and trusted_official_format
                         and _auto_import_enabled() and
                         classification != "SCHEDULE_CANCELLATION"):
                     accepted, why = _safe_auto_apply(database, notice_id, parsed)
@@ -948,8 +957,9 @@ def _parse_notice(row):
         if str(row["channel_detection_method"] or "") == "confirmed_format"
         else ""
     )
-    candidates = parse_epg_xlsx_channels(
+    candidates = parse_supported_epg_channels(
         bytes(row["attachment_bytes"]), row["filename"],
+        today=date.fromisoformat(str(row["received_at"])[:10]),
         context=" ".join((row["subject"], row["sender"], row["snippet"])),
         confirmed_channel=confirmed_channel,
     )
@@ -968,7 +978,7 @@ def preview_notice(database, notice_id: int) -> dict:
     init_gmail_schema(database)
     with database._connect() as conn:
         row = conn.execute(
-            "SELECT filename,attachment_bytes,status,subject,sender,snippet,"
+            "SELECT filename,attachment_bytes,status,subject,sender,snippet,received_at,"
             "detected_channel,channel_detection_method "
             "FROM gmail_notices WHERE id=?",
             (notice_id,),
