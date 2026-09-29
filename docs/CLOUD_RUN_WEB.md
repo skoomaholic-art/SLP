@@ -4,6 +4,38 @@ This is a separate web entrypoint in the existing SLP repository, not a
 replacement for the Telegram bot. The bot continues to start with
 python main.py. The Cloud Run image starts uvicorn cloudrun_web:app.
 
+## Hosting-independent preparation (before choosing a server)
+
+The web entrypoint and supplier parsers are ordinary Python modules and can be
+run outside Google Cloud Run. Do not create a second SLP repository or change
+the production Telegram entrypoint.
+
+- The manual supplier Excel parser supports explicit Setanta/QSport identities,
+  date coverage and source history without Gmail OAuth or a cloud bucket.
+- Configure an absolute `SPORT_TEMPLATE_PATH=/path/on/server/template.xlsx`
+  to let an administrator upload the exact approved 25-column XLSX to local
+  storage. This uses an atomic same-directory replacement after validation.
+  It does **not** commit the workbook to GitHub or require GCS.
+- For a future self-hosted installation, `SLP_DB_PATH` must point at a
+  genuinely persistent mounted disk. Merely changing that path does not make
+  a temporary/free hosting filesystem durable.
+- Local template upload does not prove persistence. Without a persistent
+  volume, the XLSX can disappear after a restart; the UI warns about this.
+- Gmail OAuth, automatic supplier mail imports and unattended refresh still
+  require a configured durable state backend. The current implementation's
+  enabled durable backup backend is GCS. Keep these functions disabled until
+  storage and the final HTTPS origin are selected.
+- The existing free Render deployment is a preview, not a persistent
+  production database. Do not use it as the only copy of accepted grids.
+- Supplier files spanning December-January use a dated filename window
+  to assign the correct year across separate worksheets; without a valid
+  dated window, a one-sheet chronological December-January transition is
+  inferred conservatively.
+
+The host, Gmail OAuth redirect address, background scheduler and any external
+object store can be selected later. No paid resources are required for
+preparing the parser, editor and export behavior in the feature branch.
+
 ## Implemented in this Cloud Run integration
 
 - Health endpoint /healthz reports web runtime and durable GCS backup status.
@@ -162,7 +194,7 @@ SLP_DB_PATH: defaults to /tmp/slp/slp.db
 SPORT_GCS_BUCKET: existing private bucket accessible by the service account
 SPORT_GCS_OBJECT: optional, defaults to sport-epg/slp-web.db
 SPORT_TEMPLATE_OBJECT: optional, defaults to sport-epg/template.xlsx
-SPORT_TEMPLATE_PATH: alternative local Excel template path for development
+SPORT_TEMPLATE_PATH: absolute local XLSX path for validated admin uploads and export; mount persistent storage separately
 SPORT_GMAIL_CLIENT_ID: OAuth 2.0 Web application Client ID from owner's GCP
 SPORT_GMAIL_CLIENT_SECRET: same OAuth 2.0 Client secret
 SPORT_GMAIL_TOKEN_KEY: stable private Fernet symmetric key (Secret Manager)
