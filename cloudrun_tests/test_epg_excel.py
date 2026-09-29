@@ -114,6 +114,56 @@ class EPGExcelTests(unittest.TestCase):
         self.assertEqual(result.events[0]["estimated_broadcast_end"], "02:10")
         self.assertEqual(result.events[1]["date"], "2026-10-01")
 
+    def test_year_boundary_across_separate_supplier_sheets(self):
+        """A weekly Dec-Jan file must not place January matches in last year."""
+        workbook = Workbook()
+        december = workbook.active
+        december["C3"] = "31 декабря"
+        december["B4"] = "AST"
+        december["B5"] = .75
+        december["C5"] = "LIVE. Футбол. Лига, Команда А - Команда Б"
+        january = workbook.create_sheet("Неделя 2")
+        january["C3"] = "1 января"
+        january["B4"] = "AST"
+        january["B5"] = .5
+        january["C5"] = "LIVE. Теннис. ATP 250, Финал"
+        contents = BytesIO()
+        workbook.save(contents)
+        workbook.close()
+        parsed = parse_epg_xlsx_channels(
+            contents.getvalue(),
+            "EPG QSport Arena 30.12.26 - 05.01.27_MEDIA.xlsx",
+            today=date(2026, 12, 30),
+        )[0]
+        self.assertEqual(
+            [(event["date"], event["time"]) for event in parsed.events],
+            [("2026-12-31", "18:00"), ("2027-01-01", "12:00")],
+        )
+        self.assertIn("2027-01-01", parsed.scope_dates)
+        with tempfile.TemporaryDirectory() as folder:
+            database = SLPDatabase(Path(folder) / "epg.sqlite")
+            result = import_parsed_epg(database, parsed)
+            self.assertEqual(result["status"], "imported")
+            self.assertEqual(len(database.load_active_source_snapshot(
+                "email_epg_qarena", "2027-01-01",
+            )), 1)
+
+    def test_year_boundary_without_filename_year_needs_previous_december(self):
+        """An unlabelled next-year date is inferred only within one sheet."""
+        data = workbook_bytes([
+            (3, 3, "31 декабря"), (2, 4, "AST"),
+            (2, 5, .5), (3, 5, "LIVE. Футбол. Лига, Команда А - Команда Б"),
+            (3, 6, "1 января"), (2, 7, "AST"),
+            (2, 8, .5), (3, 8, "LIVE. Теннис. ATP 250, Финал"),
+        ])
+        parsed = parse_epg_xlsx(
+            data, "EPG QSport Arena.xlsx", today=date(2026, 12, 31),
+        )
+        self.assertEqual(
+            [event["date"] for event in parsed.events],
+            ["2026-12-31", "2027-01-01"],
+        )
+
     def test_real_setanta_formula_one_and_tennis_title_shapes(self):
         data = workbook_bytes([
             (2, 4, "3 октября"), (1, 5, "AST"),
