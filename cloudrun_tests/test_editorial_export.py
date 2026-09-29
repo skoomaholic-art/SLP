@@ -2,6 +2,7 @@
 from datetime import datetime
 from io import BytesIO
 import unittest
+from unittest.mock import patch
 
 from openpyxl import Workbook, load_workbook
 
@@ -163,6 +164,26 @@ class EditorialExportTests(unittest.TestCase):
         self.assertEqual(result.active.cell(row, 22).value, "")
         self.assertEqual(result.active.cell(row, 24).value,
                          "Формула 1. Квалификация")
+        result.close()
+
+    def test_optional_local_editor_fills_only_missing_kazakh_fields(self):
+        from services import editorial_export as exporter
+        workbook = self._source()
+        event = self._event("2026-09-26", "15:00", "Команда А - Команда Б")
+        with patch.dict("os.environ", {"SPORT_AI_EDITOR_AUTO_TRANSLATE": "true"}), \
+             patch.object(exporter.ai_pipeline, "editor_suggestions", return_value={
+                 "team1_kz": "А КОМАНДАСЫ", "team2_kz": "Б КОМАНДАСЫ",
+                 "subtitle_kz": "Футбол. Ла Лига", "time": "00:00",
+                 "channel": "WRONG",
+             }) as editor:
+            result = build_working_xlsx(workbook, [event])
+        self.assertEqual(editor.call_count, 1)
+        row = result.active.max_row
+        self.assertEqual(result.active.cell(row, 7).value, "SETANTA SPORTS 1")
+        self.assertEqual(result.active.cell(row, 3).value, "15:00")
+        self.assertEqual(result.active.cell(row, 21).value, "А КОМАНДАСЫ")
+        self.assertEqual(result.active.cell(row, 23).value, "Б КОМАНДАСЫ")
+        self.assertEqual(result.active.cell(row, 25).value, "Футбол. Ла Лига")
         result.close()
 
     def test_wrong_header_fails_without_losing_data(self):
