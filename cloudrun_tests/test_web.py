@@ -40,6 +40,47 @@ class WebTests(unittest.TestCase):
             else:
                 os.environ["SPORT_WEB_USERS"] = old
 
+    def test_supplied_profile_avatars_and_app_icon_assets(self):
+        # The authenticated identity selects an application-owned image.
+        self.assertEqual(web.profile_avatar("Skoomaholic"),
+                         "/assets/skoomaholic.webp")
+        self.assertEqual(web.profile_avatar("Дания"),
+                         "/assets/daniya.webp")
+        self.assertEqual(web.profile_avatar("Вадим"),
+                         "/assets/vadim.webp")
+        self.assertEqual(web.profile_avatar("USER4"), "")
+        assets = Path(__file__).resolve().parents[1] / "cloudrun_ui" / "assets"
+        expected = {
+            "app-icon.png": b"\x89PNG",
+            "skoomaholic.webp": b"RIFF",
+            "daniya.webp": b"RIFF",
+            "vadim.webp": b"RIFF",
+        }
+        hashes = []
+        for name, prefix in expected.items():
+            raw = (assets / name).read_bytes()
+            self.assertTrue(raw.startswith(prefix), name)
+            self.assertGreater(len(raw), 500, name)
+            hashes.append(hashlib.sha256(raw).digest())
+        self.assertEqual(len(hashes), len(set(hashes)))
+
+    def test_ui_names_channels_without_swapping_images(self):
+        import re
+        index = (Path(__file__).resolve().parents[1] /
+                 "cloudrun_ui" / "index.html").read_text()
+        logos_js = (Path(__file__).resolve().parents[1] /
+                    "cloudrun_ui" / "logos.js").read_text()
+        self.assertIn('href="/assets/app-icon.png"', index)
+        self.assertIn('function channelLogo(channel)', index)
+        self.assertIn('channel==="KHL PRIME"?"PRIME":"HD"', index)
+        logo_map = re.search(
+            r'Object.freeze\((\{.*\})\);', logos_js, re.DOTALL)
+        self.assertIsNotNone(logo_map)
+        logos = json.loads(logo_map.group(1))
+        self.assertNotEqual(logos["KHL PRIME"], logos["KHL HD"])
+        self.assertNotEqual(logos["SETANTA SPORTS 1"], logos["SETANTA SPORTS 2"])
+        self.assertNotEqual(logos["EUROSPORT 1"], logos["EUROSPORT 2"])
+
     def test_direct_only_dedup_barys_and_time(self):
         with tempfile.TemporaryDirectory() as folder:
             database = SLPDatabase(Path(folder) / "sports.db")
