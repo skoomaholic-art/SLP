@@ -282,6 +282,29 @@ class EPGExcelTests(unittest.TestCase):
         self.assertEqual(direct.content_hash, original_hash)
         self.assertEqual(result[0].events[0]["time"], "12:00")
 
+    def test_partial_supplier_update_preserves_coverage_from_other_files(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db = SLPDatabase(Path(folder) / "db.sqlite")
+            filename = "EPG Setanta Sports 2 Kazakhstan 29.09.26 - 05.10.26_MEDIA.xlsx"
+            for day, title in [
+                ("30 сентября", "Команда А - Команда Б"),
+                ("1 октября", "Команда В - Команда Г"),
+            ]:
+                grid = workbook_bytes([
+                    (3, 3, day), (2, 4, "AST"), (2, 5, 0.5),
+                    (3, 5, "LIVE. Футбол. АПЛ, 6 тур, " + title),
+                    (2, 6, 0.6), (3, 6, "Обзор матча"),
+                ])
+                parsed = parse_epg_xlsx(grid, filename, today=date(2026, 9, 29))
+                self.assertEqual(import_parsed_epg(db, parsed)["status"], "imported")
+            status = next(item for item in imported_epg_status(
+                db, first=date(2026, 9, 30), last=date(2026, 10, 1)
+            ) if item["channel"] == "SETANTA SPORTS 2")
+            self.assertEqual(status["status"], "ready")
+            self.assertIn("2026-09-30", status["coverage"])
+            self.assertIn("2026-10-01", status["coverage"])
+            self.assertEqual(status["live_events"], 2)
+
     def test_unreadable_legacy_xls_does_not_create_live(self):
         with self.assertRaises(InvalidEPG):
             parse_epg_xlsx_channels(b"not-a-real-biff-workbook", "schedule.xls")
