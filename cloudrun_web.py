@@ -34,6 +34,7 @@ from services import gmail_integration as gmail
 from services import assistant_bridge
 from services import ai_pipeline
 from services import editorial_store as editorial
+from services.channel_registry import CHANNELS
 from services.vsetv_sources import WEB_CHANNEL_IDS, refresh_vsetv_web_sources
 from services.browser_schedule import browser_fallback_enabled, install_browser_for_python_runtime
 from services.epg_excel import (MAX_WORKBOOK_BYTES, InvalidEPG, import_parsed_epg,
@@ -176,7 +177,12 @@ def channel_name(name: str) -> str:
         "setanta kz": "SETANTA SPORTS KZ",
         "setanta sports kz": "SETANTA SPORTS KZ",
         "setanta sports kazakhstan": "SETANTA SPORTS KZ",
+        "eurosport": "EUROSPORT 1",
         "eurosport 1": "EUROSPORT 1",
+        "qazaqstan": "QAZAQSTAN",
+        "qazaqstan hd": "QAZAQSTAN",
+        "fight club": "FIGHT CLUB",
+        "fight club hd": "FIGHT CLUB",
         "eurosport 2": "EUROSPORT 2",
         "khl prime": "KHL PRIME",
         "khl hd": "KHL HD",
@@ -539,20 +545,53 @@ def _source_status(request: Request) -> dict:
               and item["status"] in ("missing", "outdated", "partial")):
             item["status"] = "awaiting_response"
     source_runs = database.latest_source_runs()
+    # A provider's single tvguide run contains multiple distinct channels.
+    # Count the actual persisted direct broadcasts per channel, not the
+    # provider-wide parser run total.
+    with database._connect() as conn:
+        active_counts = conn.execute(
+            "SELECT source,channel,COUNT(*) AS n FROM events "
+            "WHERE active=1 AND is_live=1 AND event_date>=? "
+            "AND event_date<=? GROUP BY source,channel",
+            (today.isoformat(), (today + timedelta(days=6)).isoformat()),
+        ).fetchall()
+    by_channel = {}
+    for row in active_counts:
+        label = channel_name(row["channel"])
+        by_channel[label] = by_channel.get(label, 0) + int(row["n"])
     websites = []
-    for source, label in (
-        ("qazsport", "QAZSPORT HD"),
-        ("sportplus", "SPORT+ Qazaqstan"),
-        *((("web_vsetv_" + str(channel_id), channel)
-            for channel, channel_id in WEB_CHANNEL_IDS.items())),
-    ):
-        latest = source_runs.get(source)
+    for channel in CHANNELS:
+        sources = []
+        if channel.name == "QAZSPORT HD":
+            sources.append("qazsport")
+        if channel.name == "SPORT+ Qazaqstan":
+            sources.append("sportplus")
+        if channel.vsetv_id is not None:
+            sources.append("web_vsetv_" + str(channel.vsetv_id))
+        if channel.tvplus_id or channel.name == "FIGHT CLUB":
+            sources.append("tvguide")
+        runs = [source_runs[name] for name in sources if name in source_runs]
+        newest = max(
+            runs, key=lambda item: str(item.get("created_at") or ""),
+            default=None,
+        )
+        count = by_channel.get(channel.name, 0)
+        status = (
+            "ok" if count else
+            "warning" if newest and newest.get("status") in ("ok", "warning") else
+            newest.get("status", "not_checked") if newest else "not_checked"
+        )
         websites.append({
-            "channel": label, "kind": "website",
-            "status": (latest or {}).get("status", "not_checked"),
-            "checked_at": (latest or {}).get("created_at"),
-            "event_count": (latest or {}).get("event_count", 0),
-            "official_excel": official_files.get(label),
+            "channel": channel.name, "kind": "website",
+            "status": status,
+            "checked_at": (newest or {}).get("created_at"),
+            "event_count": count,
+            "official_excel": official_files.get(channel.name),
+            "guide_sources": sources,
+            "official_site": channel.official_site,
+            "secondary_guide": channel.secondary_guide,
+            "provider_channel_id": channel.tvplus_id or None,
+            "source_verified": bool(count),
         })
     return {
         "websites": websites, "excel": files,
