@@ -37,7 +37,7 @@ jobs:
           import re
           from pathlib import Path
           html = Path("cloudrun_ui/index.html").read_text()
-          blocks = re.findall(r"<script(?:\\s[^>]*)?>(.*?)</script>", html, re.S)
+          blocks = re.findall(r"<script(?:\s[^>]*)?>(.*?)</script>", html, re.S)
           inline = [item.strip() for item in blocks if item.strip()]
           if len(inline) != 1:
               raise SystemExit(f"Expected one inline UI script, got {len(inline)}")
