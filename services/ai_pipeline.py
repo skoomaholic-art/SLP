@@ -104,7 +104,8 @@ def classify_mail(subject: str, sender: str, body: str,
     related = bool(SCHEDULE_RE.search(text + " " + file_text))
     if not provider and not related and not has_sheet:
         return MailDecision("OTHER", "rules", False)
-    if provider and (has_sheet or related):
+    if provider and (has_sheet or related or UPDATE_RE.search(text)
+                     or CORRECTION_RE.search(text) or CANCEL_RE.search(text)):
         if CANCEL_RE.search(text):
             # Classification is never confirmation of cancellation.
             return MailDecision("SCHEDULE_CANCELLATION", "rules", True)
