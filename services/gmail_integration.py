@@ -357,7 +357,7 @@ def _candidate(filename: str, subject: str) -> bool:
     # Unknown attachment names can still carry a valid channel inside XLSX.
     # Never classify unrelated documents as sport on the filename alone.
     name = filename.casefold()
-    return name.endswith(".xlsx") and (
+    return name.endswith((".xlsx", ".xls")) and (
         bool(REVIEW_TOKENS.search(subject + " " + filename))
         or bool(re.search(r"сетка|программ|epg|schedule", name, re.I))
         or bool(re.search(r"setanta|q[ _-]?sport|viju|qsport", name, re.I))
