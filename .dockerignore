@@ -11,6 +11,8 @@
 !parsers/**
 !services/
 !services/**
+!verifiers/
+!verifiers/**
 !storage/
 !storage/**
 !cloudrun_ui/
