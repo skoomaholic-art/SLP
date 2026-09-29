@@ -158,6 +158,15 @@ def _editorial_fields(event: dict) -> tuple[str, str, str]:
             explicit_subtitle or ". ".join(x for x in (sport, tournament) if x)
         )
 
+    # Backward-compatible raw Formula-1 form from older parsers:
+    # "Гран-при Италии - Квалификация".
+    if not tournament and sport.casefold() in {"автоспорт", "формула-1"}:
+        pieces = re.split(r"\s+[-–]\s+", title)
+        if len(pieces) >= 2 and STAGE_RE.fullmatch(pieces[-1].strip()):
+            gp = " - ".join(part.strip() for part in pieces[:-1] if part.strip())
+            gp = re.sub(r"^Гран-при\s+", "ГП ", gp, flags=re.I)
+            return gp.upper(), "", "Формула 1. " + pieces[-1].strip()
+
     if tournament:
         team_label = tournament
         subtitle_prefix = sport
