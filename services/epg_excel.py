@@ -11,6 +11,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from io import BytesIO
+from pathlib import PurePath
+from zipfile import ZipFile, BadZipFile
 import re
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -29,7 +31,7 @@ MONTHS = {
     "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12,
 }
 MONTH_PATTERN = "|".join(MONTHS)
-DAY_RE = re.compile(r"(?<!\d)(\d{1,2})\s+(" + MONTH_PATTERN + r")(?:\s+(\d{4}))?", re.I)
+DAY_RE = re.compile(r"\s*(\d{1,2})\s+(" + MONTH_PATTERN + r")(?:\s+(\d{4}))?\s*", re.I)
 LIVE_RE = re.compile(r"^\s*LIVE\s*[\.:,\-]\s*", re.I)
 SPORTS = {
     "футбол": "Футбол", "футзал": "Футзал", "баскетбол": "Баскетбол",
@@ -109,7 +111,7 @@ def _year(filename: str, today: date) -> int:
 def _day_header(value: Any, year: int) -> date | None:
     if not isinstance(value, str):
         return None
-    match = DAY_RE.search(value.strip())
+    match = DAY_RE.fullmatch(value.strip())
     if not match:
         return None
     day, month, explicit_year = match.groups()
@@ -221,7 +223,22 @@ def parse_epg_xlsx(data: bytes, filename: str, *, today: date | None = None) -> 
         raise InvalidEPG("Поддерживаются только файлы .xlsx")
     if not data or len(data) > MAX_WORKBOOK_BYTES:
         raise InvalidEPG("Размер Excel превышает 6 МБ или файл пуст")
+    # The supplied filename is untrusted, even after successful MIME parsing.
+    filename = PurePath(filename.replace("\\", "/")).name
+    if len(filename) > 180 or not filename.strip():
+        raise InvalidEPG("Недопустимое имя вложения")
     channel = detect_channel(filename)
+    try:
+        with ZipFile(BytesIO(data)) as archive:
+            infos = archive.infolist()
+            if (len(infos) > 512
+                    or sum(item.file_size for item in infos) > 40 * 1024 * 1024
+                    or any(item.file_size > 30 * 1024 * 1024 for item in infos)
+                    or any(item.filename.casefold().endswith("vbaproject.bin")
+                           for item in infos)):
+                raise InvalidEPG("Подозрительное содержимое XLSX")
+    except BadZipFile as exc:
+        raise InvalidEPG("Повреждённый XLSX") from exc
     today = today or datetime.now(KZ).date()
     try:
         workbook = load_workbook(BytesIO(data), read_only=True, data_only=True)
