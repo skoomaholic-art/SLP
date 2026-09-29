@@ -752,7 +752,12 @@ def notifications(request: Request, limit: int = 80):
 @app.get("/api/gmail/status")
 def gmail_status(request: Request):
     current_user(request)
-    return gmail.status(request.app.state.database)
+    result = gmail.status(request.app.state.database)
+    result["auto_import"] = bool(
+        request.app.state.backup and gmail._auto_import_enabled()
+    )
+    result["ai"] = ai_pipeline.status()
+    return result
 
 
 @app.get("/api/gmail/connect")
