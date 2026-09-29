@@ -22,6 +22,7 @@ from urllib.request import Request, urlopen
 from cryptography.fernet import Fernet, InvalidToken
 
 from services.epg_excel import InvalidEPG, MAX_WORKBOOK_BYTES, detect_channel, parse_epg_xlsx
+from services import ai_pipeline
 from services.time_logic import KZ_TIMEZONE
 
 OAUTH_SCOPES = (
@@ -118,6 +119,8 @@ def init_gmail_schema(database) -> None:
                 reviewed_by TEXT NOT NULL DEFAULT '',
                 reviewed_at TEXT NOT NULL DEFAULT '',
                 imported_hash TEXT NOT NULL DEFAULT '',
+                classification TEXT NOT NULL DEFAULT '',
+                classification_method TEXT NOT NULL DEFAULT '',
                 attachment_bytes BLOB,
                 UNIQUE(message_id, attachment_id)
             );
@@ -141,6 +144,10 @@ def init_gmail_schema(database) -> None:
                 "ALTER TABLE gmail_notices ADD COLUMN imported_hash "
                 "TEXT NOT NULL DEFAULT ''"
             )
+        for name in ("classification", "classification_method"):
+            if name not in existing_columns:
+                conn.execute("ALTER TABLE gmail_notices ADD COLUMN " + name +
+                             " TEXT NOT NULL DEFAULT ''")
 
 
 def _json_http(url: str, *, data: dict | None = None,
@@ -391,6 +398,7 @@ def list_notices(database, *, limit: int = 100) -> list[dict]:
         rows = conn.execute(
             "SELECT id,filename,subject,sender,snippet,detected_channel,"
             "status,reason,received_at,created_at,reviewed_by,reviewed_at,"
+            "classification,classification_method,"
             "attachment_bytes IS NOT NULL AS has_attachment "
             "FROM gmail_notices ORDER BY id DESC LIMIT ?",
             (limit,),
@@ -398,8 +406,9 @@ def list_notices(database, *, limit: int = 100) -> list[dict]:
     return [dict(x) for x in rows]
 
 
-def sync_inbox(database) -> dict:
-    """Read-only Gmail sync; never imports programmes before user approval."""
+def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
+    """Read Gmail read-only; auto-accept only verified unambiguous LIVE EPG."""
+
     init_gmail_schema(database)
     token = _access_token(database)
     searches = (
@@ -434,6 +443,10 @@ def sync_inbox(database) -> dict:
             received = datetime.now(KZ_TIMEZONE).isoformat()
         parts = list(_walk_parts(message.get("payload", {})))
         context = " ".join((subject, sender, snippet, body_context))
+        decision = ai_pipeline.classify_mail(
+            subject, sender, body_context or snippet,
+            [str(p.get("filename") or "") for p in parts],
+        )
         relevant = bool(REVIEW_TOKENS.search(context))
         if not relevant and not any(
             _candidate(p.get("filename", ""), context) for p in parts
@@ -446,11 +459,13 @@ def sync_inbox(database) -> dict:
                 cur = conn.execute(
                     "INSERT OR IGNORE INTO gmail_notices("
                     "message_id,attachment_id,filename,subject,sender,snippet,"
-                    "detected_channel,status,reason,received_at,created_at"
-                    ") VALUES(?,'__message__','',?,?,?,'','review',?,?,?)",
+                    "detected_channel,status,reason,received_at,created_at,"
+                    "classification,classification_method"
+                    ") VALUES(?,'__message__','',?,?,?,'','review',?,?,?,?,?)",
                     (msg_id, subject, sender, snippet,
                      "Письмо об изменениях без распознанного XLSX",
-                     received, datetime.now(KZ_TIMEZONE).isoformat()),
+                     received, datetime.now(KZ_TIMEZONE).isoformat(),
+                     decision.category, decision.method),
                 )
                 if cur.rowcount:
                     reviewed += 1
@@ -491,18 +506,26 @@ def sync_inbox(database) -> dict:
                 parsed = None
             else:
                 status_value, channel, reason = "pending", parsed.channel, ""
+            classification = (
+                decision.category if decision.category not in ("OTHER", "AMBIGUOUS")
+                else "SCHEDULE_NEW" if parsed is not None else "AMBIGUOUS"
+            )
             with database._connect() as conn:
                 cur = conn.execute(
                     "INSERT OR IGNORE INTO gmail_notices("
                     "message_id,attachment_id,filename,subject,sender,snippet,"
-                    "detected_channel,status,reason,received_at,created_at,attachment_bytes"
-                    ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "detected_channel,status,reason,received_at,created_at,attachment_bytes,"
+                    "classification,classification_method"
+                    ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (msg_id, attachment_id, filename, subject, sender, snippet,
                      channel, status_value, reason, received,
-                     datetime.now(KZ_TIMEZONE).isoformat(), raw),
+                     datetime.now(KZ_TIMEZONE).isoformat(), raw,
+                     classification, decision.method),
                 )
                 notice_id = cur.lastrowid if cur.rowcount else None
-            if notice_id and parsed is not None and _auto_import_enabled():
+            if (notice_id and parsed is not None and allow_auto_import
+                    and _auto_import_enabled() and
+                    classification != "SCHEDULE_CANCELLATION"):
                 accepted, why = _safe_auto_apply(database, notice_id, parsed)
                 if accepted:
                     auto_imported += 1
@@ -517,6 +540,8 @@ def sync_inbox(database) -> dict:
             created += 1
     return {"new_attachments": created, "auto_imported": auto_imported,
             "requires_review": reviewed, "pending": status(database)["pending"],
+            "mode": "automatic" if allow_auto_import and _auto_import_enabled()
+                    else "review_only",
             "scanned_messages": len(message_ids)}
 
 
