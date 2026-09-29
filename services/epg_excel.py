@@ -942,9 +942,25 @@ def import_parsed_epg(database: SLPDatabase, parsed: ParsedEPG) -> dict:
     # broadcast vanished. Preserve the last-good day and flag it for review.
     accepted_days: list[str] = []
     held_days: list[str] = []
+    from services.schedule_merge import normalize_match_text
+
+    def event_identity(event: dict) -> tuple[str, str, str]:
+        return (
+            normalize_match_text(str(event.get("title") or "")),
+            normalize_match_text(str(event.get("sport") or "")),
+            normalize_match_text(str(event.get("tournament") or "")),
+        )
+
     for day in parsed.scope_dates:
         day_events = by_day.get(day, [])
-        if not day_events and database.load_active_source_snapshot(source, day):
+        previous = database.load_active_source_snapshot(source, day)
+        # Missing individual programmes are not confirmed cancellations.
+        # Do not silently erase them even when the replacement sheet has
+        # other LIVE rows for the same day. Keep that day's last-good
+        # snapshot for an editor to reconcile before accepting a revision.
+        previous_identities = {event_identity(event) for event in previous}
+        next_identities = {event_identity(event) for event in day_events}
+        if previous_identities - next_identities:
             held_days.append(day)
             continue
         database.upsert_source_snapshot(
