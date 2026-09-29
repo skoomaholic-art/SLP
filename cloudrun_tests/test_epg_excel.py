@@ -145,6 +145,33 @@ class EPGExcelTests(unittest.TestCase):
                 1,
             )
 
+    def test_generic_filename_uses_workbook_identity(self):
+        data = workbook_bytes([
+            (2, 1, "ПРОГРАММА ПЕРЕДАЧ ТЕЛЕКАНАЛА SETANTA SPORTS 1 KAZAKHSTAN"),
+            (2, 4, "29 сентября"), (1, 5, "AST"),
+            (1, 6, 0.50),
+            (2, 6, "LIVE. Футбол. АПЛ, 6 тур, Команда А - Команда Б"),
+        ])
+        result = parse_epg_xlsx(
+            data, "сетка Канала.xlsx", today=date(2026, 9, 29),
+            context="Sabina Nazarova Setanta Sports",
+        )
+        self.assertEqual(result.channel, "SETANTA SPORTS 1")
+        self.assertEqual(len(result.events), 1)
+
+    def test_workbook_identity_beats_ambiguous_email_context(self):
+        data = workbook_bytes([
+            (3, 1, "Q ARENA"),
+            (3, 3, "30 сентября"), (2, 4, "AST"),
+            (2, 5, 0.50),
+            (3, 5, "LIVE. Футбол. КПЛ, 27 тур, Команда А - Команда Б"),
+        ])
+        result = parse_epg_xlsx(
+            data, "сетка Канала.xlsx", today=date(2026, 9, 29),
+            context="Расписания Q LEAGUE, Q ARENA, Q FOOTBALL",
+        )
+        self.assertEqual(result.channel, "Q ARENA")
+
     def test_unknown_channel_rejected(self):
         with self.assertRaises(InvalidEPG):
             parse_epg_xlsx(b"not a spreadsheet", "mystery.xlsx")
