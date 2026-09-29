@@ -131,11 +131,12 @@ only unambiguous approved RU/KZ TEAM/SUBTITLE mappings from the private
 template (not from a generic machine translation). It escapes
 potential spreadsheet formulas and sorts events in UTC+5. Unknown Kazakh
 translations remain blank for review, not guessed or copied from Russian.
-Priorities follow the supplied workbook's 60000, 59990 ... step.
+Priorities follow the first descending numeric priorities in the supplied workbook (for example, 50000, 49900 ...); the scale is not hardcoded.
 An admin-only /api/template upload endpoint validates the 25 approved headers
-and saves the original workbook in GCS with a write-generation precondition.
-The exact owner's template is NOT committed to the public repository;
-admin must upload it after securing GCS. A strict production completeness
+and saves the workbook to configured GCS (generation precondition) or an
+explicit absolute SPORT_TEMPLATE_PATH (atomic local replacement).
+The exact owner's template is NOT committed to the repository;
+admin uploads it privately after choosing a suitable storage location. A strict production completeness
 check for all 25 translated fields still requires editorial signoff.
 
 The standalone web collector now also fetches six independently
