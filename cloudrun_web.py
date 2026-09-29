@@ -45,6 +45,10 @@ SESSION_SECRET = os.getenv("SPORT_WEB_SECRET", "")
 GCS_BUCKET = os.getenv("SPORT_GCS_BUCKET", "")
 GCS_OBJECT = os.getenv("SPORT_GCS_OBJECT", "sport-epg/slp-web.db")
 TEMPLATE_OBJECT = os.getenv("SPORT_TEMPLATE_OBJECT", "sport-epg/template.xlsx")
+# Preview-only recipient configuration. Sending is disabled until owner OAuth.
+# The owner's work address is the test recipient; later it becomes CC.
+MAIL_TEST_TO = os.getenv("SPORT_MAIL_TEST_TO", "alexandr.petrossov@fmedia.kz")
+MAIL_FUTURE_CC = os.getenv("SPORT_MAIL_FUTURE_CC", MAIL_TEST_TO)
 PROFILE_AVATARS = {
     "skoomaholic": "/assets/skoomaholic.webp",
     "дания": "/assets/daniya.webp",
@@ -474,6 +478,8 @@ def _source_status(request: Request) -> dict:
         })
     return {
         "websites": websites, "excel": files,
+        "mail_request": {"enabled": False, "test_to": MAIL_TEST_TO,
+                         "future_cc": MAIL_FUTURE_CC},
         "missing_channels": [
             x["channel"] for x in files
             if x["status"] in ("missing", "outdated")
