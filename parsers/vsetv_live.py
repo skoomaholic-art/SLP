@@ -289,6 +289,12 @@ async def _fetch_week_channel(
             len(rows),
             sorted({row["date"] for row in rows}),
         )
+        # HTTP 200 may be a blank page, bot challenge or changed markup.
+        # Do not treat it as a successfully parsed guide, and try the
+        # remaining configured mirrors before reporting an empty source.
+        if not rows:
+            errors.append(f"{final_url or url}:no_live_rows_or_changed_markup")
+            continue
         return rows, None
 
     return [], f"{channel}:" + " | ".join(errors)
