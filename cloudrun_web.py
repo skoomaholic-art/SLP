@@ -149,17 +149,24 @@ def channel_name(name: str) -> str:
     }.get(name, name)
 
 
-def event_rows(database: SLPDatabase, first: str, last: str) -> list[dict]:
-    """Preserve channels in the archive; select only one for the work schedule."""
+def event_rows(
+    database: SLPDatabase, first: str, last: str, *, include_inactive: bool = False
+) -> list[dict]:
+    """Keep each verified TV broadcast distinct; group only actual simulcasts.
+
+    The archive view can include inactive source snapshots. Such snapshots are
+    not mistaken for confirmed cancellations or completed broadcasts.
+    """
     with database._connect() as conn:
         rows = conn.execute(
-            "SELECT payload_json FROM events WHERE active=1 "
+            "SELECT storage_id,payload_json,active,first_seen_at,last_seen_at "
+            "FROM events WHERE (?=1 OR active=1) "
             "AND (?='' OR event_date>=?) AND (?='' OR event_date<=?) "
-            "ORDER BY start_at, channel LIMIT 20000",
-            (first, first, last, last),
+            "ORDER BY start_at,channel LIMIT 20000",
+            (int(include_inactive), first, first, last, last),
         ).fetchall()
     now = datetime.now(KZ_TIMEZONE)
-    groups: dict[tuple, list[dict]] = {}
+    exact: dict[tuple, dict] = {}
     for row in rows:
         try:
             raw = json.loads(row["payload_json"])
@@ -170,56 +177,100 @@ def event_rows(database: SLPDatabase, first: str, last: str) -> list[dict]:
             title = clean(raw.get("title") or raw.get("raw_title") or "")
             sport = clean(raw.get("sport") or "")
             tournament = clean(raw.get("tournament") or "")
-            if not title or EXCLUDE.search(title + " " + tournament) or not sport:
+            if not title or not sport or EXCLUDE.search(title + " " + tournament):
                 continue
             channel = channel_name(raw.get("channel", ""))
-            if channel == "QAZSPORT HD" and re.search(r"барыс|barys", title, re.I):
+            if not channel or channel == "QAZSPORT HD" and re.search(
+                r"барыс|barys", title, re.I
+            ):
                 continue
             start, end = get_scheduled_datetimes(raw)
             known_end = bool(
                 raw.get("estimated_broadcast_end_date")
                 and raw.get("estimated_broadcast_end")
                 and str(raw.get("end_estimation_method") or "").casefold()
-                in ("next_program", "provider_epg", "epg", "source_epg",
-                    "explicit", "explicit_end")
+                in ("next_program", "provider_duration", "provider_epg",
+                    "epg", "source_epg", "explicit", "explicit_end")
             )
             record = {
                 "title": title, "sport": sport, "tournament": tournament,
                 "channel": channel, "source": raw.get("source", ""),
+                "source_record_id": row["storage_id"],
+                "date": start.date().isoformat(), "time": start.strftime("%H:%M"),
                 "start": start, "end": end + (
                     timedelta(0) if known_end else timedelta(minutes=10)
-                ), "end_known": known_end,
-                "status": "past" if end < now else ("live" if start <= now else "upcoming"),
+                ), "end_known": known_end, "active": bool(row["active"]),
+                "first_seen_at": row["first_seen_at"],
+                "last_seen_at": row["last_seen_at"],
+                "status": "past" if end < now else (
+                    "live" if start <= now else "upcoming"
+                ),
             }
         except (ValueError, TypeError, KeyError):
             continue
-        key = (start.date().isoformat(), sport.casefold(),
-               re.sub(r"\W+", "", title.casefold()))
-        groups.setdefault(key, []).append(record)
+        # Multiple providers may describe exactly one broadcast. Prefer a
+        # current confirmed supplier XLSX over a third-party copy.
+        key = (record["date"], record["time"], channel,
+               normalize_match_text(title), normalize_match_text(tournament),
+               normalize_match_text(sport))
+        old = exact.get(key)
+        if old is None or (
+            int(record["active"]), int(str(record["source"]).startswith("email_epg"))
+        ) > (
+            int(old["active"]), int(str(old["source"]).startswith("email_epg"))
+        ):
+            exact[key] = record
 
-    merged = []
-    for records in groups.values():
-        clusters: list[list[dict]] = []
-        for record in sorted(records, key=lambda x: x["start"]):
-            if clusters and (record["start"] - clusters[-1][0]["start"]) <= timedelta(minutes=45):
-                clusters[-1].append(record)
-            else:
-                clusters.append([record])
-        for cluster in clusters:
-            channels = sorted({e["channel"] for e in cluster},
-                              key=lambda x: (PRIORITY.index(x) if x in PRIORITY else 999, x))
-            chosen = next((e for e in cluster if e["channel"] == channels[0]), cluster[0])
-            selected = {k: v for k, v in chosen.items() if k not in ("start", "end")}
-            selected["date"] = chosen["start"].date().isoformat()
-            selected["time"] = chosen["start"].strftime("%H:%M")
-            selected["start_at"] = chosen["start"].isoformat()
-            selected["platform_start_at"] = (chosen["start"] - timedelta(minutes=10)).isoformat()
-            selected["end_at"] = chosen["end"].isoformat()
-            selected["channels"] = channels
-            selected["id"] = hashlib.sha1(
-                (selected["date"] + "|" + selected["time"] + "|" + selected["title"]).encode()
-            ).hexdigest()[:16]
-            merged.append(selected)
+    groups: list[list[dict]] = []
+    for record in sorted(
+        exact.values(), key=lambda e: (e["start"], e["channel"], e["title"])
+    ):
+        for group in groups:
+            # Require every member to match and reject duplicate channels.
+            # Avoid chaining two independent sessions via an intermediate
+            # simulcast 30 minutes apart.
+            if all(
+                same_sporting_event(record, other, max_start_difference_minutes=30)
+                for other in group
+            ):
+                group.append(record)
+                break
+        else:
+            groups.append([record])
+
+    merged: list[dict] = []
+    for group in groups:
+        group.sort(key=lambda e: (
+            not e["active"],
+            PRIORITY.index(e["channel"]) if e["channel"] in PRIORITY else 999,
+            e["start"], e["channel"],
+        ))
+        chosen = group[0]
+        channels = list(dict.fromkeys(e["channel"] for e in group))
+        entry = {
+            k: v for k, v in chosen.items()
+            if k not in ("start", "end", "source_record_id", "first_seen_at",
+                         "last_seen_at")
+        }
+        entry["start_at"] = chosen["start"].isoformat()
+        entry["platform_start_at"] = (
+            chosen["start"] - timedelta(minutes=10)
+        ).isoformat()
+        entry["end_at"] = chosen["end"].isoformat()
+        entry["channels"] = channels
+        entry["archived"] = not any(e["active"] for e in group)
+        entry["broadcasts"] = [{
+            "channel": e["channel"], "start_at": e["start"].isoformat(),
+            "end_at": e["end"].isoformat(), "source": e["source"],
+            "active": e["active"], "first_seen_at": e["first_seen_at"],
+            "last_seen_at": e["last_seen_at"],
+        } for e in group]
+        entry["id"] = hashlib.sha1(
+            ("|".join((entry["date"], normalize_match_text(entry["sport"]),
+                     normalize_match_text(entry["tournament"]),
+                     normalize_match_text(entry["title"])))).encode()
+        ).hexdigest()[:16]
+        merged.append(entry)
     return sorted(merged, key=lambda e: (e["start_at"], e["title"]))
 
 
