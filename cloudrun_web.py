@@ -32,6 +32,7 @@ from services.live_evidence import event_is_live_broadcast, event_is_schedule_ca
 from services.editorial_export import InvalidTemplate, build_working_xlsx, validate_template
 from services import gmail_integration as gmail
 from services import editorial_store as editorial
+from services.vsetv_sources import WEB_CHANNEL_IDS, refresh_vsetv_web_sources
 from services.epg_excel import (MAX_WORKBOOK_BYTES, InvalidEPG, import_parsed_epg,
                                imported_epg_status, initialize_epg_imports,
                                parse_epg_xlsx)
@@ -490,6 +491,8 @@ def _source_status(request: Request) -> dict:
         ("qazsport", "QAZSPORT HD"),
         ("sportplus", "SPORT+ Qazaqstan"),
         ("tvguide", "TVGuide (проверенные LIVE)"),
+        *((("web_vsetv_" + str(channel_id), channel)
+            for channel, channel_id in WEB_CHANNEL_IDS.items())),
     ):
         latest = source_runs.get(source)
         websites.append({
@@ -740,6 +743,7 @@ async def collect(request: Request, options: CollectOptions):
     async with request.app.state.collect_lock:
         try:
             await request.app.state.schedule.refresh()
+            vsetv = await refresh_vsetv_web_sources(request.app.state.database)
             if request.app.state.backup:
                 await asyncio.to_thread(request.app.state.backup.save)
         except Exception as exc:
@@ -748,7 +752,8 @@ async def collect(request: Request, options: CollectOptions):
     db = request.app.state.database
     return {"ok": True, "event_count": db.active_event_count(),
             "durable_storage": bool(request.app.state.backup),
-            "last_run": db.latest_agent_run()}
+            "last_run": db.latest_agent_run(),
+            "vsetv": vsetv}
 
 
 
