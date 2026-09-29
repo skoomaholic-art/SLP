@@ -4,6 +4,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PORT=8080 SLP_DB_PATH=/tmp/slp/
 WORKDIR /app
 COPY requirements.txt requirements-cloudrun.txt ./
 RUN python -m pip install --no-cache-dir -r requirements.txt -r requirements-cloudrun.txt
+RUN python -m playwright install --with-deps chromium
 COPY agents/ ./agents/
 COPY parsers/ ./parsers/
 COPY services/ ./services/
