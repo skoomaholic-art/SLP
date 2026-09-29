@@ -412,6 +412,25 @@ def sync_inbox(database) -> dict:
             "scanned_messages": len(message_ids)}
 
 
+
+def preview_notice(database, notice_id: int) -> dict:
+    """Show the editor a supplier file's precise changes before import."""
+    from services.epg_excel import preview_parsed_epg
+    init_gmail_schema(database)
+    with database._connect() as conn:
+        row = conn.execute(
+            "SELECT filename,attachment_bytes,status FROM gmail_notices WHERE id=?",
+            (notice_id,),
+        ).fetchone()
+    if not row or row["status"] != "pending" or not row["attachment_bytes"]:
+        raise GmailTransportError("Файл для сравнения не найден или уже обработан")
+    try:
+        parsed = parse_epg_xlsx(bytes(row["attachment_bytes"]), row["filename"])
+    except InvalidEPG as exc:
+        raise GmailTransportError("Не удалось прочитать Excel: " + str(exc)) from exc
+    return preview_parsed_epg(database, parsed)
+
+
 def approve_notice(database, notice_id: int, *, username: str) -> dict:
     init_gmail_schema(database)
     with database._connect() as conn:
