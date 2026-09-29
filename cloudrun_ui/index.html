@@ -154,7 +154,7 @@ footer{margin:25px 0;color:var(--muted);font-size:12px}
 <h3>Утверждённый Excel-шаблон</h3><p id="templateStatus" class="status-line">Проверяю шаблон...</p>
 <form id="templateForm" class="template-bar">
 <input id="templateFile" type="file" accept=".xlsx" required aria-label="Выберите утверждённый шаблон">
-<button id="templateUpload" type="submit">Загрузить шаблон в GCS</button>
+<button id="templateUpload" type="submit">Загрузить шаблон</button>
 </form>
 <p class="muted-small">Только администратор. Заменяет шаблон экспорта, не изменяя исторические записи.</p>
 </div>
@@ -308,7 +308,7 @@ async function loadTemplateStatus(){
  try{
   const result=await api("/api/template/status");
   $("templateStatus").textContent=result.available?
-    "Шаблон найден: "+result.name:
+    "Шаблон найден: "+result.name+(result.message?". "+result.message:""):
     "Шаблон пока не загружен. "+(result.message||"Для выгрузки потребуется утверждённый XLSX.");
  }catch(e){$("templateStatus").textContent=e.message}
 }
@@ -681,7 +681,7 @@ $("templateForm").addEventListener("submit",async event=>{
   });
   const result=await response.json().catch(()=>({}));
   if(!response.ok)throw new Error(result.detail||"Ошибка загрузки шаблона");
-  msg("Утверждённый шаблон загружен: "+result.name,"success");
+  msg("Утверждённый шаблон загружен: "+result.name+(result.warning?". "+result.warning:""),result.warning?"warn":"success");
   $("templateFile").value="";await loadTemplateStatus();
  }catch(e){msg(e.message,"error")}
  finally{$("templateUpload").disabled=false}
