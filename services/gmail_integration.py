@@ -384,6 +384,13 @@ def _safe_auto_apply(database, notice_id: int, parsed) -> tuple[bool, str]:
     # A brand-new empty grid cannot establish an actual live broadcast.
     if not parsed.events and diff["current_count"]:
         return False, "В обновлённой сетке нет LIVE: прежнее расписание сохранено"
+    from services.epg_excel import SOURCE_KEY
+    source = SOURCE_KEY[parsed.channel]
+    for day in parsed.scope_dates:
+        if (not any(e.get("date") == day for e in parsed.events)
+                and database.load_active_source_snapshot(source, day)):
+            return False, ("В новой сетке пропали все LIVE за " + day +
+                           ". Прежний день сохранён для проверки")
     try:
         result = approve_notice(database, notice_id, username="SLP_AUTO")
     except (GmailTransportError, InvalidEPG) as exc:
