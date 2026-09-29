@@ -271,12 +271,14 @@ function renderSources(data){
   const state=document.createElement("div");
   const labels={
    ready:"Актуальный Excel",partial:"Excel покрывает часть недели",
+   awaiting_approval:"Получен по почте - ждёт подтверждения",
    outdated:"Excel устарел",missing:"Excel не получен",
    ok:"Источник обработан",warning:"Обработан с предупреждением",
    error:"Ошибка источника",not_checked:"Источник ещё не проверялся"
   };
   state.textContent=labels[item.status]||item.status;
   state.className="source-state"+(["ok","ready"].includes(item.status)?" ok":"");
+  if(item.status==="awaiting_approval")state.style.color="#ffbf69";
   info.append(name,state);
   if(item.coverage?.length){
    const note=document.createElement("div");note.className="muted-small";
@@ -604,6 +606,14 @@ $("collect").addEventListener("click",async()=>{
   try{result=await api("/api/collect","POST",{allow_partial:false})}
   catch(e){
    if(e.status!==409)throw e;
+   if(e.detail?.requires_approval){
+    const pending=(e.detail?.pending_channels||[]).join(", ");
+    $("gmailPanel").open=true;
+    await loadMailNotices();
+    msg("Получены новые расписания: "+pending+". Сначала подтвердите загрузку в разделе Gmail.","error");
+    $("gmailPanel").scrollIntoView({behavior:"smooth",block:"nearest"});
+    return;
+   }
    const missing=(e.detail?.missing_channels||[]).join(", ");
    if(!confirm("Нет актуальных Excel: "+missing+". Собрать по доступным источникам?")){msg("Сбор отменён");return}
    result=await api("/api/collect","POST",{allow_partial:true});
