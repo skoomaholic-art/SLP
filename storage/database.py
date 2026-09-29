@@ -253,9 +253,13 @@ class SLPDatabase:
         source: str,
         scope_date: str,
         events: Iterable[dict],
+        preserve_editorial: bool = False,
     ) -> None:
         now_iso = _now_iso()
         event_list = list(events)
+        if preserve_editorial:
+            from services.editorial_store import init_editorial
+            init_editorial(self)
 
         with self._connect() as connection:
             before = {
@@ -266,6 +270,29 @@ class SLPDatabase:
                     (source, scope_date),
                 ).fetchall()
             }
+            # Identify only unique same-day/channel/fixture replacements.
+            # If a source moved a fixture's kickoff, its storage ID changes.
+            transfers = []
+            if preserve_editorial and before and event_list:
+                from collections import defaultdict
+                from services.schedule_merge import normalize_match_text
+
+                def fixture_key(item):
+                    return tuple(normalize_match_text(str(item.get(field) or ""))
+                                 for field in ("date", "channel", "sport",
+                                               "tournament", "title"))
+
+                old_keys = defaultdict(list)
+                new_keys = defaultdict(list)
+                for old_id, old_row in before.items():
+                    old_keys[fixture_key(json.loads(old_row["payload_json"]))].append(old_id)
+                for event in event_list:
+                    new_keys[fixture_key(event)].append(
+                        _event_storage_id(source, scope_date, event))
+                for key, old_ids in old_keys.items():
+                    new_ids = new_keys.get(key, ())
+                    if len(old_ids) == len(new_ids) == 1 and old_ids[0] != new_ids[0]:
+                        transfers.append((old_ids[0], new_ids[0]))
             # Record a superseded programme as removed from the EPG, not
             # as cancelled. A disappearing listing is not proof of cancellation.
             next_ids = {
@@ -359,6 +386,29 @@ class SLPDatabase:
                         payload,
                     ),
                 )
+
+            for old_id, new_id in transfers:
+                old_edit = connection.execute(
+                    "SELECT values_json,updated_by,updated_at "
+                    "FROM editorial_overrides WHERE storage_id=?", (old_id,)
+                ).fetchone()
+                if old_edit is None:
+                    continue
+                created = connection.execute(
+                    "INSERT OR IGNORE INTO editorial_overrides("
+                    "storage_id,values_json,updated_by,updated_at) VALUES(?,?,?,?)",
+                    (new_id, old_edit["values_json"], old_edit["updated_by"],
+                     old_edit["updated_at"]),
+                )
+                if created.rowcount:
+                    connection.execute(
+                        "INSERT INTO editorial_audit("
+                        "storage_id,editor,before_json,after_json,changed_at)"
+                        " VALUES(?,?,?,?,?)",
+                        (new_id, "SLP_IMPORT_TRANSFER",
+                         json.dumps({"copied_from_storage_id": old_id}),
+                         old_edit["values_json"], now_iso),
+                    )
 
     def event_revisions(self, storage_id: str = "", limit: int = 100) -> list[dict]:
         limit = min(max(int(limit), 1), 500)
