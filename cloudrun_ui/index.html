@@ -279,6 +279,14 @@ function renderSources(data){
    note.textContent=item.coverage[0]+" - "+item.coverage.at(-1)+
      ", LIVE: "+(item.live_events??0);info.append(note);
   }
+  if(item.official_excel){
+   const note=document.createElement("div");note.className="muted-small";
+   const file=item.official_excel,dates=file.coverage||[];
+   note.textContent="Excel поставщика: "+(dates.length?
+     dates[0]+" - "+dates.at(-1)+", LIVE: "+file.live_events:
+     "нет покрытия выбранной недели");
+   info.append(note);
+  }
   row.append(info);grid.append(row);
  }
  node.append(grid);
@@ -643,7 +651,7 @@ $("export").addEventListener("click",async()=>{
 $("epgForm").addEventListener("submit",async event=>{
  event.preventDefault();
  const files=[...$("epgFiles").files||[]];
- if(!files.length){msg("Выберите Excel-файлы Setanta или QSport.","error");return}
+ if(!files.length){msg("Выберите XLSX Setanta, QSport, QAZSPORT или SPORT+.","error");return}
  $("epgUpload").disabled=true;
  const outcomes=[];
  try{
