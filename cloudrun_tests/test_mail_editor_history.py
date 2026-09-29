@@ -253,6 +253,60 @@ class GmailOfflineTests(unittest.TestCase):
         self.assertFalse(result[0])
         self.assertEqual(self.db.active_event_count(), 1)
 
+    def test_two_channels_inside_one_mail_attachment_are_imported_once_each(self):
+        wb = Workbook()
+        for channel in ("Q ARENA", "Q LEAGUE"):
+            sheet = wb.active if channel == "Q ARENA" else wb.create_sheet()
+            sheet.title = channel
+            sheet["C3"] = "29 сентября"
+            sheet["B4"] = "AST"
+            sheet["B5"] = .5
+            sheet["C5"] = (
+                "LIVE. Футбол. КПЛ, " +
+                ("А - Б" if channel == "Q ARENA" else "В - Г")
+            )
+            sheet["B6"] = .6
+            sheet["C6"] = "Новости"
+        stream = BytesIO()
+        wb.save(stream)
+        wb.close()
+        blob = stream.getvalue()
+        msg = "abcde1234588"
+        envelope = {
+            "id": msg, "internalDate": "1790812800000",
+            "snippet": "Сетка QSport", "payload": {
+                "headers": [
+                    {"name": "Subject", "value": "EPG QSport"},
+                    {"name": "From", "value": "supplier@example.test"},
+                ],
+                "parts": [{
+                    "filename": "сетка Канала.xlsx",
+                    "body": {"size": len(blob), "attachmentId": "multi-file"},
+                }],
+            },
+        }
+        def fake_api(url, token, payload=None):
+            if "messages?" in url:
+                return {"messages": [{"id": msg}]}
+            if "/attachments/" in url:
+                return {"data": base64.urlsafe_b64encode(blob).decode().rstrip("=")}
+            if msg in url:
+                return envelope
+            raise AssertionError(url)
+        with patch.dict("os.environ", {"SPORT_GMAIL_AUTO_IMPORT": "true"}), \
+             patch.object(gmail, "_access_token", return_value="fake-token"), \
+             patch.object(gmail, "_json_api", side_effect=fake_api):
+            first = gmail.sync_inbox(self.db)
+            again = gmail.sync_inbox(self.db)
+        self.assertEqual(first["auto_imported"], 2)
+        self.assertEqual(first["new_attachments"], 2)
+        self.assertEqual(again["new_attachments"], 0)
+        self.assertEqual(self.db.active_event_count(), 2)
+        self.assertEqual(
+            {notice["detected_channel"] for notice in gmail.list_notices(self.db)},
+            {"Q ARENA", "Q LEAGUE"},
+        )
+
     def test_test_mail_does_not_send_unless_explicitly_enabled(self):
         with patch.dict("os.environ", {"SPORT_GMAIL_ENABLE_TEST_SEND": "false"}):
             with patch.object(gmail, "_json_api") as post:
