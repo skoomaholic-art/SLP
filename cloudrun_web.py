@@ -669,7 +669,7 @@ async def gmail_sync(request: Request):
             )
         except (gmail.GmailTransportError, gmail.GmailNotConfigured) as exc:
             raise _gmail_failure(exc) from exc
-        if result["new_attachments"]:
+        if result["new_attachments"] or result["requires_review"]:
             await _save_state(request)
     return result
 
