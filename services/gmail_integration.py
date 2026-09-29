@@ -399,7 +399,10 @@ def sync_inbox(database) -> dict:
             if not raw or len(raw) > MAX_WORKBOOK_BYTES:
                 continue
             try:
-                parsed = parse_epg_xlsx(raw, filename)
+                parsed = parse_epg_xlsx(
+                    raw, filename,
+                    context=" ".join((subject, sender, snippet)),
+                )
             except InvalidEPG as exc:
                 status_value, channel, reason = "review", "", str(exc)[:200]
                 reviewed += 1
@@ -428,13 +431,17 @@ def preview_notice(database, notice_id: int) -> dict:
     init_gmail_schema(database)
     with database._connect() as conn:
         row = conn.execute(
-            "SELECT filename,attachment_bytes,status FROM gmail_notices WHERE id=?",
+            "SELECT filename,attachment_bytes,status,subject,sender,snippet "
+            "FROM gmail_notices WHERE id=?",
             (notice_id,),
         ).fetchone()
     if not row or row["status"] != "pending" or not row["attachment_bytes"]:
         raise GmailTransportError("Файл для сравнения не найден или уже обработан")
     try:
-        parsed = parse_epg_xlsx(bytes(row["attachment_bytes"]), row["filename"])
+        parsed = parse_epg_xlsx(
+            bytes(row["attachment_bytes"]), row["filename"],
+            context=" ".join((row["subject"], row["sender"], row["snippet"])),
+        )
     except InvalidEPG as exc:
         raise GmailTransportError("Не удалось прочитать Excel: " + str(exc)) from exc
     return preview_parsed_epg(database, parsed)
@@ -445,7 +452,8 @@ def approve_notice(database, notice_id: int, *, username: str) -> dict:
     with database._connect() as conn:
         row = conn.execute(
             "SELECT id,filename,attachment_bytes,status,detected_channel,"
-            "received_at FROM gmail_notices WHERE id=?", (notice_id,),
+            "received_at,subject,sender,snippet FROM gmail_notices WHERE id=?",
+            (notice_id,),
         ).fetchone()
         if row is None:
             raise GmailTransportError("Уведомление не найдено")
@@ -453,7 +461,10 @@ def approve_notice(database, notice_id: int, *, username: str) -> dict:
             raise GmailTransportError("Вложение недоступно для импорта")
         filename, raw = row["filename"], bytes(row["attachment_bytes"])
     from services.epg_excel import import_parsed_epg, initialize_epg_imports
-    parsed = parse_epg_xlsx(raw, filename)
+    parsed = parse_epg_xlsx(
+        raw, filename,
+        context=" ".join((row["subject"], row["sender"], row["snippet"])),
+    )
     initialize_epg_imports(database)
     # If the editor already approved a more recently received supplier file
     # for any overlapping day on this SAME channel, reject this older file.
