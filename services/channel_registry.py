@@ -31,8 +31,6 @@ CHANNELS = (
     Channel("QAZSPORT HD", "Qazsport", "5d385e7355153152ba34f5f2",
             official_site="https://qazsporttv.kz/ru/program",
             supplier_source="email_epg_qazsport"),
-    Channel("QAZAQSTAN", "Qazaqstan", "5d385e7355153152ba34f5ec",
-            official_site="https://qazaqstan.tv/program/"),
     Channel("SPORT+ Qazaqstan", "Sport+ Qazaqstan", "650a658f983c40152a652d79",
             official_site="https://sportplustv.kz/ru/tvguide",
             supplier_source="email_epg_sportplus"),
@@ -54,7 +52,6 @@ CHANNELS = (
             "KHL PRIME", 806),
     Channel("МАТЧ! ПЛАНЕТА", "МАТЧ! Планета", "5d385ea755153152ba34f60e",
             "МАТЧ! ПЛАНЕТА", 32),
-    Channel("FIGHT CLUB", secondary_guide="https://programma-peredach.com/kanal_fight-club/"),
 )
 
 _VSETV_IDS = {
