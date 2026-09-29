@@ -19,7 +19,7 @@ python main.py. The Cloud Run image starts uvicorn cloudrun_web:app.
 - Optional durable storage: SQLite online backup goes to a GCS object with
   generation preconditions and is restored at startup.
 
-Manual Setanta/QSport .xlsx uploads ARE connected to the web app:
+Manual Setanta/QSport .xlsx and legacy .xls uploads ARE connected to the web app:
 a bounded authenticated POST /api/import-epg parses only explicit LIVE sport
 rows, stores per-channel snapshots, tracks SHA-256 to prevent reimport and
 records covered days. GET /api/sources reports imported filenames, actual
@@ -250,3 +250,19 @@ Live-source correctness and email end-to-end require separate verification.
 
 Local development requires both requirements.txt and requirements-cloudrun.txt.
 Run uvicorn cloudrun_web:app --port 8080 with the above runtime variables.
+
+## Legacy Excel import continuation (2026-09-29)
+
+The authenticated importer and Gmail classifier now accept legacy BIFF `.xls`
+as well as `.xlsx`. A bounded `xlrd` conversion preserves original raw-file
+SHA-256 identity for idempotency, while the existing explicit LIVE filtering,
+channel-identification and no-wipe guards still apply. This enables supported
+Setanta/QSport layouts in legacy files; it does **not** establish that an
+unseen viju+ Sport `.xls` or a supplier-specific SPORT+/QAZSPORT workbook is
+understood. Those need actual layout evidence and may remain review-only.
+
+Per-channel Excel coverage now aggregates accepted date scopes across different
+files, rather than wrongly treating a newer partial/correction file as removing
+coverage from an earlier accepted workbook. Actual current LIVE counts are
+read from accepted per-day snapshots. No Cloud Run service, OAuth account,
+GCS bucket or Scheduler job was provisioned by this code change.
