@@ -35,6 +35,7 @@ from services import assistant_bridge
 from services import ai_pipeline
 from services import editorial_store as editorial
 from services.vsetv_sources import WEB_CHANNEL_IDS, refresh_vsetv_web_sources
+from services.browser_schedule import browser_fallback_enabled, install_browser_for_python_runtime
 from services.epg_excel import (MAX_WORKBOOK_BYTES, InvalidEPG, import_parsed_epg,
                                imported_epg_status, imported_official_epg_status,
                                initialize_epg_imports,
@@ -392,7 +393,14 @@ async def lifespan(application: FastAPI):
         RuntimeParserOrchestrator(database=database)
     )
     application.state.collect_lock = asyncio.Lock()
+    browser_install_task = None
+    if browser_fallback_enabled():
+        browser_install_task = asyncio.create_task(
+            asyncio.to_thread(install_browser_for_python_runtime)
+        )
     yield
+    if browser_install_task is not None:
+        await browser_install_task
 
 
 app = FastAPI(title="SLP Sport EPG Web", docs_url=None, redoc_url=None, lifespan=lifespan)
