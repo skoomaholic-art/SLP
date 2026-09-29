@@ -356,6 +356,23 @@ def build_working_xlsx(workbook: Workbook, events: list[dict]) -> Workbook:
             "original_index": row,
         })
 
+    # Match the approved workbook's actual priority scale. Some templates
+    # use 50000, 49900, 49800; older examples use 60000, 59990, 59980.
+    # Never overwrite a supplied 100-point scale with a hardcoded 10-step.
+    source_priorities = [
+        int(row["values"][0])
+        for row in original
+        if isinstance(row["values"][0], (int, float))
+        and not isinstance(row["values"][0], bool)
+        and float(row["values"][0]).is_integer()
+    ]
+    priority_start = source_priorities[0] if source_priorities else 60000
+    priority_step = (
+        source_priorities[0] - source_priorities[1]
+        if len(source_priorities) > 1 and source_priorities[0] > source_priorities[1]
+        else 10
+    )
+
     next_index = sheet.max_row + 1
     for event in events:
         event_date = str(event.get("date") or "")
@@ -386,6 +403,5 @@ def build_working_xlsx(workbook: Workbook, events: list[dict]) -> Workbook:
             cell = sheet.cell(n, col)
             cell.value = value
             cell._style = copy(style)
-        # Owner's approved workbook uses 60000, 59990, 59980 ... (step 10).
-        sheet.cell(n, 1).value = 60000 - (n-2)*10
+        sheet.cell(n, 1).value = priority_start - (n - 2) * priority_step
     return workbook
