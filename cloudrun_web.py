@@ -35,7 +35,8 @@ from services import ai_pipeline
 from services import editorial_store as editorial
 from services.vsetv_sources import WEB_CHANNEL_IDS, refresh_vsetv_web_sources
 from services.epg_excel import (MAX_WORKBOOK_BYTES, InvalidEPG, import_parsed_epg,
-                               imported_epg_status, initialize_epg_imports,
+                               imported_epg_status, imported_official_epg_status,
+                               initialize_epg_imports,
                                parse_epg_xlsx, parse_epg_xlsx_channels,
                                parse_supported_epg_channels)
 from services.schedule_merge import same_sporting_event, normalize_match_text
@@ -505,6 +506,9 @@ def _source_status(request: Request) -> dict:
     files = imported_epg_status(
         database, first=today, last=today + timedelta(days=6)
     )
+    official_files = imported_official_epg_status(
+        database, first=today, last=today + timedelta(days=6)
+    )
     pending_notices = gmail.list_notices(database, limit=200)
     mail_requests = gmail.list_requests(database, limit=100)
     pending_channels = {
@@ -539,6 +543,7 @@ def _source_status(request: Request) -> dict:
             "status": (latest or {}).get("status", "not_checked"),
             "checked_at": (latest or {}).get("created_at"),
             "event_count": (latest or {}).get("event_count", 0),
+            "official_excel": official_files.get(label),
         })
     return {
         "websites": websites, "excel": files,
