@@ -99,7 +99,7 @@ def classify_mail(subject: str, sender: str, body: str,
     """
     text = " ".join((subject, sender, body))[:MAX_TEXT]
     file_text = " ".join(filenames)[:1000]
-    has_sheet = any(str(name).casefold().endswith(".xlsx") for name in filenames)
+    has_sheet = any(str(name).casefold().endswith((".xlsx", ".xls")) for name in filenames)
     provider = bool(CHANNEL_RE.search(text + " " + file_text))
     related = bool(SCHEDULE_RE.search(text + " " + file_text))
     if not provider and not related and not has_sheet:
