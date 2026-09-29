@@ -31,6 +31,7 @@ from agents.runtime_orchestrator import RuntimeParserOrchestrator
 from services.live_evidence import event_is_live_broadcast, event_is_schedule_candidate
 from services.editorial_export import InvalidTemplate, build_working_xlsx, validate_template
 from services import gmail_integration as gmail
+from services import ai_pipeline
 from services import editorial_store as editorial
 from services.vsetv_sources import WEB_CHANNEL_IDS, refresh_vsetv_web_sources
 from services.epg_excel import (MAX_WORKBOOK_BYTES, InvalidEPG, import_parsed_epg,
@@ -539,8 +540,15 @@ def _source_status(request: Request) -> dict:
             x["channel"] for x in files
             if x["status"] in ("missing", "outdated", "partial")
         ], "gmail_connected": gmail.status(database)["connected"],
-        "note": "Новые Gmail-вложения попадают в очередь на подтверждение." if gmail.status(database)["connected"] else
-                "Для автоматической обработки нужно подключить OAuth владельца.",
+        "ai": ai_pipeline.status(),
+        "auto_import": bool(request.app.state.backup
+                            and gmail._auto_import_enabled()),
+        "note": ("Подтверждённые Excel загружаются автоматически; "
+                 "на проверку попадают только спорные данные."
+                 if request.app.state.backup and gmail._auto_import_enabled()
+                 else "Автозагрузка отключена до настройки постоянного хранения."
+                 if gmail.status(database)["connected"]
+                 else "Для автоматической обработки нужно подключить OAuth владельца."),
     }
 
 
@@ -785,7 +793,8 @@ async def gmail_sync(request: Request):
     async with request.app.state.collect_lock:
         try:
             result = await asyncio.to_thread(
-                gmail.sync_inbox, request.app.state.database
+                gmail.sync_inbox, request.app.state.database,
+                allow_auto_import=bool(request.app.state.backup)
             )
         except (gmail.GmailTransportError, gmail.GmailNotConfigured) as exc:
             raise _gmail_failure(exc) from exc
@@ -821,7 +830,8 @@ async def scheduled_gmail_sync(request: Request):
     async with request.app.state.collect_lock:
         try:
             result = await asyncio.to_thread(
-                gmail.sync_inbox, request.app.state.database
+                gmail.sync_inbox, request.app.state.database,
+                allow_auto_import=bool(request.app.state.backup)
             )
         except (gmail.GmailTransportError, gmail.GmailNotConfigured) as exc:
             raise _gmail_failure(exc) from exc
@@ -906,7 +916,8 @@ async def collect(request: Request, options: CollectOptions):
         async with request.app.state.collect_lock:
             try:
                 mail_sync = await asyncio.to_thread(
-                    gmail.sync_inbox, request.app.state.database
+                    gmail.sync_inbox, request.app.state.database,
+                allow_auto_import=bool(request.app.state.backup)
                 )
             except (gmail.GmailTransportError, gmail.GmailNotConfigured):
                 mail_sync = {"new_attachments": 0, "requires_review": 0}
