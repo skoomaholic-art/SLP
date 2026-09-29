@@ -36,7 +36,8 @@ from services import editorial_store as editorial
 from services.vsetv_sources import WEB_CHANNEL_IDS, refresh_vsetv_web_sources
 from services.epg_excel import (MAX_WORKBOOK_BYTES, InvalidEPG, import_parsed_epg,
                                imported_epg_status, initialize_epg_imports,
-                               parse_epg_xlsx, parse_epg_xlsx_channels)
+                               parse_epg_xlsx, parse_epg_xlsx_channels,
+                               parse_supported_epg_channels)
 from services.schedule_merge import same_sporting_event, normalize_match_text
 from services.schedule_service import ScheduleService, is_user_event
 from services.time_logic import KZ_TIMEZONE, get_scheduled_datetimes
@@ -588,7 +589,7 @@ async def import_epg(request: Request, upload: UploadFile = File(...)):
     finally:
         await upload.close()
     try:
-        parsed_batches = parse_epg_xlsx_channels(data, filename)
+        parsed_batches = parse_supported_epg_channels(data, filename)
     except InvalidEPG as exc:
         raise HTTPException(422, str(exc)) from exc
     async with request.app.state.collect_lock:
