@@ -222,7 +222,7 @@ def parse_official_epg(data: bytes, filename: str, *,
                 rollover = 0
                 for row in sheet.iter_rows(min_col=1, max_col=4, values_only=True):
                     _, clock, title, duration = (list(row) + [None] * 4)[:4]
-                    if isinstance(title, str) and (match := DAY.search(title)):
+                    if clock is None and isinstance(title, str) and (match := DAY.search(title)):
                         current_day = _day_year(
                             int(match.group(1)),
                             KZ_MONTHS[match.group(2).casefold()],
