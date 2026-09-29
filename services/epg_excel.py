@@ -118,6 +118,19 @@ def _channel_matches(text: str) -> set[str]:
     return matches
 
 
+def _sheet_channels(sheet) -> set[str]:
+    metadata = [str(sheet.title)]
+    for row in sheet.iter_rows(
+        min_row=1, max_row=min(sheet.max_row, 45),
+        min_col=1, max_col=min(sheet.max_column, 8),
+        values_only=True,
+    ):
+        for value in row:
+            if isinstance(value, str) and value.strip():
+                metadata.append(value[:300])
+    return _channel_matches(" ".join(metadata))
+
+
 def detect_channel(filename: str, *, workbook=None, context: str = "") -> str:
     """Identify the station from independent evidence.
 
@@ -131,18 +144,9 @@ def detect_channel(filename: str, *, workbook=None, context: str = "") -> str:
         evidence.append(("имя файла", file_matches))
 
     if workbook is not None:
-        snippets: list[str] = []
+        content_matches: set[str] = set()
         for sheet in workbook.worksheets[:20]:
-            snippets.append(str(sheet.title))
-            for row in sheet.iter_rows(
-                min_row=1, max_row=min(sheet.max_row, 45),
-                min_col=1, max_col=min(sheet.max_column, 8),
-                values_only=True,
-            ):
-                for value in row:
-                    if isinstance(value, str) and value.strip():
-                        snippets.append(value[:300])
-        content_matches = _channel_matches(" ".join(snippets))
+            content_matches.update(_sheet_channels(sheet))
         if content_matches:
             evidence.insert(0, ("содержимое Excel", content_matches))
 
@@ -331,7 +335,7 @@ def _read_programs(sheet, channel: str, filename: str, year: int) -> tuple[list[
 
 def parse_epg_xlsx(
     data: bytes, filename: str, *, today: date | None = None,
-    context: str = ""
+    context: str = "", only_channel: str = ""
 ) -> ParsedEPG:
     if not filename.casefold().endswith(".xlsx"):
         raise InvalidEPG("Поддерживаются только файлы .xlsx")
@@ -358,7 +362,12 @@ def parse_epg_xlsx(
     except Exception as exc:
         raise InvalidEPG("Не удалось прочитать XLSX") from exc
     try:
-        channel = detect_channel(filename, workbook=workbook, context=context)
+        if only_channel:
+            if only_channel not in CHANNELS.values():
+                raise InvalidEPG("Неподдерживаемый телеканал XLSX")
+            channel = only_channel
+        else:
+            channel = detect_channel(filename, workbook=workbook, context=context)
     except Exception:
         workbook.close()
         raise
@@ -368,6 +377,8 @@ def parse_epg_xlsx(
     try:
         year = _year(filename, today)
         for sheet in workbook.worksheets:
+            if only_channel and _sheet_channels(sheet) != {only_channel}:
+                continue
             slot_rows, sheet_days, programmes = _read_programs(sheet, channel, filename, year)
             days.update(sheet_days)
             count += programmes
@@ -425,6 +436,49 @@ def parse_epg_xlsx(
                      scope_dates=tuple(sorted(days | {e["date"] for e in unique.values()})),
                      all_programmes=count,
                      events=tuple(unique.values()))
+
+
+def parse_epg_xlsx_channels(
+    data: bytes, filename: str, *, today: date | None = None,
+    context: str = "",
+) -> tuple[ParsedEPG, ...]:
+    """Split an explicitly labelled multi-station workbook into channels.
+
+    Never infer a station from adjacent sheets, titles alone, or a family name.
+    Ambiguous sheets must be reviewed rather than silently misattributed.
+    """
+    if not filename.casefold().endswith(".xlsx"):
+        raise InvalidEPG("Поддерживаются только .xlsx")
+    if not data or len(data) > MAX_WORKBOOK_BYTES:
+        raise InvalidEPG("Excel слишком большой или пуст")
+    try:
+        with ZipFile(BytesIO(data)) as archive:
+            info = archive.infolist()
+            if (len(info) > 512 or
+                    sum(item.file_size for item in info) > 40 * 1024 * 1024 or
+                    any(item.file_size > 30 * 1024 * 1024 for item in info)):
+                raise InvalidEPG("Подозрительный XLSX")
+        workbook = load_workbook(BytesIO(data), read_only=True, data_only=True)
+    except (BadZipFile, OSError, ValueError, KeyError) as exc:
+        raise InvalidEPG("Повреждённый XLSX") from exc
+    try:
+        identities = [_sheet_channels(sheet) for sheet in workbook.worksheets]
+    finally:
+        workbook.close()
+    all_channels: set[str] = set().union(*identities) if identities else set()
+    if len(all_channels) <= 1:
+        return (parse_epg_xlsx(data, filename, today=today, context=context),)
+    if not all(len(channels) == 1 for channels in identities):
+        raise InvalidEPG(
+            "В Excel несколько каналов, но не каждый лист однозначно размечен"
+        )
+    return tuple(
+        parse_epg_xlsx(
+            data, filename, today=today, context=context,
+            only_channel=channel
+        )
+        for channel in sorted(all_channels)
+    )
 
 
 def initialize_epg_imports(database: SLPDatabase) -> None:
