@@ -524,6 +524,36 @@ class EPGExcelTests(unittest.TestCase):
             self.assertIn("2026-10-01", status["coverage"])
             self.assertEqual(status["live_events"], 2)
 
+    def test_partial_day_update_cannot_erase_a_missing_live_match(self):
+        with tempfile.TemporaryDirectory() as folder:
+            db = SLPDatabase(Path(folder) / "db.sqlite")
+            filename = "EPG Setanta Sports 2 Kazakhstan 29.09.26 - 05.10.26_MEDIA.xlsx"
+            original = workbook_bytes([
+                (3, 3, "30 сентября"),
+                (2, 4, "AST"), (2, 5, 0.5),
+                (3, 5, "LIVE. Футбол. АПЛ, 6 тур, Команда А - Команда Б"),
+                (2, 6, 0.6),
+                (3, 6, "LIVE. Футбол. АПЛ, 6 тур, Команда В - Команда Г"),
+            ])
+            first = parse_epg_xlsx(original, filename, today=date(2026, 9, 29))
+            self.assertEqual(import_parsed_epg(db, first)["status"], "imported")
+            partial = workbook_bytes([
+                (3, 3, "30 сентября"),
+                (2, 4, "AST"), (2, 5, 0.55),
+                (3, 5, "LIVE. Футбол. АПЛ, 6 тур, Команда А - Команда Б"),
+            ])
+            updated = parse_epg_xlsx(partial, filename, today=date(2026, 9, 29))
+            self.assertEqual(
+                preview_parsed_epg(db, updated)["counts"]["missing_from_update"], 1,
+            )
+            result = import_parsed_epg(db, updated)
+            self.assertEqual(result["status"], "partial_review")
+            self.assertIn("2026-09-30", result["held_dates"])
+            source = source_key_for(updated.channel)
+            saved = db.load_active_source_snapshot(source, "2026-09-30")
+            self.assertEqual(len(saved), 2)
+            self.assertTrue(any("Команда В" in e["title"] for e in saved))
+
     def test_unreadable_legacy_xls_does_not_create_live(self):
         with self.assertRaises(InvalidEPG):
             parse_epg_xlsx_channels(b"not-a-real-biff-workbook", "schedule.xls")
