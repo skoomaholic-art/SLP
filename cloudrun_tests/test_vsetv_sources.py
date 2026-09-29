@@ -7,6 +7,33 @@ from services.vsetv_sources import WEB_CHANNEL_IDS, normalize_live_record
 
 
 class VseTVSourceTests(unittest.TestCase):
+    def test_empty_first_mirror_falls_back_to_second(self):
+        import asyncio
+        from unittest.mock import patch
+        from parsers.vsetv_live import _fetch_week_channel
+
+        html = (
+            '<div>Четверг, 1 октября</div>'
+            '<div class="time">21:20</div>'
+            '<div class="prname2"><img src="pic/ico_live.gif">'
+            'ФОНБЕТ Чемпионат КХЛ. Спартак - Барыс. Прямая трансляция.</div>'
+        )
+
+        async def request(session, url):
+            if url.endswith("mirror-one"):
+                return "<html>Empty programme grid</html>", url, None
+            return html, url, None
+
+        with patch("parsers.vsetv_live.build_week_urls",
+                   return_value=["mirror-one", "mirror-two"]), \
+             patch("parsers.vsetv_live._request_with_retry", side_effect=request):
+            rows, error = asyncio.run(
+                _fetch_week_channel(object(), "KHL PRIME", 806, date(2026, 10, 1))
+            )
+        self.assertIsNone(error)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["source_url"], "mirror-two")
+
     def test_source_channels_are_not_conflated(self):
         self.assertEqual(WEB_CHANNEL_IDS["KHL PRIME"], 806)
         self.assertEqual(WEB_CHANNEL_IDS["KHL HD"], 1641)
