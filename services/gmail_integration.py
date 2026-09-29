@@ -297,6 +297,21 @@ def _decode(data: str) -> bytes:
     return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
 
 
+def _repair_forwarded_text(value: str) -> str:
+    """Repair common UTF-8-as-CP1251 mojibake from corporate forwarding."""
+    text = str(value or "")
+    suspicious = text.count("Р") + text.count("С")
+    if suspicious < 4:
+        return text
+    try:
+        repaired = text.encode("cp1251").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return text
+    # Keep the repaired form only when it reduces the characteristic garbage.
+    repaired_score = repaired.count("Р") + repaired.count("С")
+    return repaired if repaired_score < suspicious else text
+
+
 def _message_text(message: dict) -> str:
     """Extract bounded human-readable context from forwarded mail.
 
@@ -321,7 +336,7 @@ def _message_text(message: dict) -> str:
                 text = re.sub(r"(?s)<[^>]+>", " ", text)
                 text = (text.replace("&nbsp;", " ").replace("&amp;", "&")
                             .replace("&lt;", "<").replace("&gt;", ">"))
-            cleaned = " ".join(text.split())
+            cleaned = " ".join(_repair_forwarded_text(text).split())
             if cleaned:
                 fragments.append(cleaned[:MAX_BODY_BYTES])
         for child in part.get("parts") or []:
