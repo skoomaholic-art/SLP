@@ -118,10 +118,11 @@ class GmailOfflineTests(unittest.TestCase):
             if msg2 in url:
                 return change_letter
             raise AssertionError(url)
-        with patch.object(gmail, "_access_token", return_value="secret-access"):
-            with patch.object(gmail, "_json_api", side_effect=fake_api):
-                first = gmail.sync_inbox(self.db)
-                second = gmail.sync_inbox(self.db)
+        with patch.dict("os.environ", {"SPORT_GMAIL_AUTO_IMPORT": "false"}), \
+             patch.object(gmail, "_access_token", return_value="secret-access"), \
+             patch.object(gmail, "_json_api", side_effect=fake_api):
+            first = gmail.sync_inbox(self.db)
+            second = gmail.sync_inbox(self.db)
         self.assertEqual(first["new_attachments"], 1)
         self.assertEqual(second["new_attachments"], 0)
         self.assertEqual(self.db.active_event_count(), 0)
@@ -187,7 +188,9 @@ class GmailOfflineTests(unittest.TestCase):
                 return envelope
             raise AssertionError(url)
 
-        with patch.object(gmail, "_access_token", return_value="secret-access"),              patch.object(gmail, "_json_api", side_effect=fake_api):
+        with patch.dict("os.environ", {"SPORT_GMAIL_AUTO_IMPORT": "false"}), \
+             patch.object(gmail, "_access_token", return_value="secret-access"), \
+             patch.object(gmail, "_json_api", side_effect=fake_api):
             outcome = gmail.sync_inbox(self.db)
 
         self.assertEqual(outcome["new_attachments"], 1)
@@ -195,6 +198,60 @@ class GmailOfflineTests(unittest.TestCase):
         self.assertEqual(notice["detected_channel"], "SETANTA SPORTS 1")
         self.assertEqual(notice["filename"], "сетка Канала.xlsx")
         self.assertEqual(self.db.active_event_count(), 0)
+
+    def test_verified_new_epg_imports_automatically_and_only_once(self):
+        blob = sample_xlsx()
+        msg_id = "abcde1234571"
+        envelope = {
+            "id": msg_id, "internalDate": "1790812800000",
+            "snippet": "EPG Setanta",
+            "payload": {
+                "headers": [
+                    {"name": "Subject", "value": "Setanta Sports 2 Kazakhstan EPG"},
+                    {"name": "From", "value": "Supplier <supplier@example.test>"},
+                ],
+                "parts": [{
+                    "filename": "EPG Setanta Sports 2 Kazakhstan 29.09.26 - 05.10.26_MEDIA.xlsx",
+                    "body": {"size": len(blob), "attachmentId": "attachment-auto"},
+                }],
+            },
+        }
+        def fake_api(url, token, payload=None):
+            if "messages?" in url:
+                return {"messages": [{"id": msg_id}]}
+            if "/attachments/" in url:
+                return {"data": base64.urlsafe_b64encode(blob).decode().rstrip("=")}
+            if msg_id in url:
+                return envelope
+            raise AssertionError(url)
+        with patch.dict("os.environ", {"SPORT_GMAIL_AUTO_IMPORT": "true"}), \
+             patch.object(gmail, "_access_token", return_value="secret-access"), \
+             patch.object(gmail, "_json_api", side_effect=fake_api):
+            first = gmail.sync_inbox(self.db)
+            second = gmail.sync_inbox(self.db)
+        self.assertEqual(first["auto_imported"], 1)
+        self.assertEqual(second["auto_imported"], 0)
+        self.assertEqual(self.db.active_event_count(), 1)
+        notices = gmail.list_notices(self.db)
+        self.assertEqual(notices[0]["status"], "imported")
+        self.assertFalse(notices[0]["has_attachment"])
+
+    def test_suspicious_update_with_no_live_does_not_erase_previous_events(self):
+        original = sample_xlsx()
+        from services.epg_excel import import_parsed_epg, parse_epg_xlsx
+        imported = parse_epg_xlsx(
+            original,
+            "EPG Setanta Sports 2 Kazakhstan 29.09.26 - 05.10.26_MEDIA.xlsx",
+            today=date(2026, 9, 29),
+        )
+        import_parsed_epg(self.db, imported)
+        result = gmail._safe_auto_apply(self.db, 123, type(imported)(
+            channel=imported.channel, filename=imported.filename,
+            content_hash="another-file", scope_dates=imported.scope_dates,
+            all_programmes=imported.all_programmes, events=(),
+        ))
+        self.assertFalse(result[0])
+        self.assertEqual(self.db.active_event_count(), 1)
 
     def test_test_mail_does_not_send_unless_explicitly_enabled(self):
         with patch.dict("os.environ", {"SPORT_GMAIL_ENABLE_TEST_SEND": "false"}):
