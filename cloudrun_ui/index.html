@@ -219,6 +219,13 @@ function renderSources(data){
  const mail=document.createElement("p");mail.className="muted-small";
  mail.textContent=data.gmail_connected?"Gmail подключён":
    "Gmail пока не подключён. Файлы загружаются вручную.";node.append(mail);
+ if(data.mail_request && !data.mail_request.enabled){
+  const request=document.createElement("p");request.className="muted-small";
+  request.textContent="Почтовые запросы пока отключены. Тестовый получатель: "+
+    (data.mail_request.test_to||"не настроен")+
+    ". После запуска отправки рабочий адрес будет доступен для поля «Копия».";
+  node.append(request);
+ }
 }
 
 function renderCalendar(){
