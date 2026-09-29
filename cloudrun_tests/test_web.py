@@ -1,4 +1,5 @@
 """Focused web-only regression; does not contact external sites or send mail."""
+import asyncio
 import base64
 import hashlib
 import json
@@ -7,6 +8,9 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
+
+from fastapi import HTTPException
 
 import cloudrun_web as web
 from storage.database import SLPDatabase
@@ -99,6 +103,23 @@ class WebTests(unittest.TestCase):
             self.assertIn("KHL HD", channels)
             self.assertIn("EUROSPORT 1", channels)
             self.assertIn("EUROSPORT 2", channels)
+
+    def test_scheduler_job_requires_persistence_and_private_oidc(self):
+        request = SimpleNamespace(
+            app=SimpleNamespace(state=SimpleNamespace(backup=None)),
+            headers={},
+        )
+        with self.assertRaises(HTTPException) as failure:
+            asyncio.run(web.scheduled_refresh(request))
+        self.assertEqual(failure.exception.status_code, 503)
+
+        request.app.state.backup = object()
+        with patch.dict(os.environ, {
+            "SPORT_SCHEDULER_SERVICE_ACCOUNT": "cron@example.test"
+        }), patch.object(web, "PUBLIC_URL", "https://sport.example"):
+            with self.assertRaises(HTTPException) as failure:
+                asyncio.run(web.scheduled_refresh(request))
+        self.assertEqual(failure.exception.status_code, 401)
 
     def test_direct_only_dedup_barys_and_time(self):
         with tempfile.TemporaryDirectory() as folder:
