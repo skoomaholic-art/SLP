@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 import aiohttp
 
+from services.channel_registry import VSETV_CHANNELS
 from parsers.vsetv_live import (
     REQUEST_TIMEOUT_SECONDS, _fetch_week_channel,
 )
@@ -22,14 +23,7 @@ from services.time_logic import KZ_TIMEZONE
 
 MSK = ZoneInfo("Europe/Moscow")
 
-WEB_CHANNEL_IDS = {
-    "KHL PRIME": 806,
-    "KHL HD": 1641,
-    "EUROSPORT 1": 535,
-    "EUROSPORT 2": 1082,
-    "МАТЧ! ПЛАНЕТА": 32,
-    "viju+ Sport": 332,
-}
+WEB_CHANNEL_IDS = VSETV_CHANNELS
 _SOURCE = {name: "web_vsetv_" + str(cid)
            for name, cid in WEB_CHANNEL_IDS.items()}
 BETTING_RE = re.compile(
@@ -141,7 +135,7 @@ async def refresh_vsetv_web_sources(database, *, today: date | None = None) -> d
             try:
                 rows, error = await asyncio.wait_for(
                     _fetch_week_channel(session, channel, channel_id, today),
-                    timeout=18,
+                    timeout=75,
                 )
             except Exception as exc:
                 rows, error = [], type(exc).__name__
