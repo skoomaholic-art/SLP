@@ -29,9 +29,10 @@ different user-supplied logos, including each of the three Setanta variants.
 
 The owner's supplied brand icon and avatar images are in
 cloudrun_ui/assets/ (Skoomaholic, Дания, Вадим). The source and event UI
-uses a full contain-fit logo frame: KHL PRIME and KHL HD have separate
-identity labels, as do all three Setanta stations. The favicon is the
-approved puppet-and-football icon, not a generated replacement.
+uses a full contain-fit logo frame. The KHL PRIME and KHL HD assets
+stay distinct, but there are no extra PRIME/HD badges layered on top.
+The favicon uses the owner's actual red puppet image, converted to white
+on a black background. The three owner-supplied profile images are kept.
 
 ## Gmail implementation and approval boundary
 
@@ -41,11 +42,16 @@ and an encrypted refresh token stored in the application SQLite/GCS backup.
 It uses the owner's own Google OAuth credentials; **this code does not reuse
 the ChatGPT-connected Gmail token**.
 
-The Gmail UI supports manual sync, a pending XLSX review list, manual import
-of confirmed Setanta/QSport XLSX, dismissal, and review of text-only change
-notifications. Ambiguous attachments (e.g. a generic SPORT+ "сетка Канала.xlsx"
-without a confirmed schema/timezone) must NOT be imported automatically.
-Before accepting a pending XLSX, the editor can preview a real
+The Gmail UI supports manual sync, an exception queue, confirmed manual
+imports and review of text-only changes. When Gmail OAuth AND durable GCS
+storage are configured, unambiguous supplier Excel files are imported on
+arrival without approval (SPORT_GMAIL_AUTO_IMPORT=true, default).
+Missing LIVE for a previously populated day, ambiguous channel identity
+or stale overlapping files go to review instead of overwriting accepted
+snapshots. A generic SPORT+ "сетка Канала.xlsx" without a confirmed
+schema/timezone is NOT imported automatically. An Excel that explicitly
+labels each station on separate sheets is split and imported per channel;
+ambiguous or unlabelled sheets are held. The editor can preview a real
 same-channel difference (new fixtures, one-to-one kickoff changes, ambiguous
 repeated fixtures, or programmes no longer listed). The diff does not update
 the database. Approving an older received email is blocked if a newer
@@ -81,7 +87,7 @@ only unambiguous approved RU/KZ TEAM/SUBTITLE mappings from the private
 template (not from a generic machine translation). It escapes
 potential spreadsheet formulas and sorts events in UTC+5. Unknown Kazakh
 translations remain blank for review, not guessed or copied from Russian.
-Priorities follow the supplied workbook's 50000, 49900 ... step.
+Priorities follow the supplied workbook's 60000, 59990 ... step.
 An admin-only /api/template upload endpoint validates the 25 approved headers
 and saves the original workbook in GCS with a write-generation precondition.
 The exact owner's template is NOT committed to the public repository;
@@ -97,6 +103,15 @@ Europe/Moscow to Asia/Almaty and preserves last-good rows when a site fails.
 Those six web-source real-world results are NOT yet verified after deployment.
 The existing Telegram parser and its unrelated Setanta VseTV channels remain
 unchanged.
+
+Rule-first classification and two replaceable AI_MAIL/AI_EDITOR adapters
+are implemented. Rules parse known suppliers without any model requests.
+Optional inference accepts only a loopback IP endpoint and must be enabled
+explicitly, with separately installed models. No local model has been
+provisioned on Cloud Run, and no corporate mail has been sent to an external
+AI provider. AI_EDITOR may suggest missing RU/KZ prose but cannot change
+source, channel, LIVE, dates or times; optional KZ auto-fill is separately
+disabled by default. Any unverified output requires editorial validation.
 
 STILL NOT CONNECTED OR NOT PROVEN: owner OAuth authorization, real outbound
 test message, 24/7 Cloud Scheduler/OIDC job, automatic parsing of unrecognized
@@ -140,6 +155,13 @@ SPORT_GMAIL_CLIENT_ID: OAuth 2.0 Web application Client ID from owner's GCP
 SPORT_GMAIL_CLIENT_SECRET: same OAuth 2.0 Client secret
 SPORT_GMAIL_TOKEN_KEY: stable private Fernet symmetric key (Secret Manager)
 SPORT_GMAIL_ENABLE_TEST_SEND: false (default); enable only for authorized test
+SPORT_GMAIL_AUTO_IMPORT: true (default); set false for review-only operation
+SPORT_AI_LOCAL_ENABLED: false (default); requires a user-operated LOCAL model
+SPORT_AI_MAIL_URL: http://127.0.0.1:11434/api/generate (optional, local only)
+SPORT_AI_MAIL_MODEL: actual installed model ID; never a paid API fallback
+SPORT_AI_EDITOR_URL: http://127.0.0.1:11434/api/generate (optional, local only)
+SPORT_AI_EDITOR_MODEL: actual installed model ID
+SPORT_AI_EDITOR_AUTO_TRANSLATE: false (default); opt-in for unapproved KZ drafts
 SPORT_MAIL_TEST_TO: alexandr.petrossov@fmedia.kz (fixed test recipient)
 SPORT_MAIL_FUTURE_CC: same address, reserved but not used for real sends
 SPORT_SCHEDULER_SERVICE_ACCOUNT: optional email of dedicated OIDC job identity
@@ -200,9 +222,11 @@ Gmail features are implemented but remain inactive until the owner
 configures OAuth and GCS, completes the consent screen and authorizes the
 connection. Without those credentials no emails can be read or sent.
 Authorized editors can always import an actual verified XLSX manually.
-Gmail incoming files are staged for review and never automatically applied
-until the editor explicitly accepts them. Outbound mail stays disabled until
-the test-only flag and browser confirmation are both supplied.
+Verified, unambiguous Gmail Excel files are imported automatically ONLY
+when GCS and owner OAuth are configured. Without durable storage incoming
+files remain review-only. Ambiguities and text-only cancellation claims are
+never applied as confirmed broadcast changes. Outbound mail stays disabled
+until the test-only flag and browser confirmation are both supplied.
 
 Existing SLP parsers and current-snapshot semantics are inherited.
 No new channel/source is silently invented. The standard event view reads current accepted source snapshots; archive
