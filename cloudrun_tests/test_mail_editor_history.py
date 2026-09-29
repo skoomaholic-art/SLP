@@ -138,6 +138,58 @@ class GmailOfflineTests(unittest.TestCase):
         self.assertFalse(next(x for x in gmail.list_notices(self.db)
                               if x["id"] == pending["id"])["has_attachment"])
 
+    def test_forwarded_generic_attachment_uses_body_context_and_workbook(self):
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet["B1"] = "ПРОГРАММА ПЕРЕДАЧ ТЕЛЕКАНАЛА SETANTA SPORTS 1 KAZAKHSTAN"
+        sheet["B4"] = "30 сентября"
+        sheet["A5"] = "AST"
+        sheet["A6"] = 0.5
+        sheet["B6"] = "LIVE. Футбол. АПЛ, 6 тур, Команда А - Команда Б"
+        stream = BytesIO(); workbook.save(stream); workbook.close()
+        blob = stream.getvalue()
+        msg = "abcde1234570"
+        forwarded_text = (
+            "От: Sabina Nazarova <sabina@silkwaymedia.com> "
+            "Тема: актуальная сетка Setanta. Со вторника есть изменения."
+        )
+        body = base64.urlsafe_b64encode(forwarded_text.encode()).decode().rstrip("=")
+        envelope = {
+            "id": msg, "internalDate": "1790812800000",
+            "snippet": "Пересылаю сетку",
+            "payload": {
+                "headers": [
+                    {"name": "Subject", "value": "FW: актуальная сетка"},
+                    {"name": "From", "value": "Alexandr <alexandr.petrossov@fmedia.kz>"},
+                ],
+                "parts": [
+                    {"mimeType": "text/plain", "body": {"data": body}},
+                    {
+                        "filename": "сетка Канала.xlsx",
+                        "body": {"size": len(blob), "attachmentId": "attachment-generic"},
+                    },
+                ],
+            },
+        }
+
+        def fake_api(url, token, payload=None):
+            if "messages?" in url:
+                return {"messages": [{"id": msg}]}
+            if "/attachments/" in url:
+                return {"data": base64.urlsafe_b64encode(blob).decode().rstrip("=")}
+            if msg in url:
+                return envelope
+            raise AssertionError(url)
+
+        with patch.object(gmail, "_access_token", return_value="secret-access"),              patch.object(gmail, "_json_api", side_effect=fake_api):
+            outcome = gmail.sync_inbox(self.db)
+
+        self.assertEqual(outcome["new_attachments"], 1)
+        notice = gmail.list_notices(self.db)[0]
+        self.assertEqual(notice["detected_channel"], "SETANTA SPORTS 1")
+        self.assertEqual(notice["filename"], "сетка Канала.xlsx")
+        self.assertEqual(self.db.active_event_count(), 0)
+
     def test_test_mail_does_not_send_unless_explicitly_enabled(self):
         with patch.dict("os.environ", {"SPORT_GMAIL_ENABLE_TEST_SEND": "false"}):
             with patch.object(gmail, "_json_api") as post:
