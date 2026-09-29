@@ -39,6 +39,8 @@ def sportplus_sheet():
     sheet["B6"] = .75
     sheet["C6"] = "КПЛ. ТОБОЛ - ЕЛИМАЙ"
     sheet["C7"] = "БЕЙСЕНБІ, 01 ҚАЗАН"
+    sheet["B9"] = .85
+    sheet["C9"] = "БӘЙГЕ. АТ ШАБЫСЫ. АЛМАТЫДАН ТІКЕЛЕЙ ЭФИР"
     sheet["B8"] = .7
     sheet["C8"] = "ФУТЗАЛ. КОМАНДА А - КОМАНДА Б. ПРЯМАЯ ТРАНСЛЯЦИЯ"
     sheet["D8"] = .05
@@ -89,11 +91,12 @@ class OfficialSupplierEPGTests(unittest.TestCase):
             [
                 ("2026-09-30", "12:00", "ММА"),
                 ("2026-10-01", "16:48", "Футзал"),
+                ("2026-10-01", "20:24", "Конный спорт"),
             ],
         )
         self.assertEqual(parsed.events[0]["estimated_broadcast_end"], "15:00")
         self.assertEqual(parsed.events[0]["end_estimation_method"], "provider_duration")
-        self.assertEqual(parsed.all_programmes, 5)
+        self.assertEqual(parsed.all_programmes, 6)
         self.assertNotIn("ФУТБОЛ ПЛЮС", str(parsed.events))
         self.assertNotIn("ТОБОЛ", str(parsed.events))
         with tempfile.TemporaryDirectory() as dirname:
