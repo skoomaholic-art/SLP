@@ -45,6 +45,17 @@ SESSION_SECRET = os.getenv("SPORT_WEB_SECRET", "")
 GCS_BUCKET = os.getenv("SPORT_GCS_BUCKET", "")
 GCS_OBJECT = os.getenv("SPORT_GCS_OBJECT", "sport-epg/slp-web.db")
 TEMPLATE_OBJECT = os.getenv("SPORT_TEMPLATE_OBJECT", "sport-epg/template.xlsx")
+PROFILE_AVATARS = {
+    "skoomaholic": "/assets/skoomaholic.webp",
+    "дания": "/assets/daniya.webp",
+    "вадим": "/assets/vadim.webp",
+}
+
+
+def profile_avatar(username: str) -> str:
+    return PROFILE_AVATARS.get(username.strip().casefold(), "")
+
+
 Q_SETANTA = ("Q LEAGUE", "Q ARENA", "Q FOOTBALL",
              "SETANTA SPORTS 1", "SETANTA SPORTS 2", "SETANTA SPORTS KZ")
 PRIORITY = ("QAZSPORT HD", "SPORT+ Qazaqstan", "KHL PRIME", "KHL HD",
@@ -121,7 +132,8 @@ def current_user(request: Request) -> dict:
         ).hexdigest():
             raise ValueError()
         return {"username": username, "role": user.get("role", "editor"),
-                "avatar": user.get("avatar", "")}
+                "avatar": user.get("avatar", ""),
+                "avatar_url": profile_avatar(username)}
     except (ValueError, TypeError, KeyError, IndexError):
         raise HTTPException(401, "Войдите в систему") from None
 
@@ -356,6 +368,26 @@ def channel_logos():
                         media_type="text/javascript; charset=utf-8")
 
 
+@app.get("/assets/{filename}")
+def ui_image(filename: str):
+    media = {
+        "app-icon.png": "image/png",
+        "skoomaholic.webp": "image/webp",
+        "daniya.webp": "image/webp",
+        "vadim.webp": "image/webp",
+    }.get(filename)
+    if not media:
+        raise HTTPException(404, "Изображение не найдено")
+    return FileResponse(ROOT / "cloudrun_ui" / "assets" / filename,
+                        media_type=media)
+
+
+@app.get("/favicon.ico")
+def favicon():
+    return FileResponse(ROOT / "cloudrun_ui" / "assets" / "app-icon.png",
+                        media_type="image/png")
+
+
 @app.post("/api/login")
 def login(request: Request, credentials: Login, response: Response):
     origin_guard(request)
@@ -371,7 +403,8 @@ def login(request: Request, credentials: Login, response: Response):
                         samesite="lax", max_age=8 * 3600)
     return {"user": {"username": credentials.username,
                      "role": user.get("role", "editor"),
-                     "avatar": user.get("avatar", "")}}
+                     "avatar": user.get("avatar", ""),
+                     "avatar_url": profile_avatar(credentials.username)}}
 
 
 @app.get("/api/me")
