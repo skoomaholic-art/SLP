@@ -74,6 +74,25 @@ class EditorialExportTests(unittest.TestCase):
         reloaded.close()
         result.close()
 
+    def test_priority_follows_template_scale_not_a_fixed_increment(self):
+        workbook = self._source()
+        sheet = workbook.active
+        for column in range(1, 26):
+            sheet.cell(3, column).value = sheet.cell(2, column).value
+        sheet.cell(2, 1).value = 50000
+        sheet.cell(3, 1).value = 49900
+        sheet.cell(3, 6).value = "Отдельный матч"
+        sheet.cell(3, 8).value = datetime(2026, 9, 25, 11, 50)
+        sheet.cell(3, 9).value = datetime(2026, 9, 25, 14, 30)
+        added = self._event("2026-09-26", "12:00", "Следующий матч")
+        result = build_working_xlsx(workbook, [added])
+        self.assertEqual(
+            [result.active.cell(row, 1).value for row in (2, 3, 4)],
+            [50000, 49900, 49800],
+        )
+        self.assertEqual(result.active.cell(4, 6).value, "Следующий матч")
+        result.close()
+
     def test_translation_from_approved_existing_rows(self):
         workbook = self._source()
         new_match = self._event(
