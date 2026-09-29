@@ -40,8 +40,10 @@ TRAILING_CARD_RE = re.compile(
 SPORT_CODES = {
     "футбол": "FBL", "хоккей": "HKY", "баскетбол": "BSK",
     "волейбол": "VBL", "теннис": "TNS", "бокс": "BOX",
-    "мма": "MMA", "снукер": "SNK", "мотоспорт": "MTR",
-    "формула-1": "F1", "фигурное катание": "FIG",
+    "мма": "MMA", "снукер": "SNK", "мотоспорт": "MOT",
+    "автоспорт": "AUT", "формула-1": "AUT",
+    "тяжёлая атлетика": "TYAZHELA", "лёгкая атлетика": "LEGKAYA",
+    "прыжки в воду": "PRYZHKI", "фигурное катание": "FIG",
     "дзюдо": "JDO", "футзал": "FTS",
 }
 CYRILLIC = {
@@ -171,6 +173,24 @@ def _editorial_fields(event: dict) -> tuple[str, str, str]:
         team_label = tournament
         subtitle_prefix = sport
 
+        if sport.casefold() in {"мма", "бокс", "бокс голыми кулаками"}:
+            # Approved workbook: UFC 332 lives in TEAM 1, fighters/card in subtitle.
+            number = re.match(
+                r"^([A-Za-zА-Яа-яЁё+]+(?:\s+Fight\s+Night)?\s*\d*)[.:]?\s*(.*)$",
+                title, re.I,
+            )
+            if number:
+                card = number.group(1).strip()
+                remainder = number.group(2).strip(" .:-")
+                if any(ch.isdigit() for ch in card) or normalize_match_text(title) == normalize_match_text(tournament):
+                    team_label = card or tournament
+                    remainder = re.sub(r"\bMain Card\b", "Основной кард", remainder, flags=re.I)
+                    remainder = re.sub(r"\bPrelims?\b", "Предварительный кард", remainder, flags=re.I)
+                    subtitle = explicit_subtitle or ". ".join(
+                        x for x in (sport, remainder) if x
+                    )
+                    return team_label.upper(), "", subtitle
+
         grand_prix = re.search(r"Гран-при\s+(.+)$", tournament, re.I)
         if grand_prix and sport.casefold() in {"автоспорт", "мотоспорт"}:
             team_label = "ГП " + grand_prix.group(1).strip()
@@ -221,12 +241,11 @@ def _new_row(event: dict) -> list:
     datecode = start.strftime("%d%m%y")
     code = SPORT_CODES.get(sport.casefold(), _slug(sport)[:4] or "SPT")
     suffix = _slug(title)[:52] or hashlib.sha1(title.encode()).hexdigest()[:12].upper()
-    slug = f"{datecode}_{code}_{suffix}"
-    # Avoid two events with the same textual title on one date sharing IDs
-    # when their competition is different.
-    if tournament:
-        suffix_hash = hashlib.sha1(tournament.encode()).hexdigest()[:6].upper()
-        slug += "_" + suffix_hash
+    stable_key = "|".join((
+        start.isoformat(), sport, tournament, title, str(event.get("channel") or "")
+    ))
+    serial = int(hashlib.sha1(stable_key.encode()).hexdigest()[:8], 16) % 10000
+    slug = f"{datecode}_{code}_{suffix}_{serial:04d}"
     team1, team2, subtitle = _editorial_fields(event)
     return [
         None, start.strftime("%d.%m"), start.strftime("%H:%M"),
