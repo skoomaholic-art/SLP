@@ -90,6 +90,61 @@ class EditorialExportTests(unittest.TestCase):
         self.assertEqual(added[24].value, "Футбол. УЕФА Ұлттар лигасы")
         result.close()
 
+    def test_non_match_team1_and_stage_follow_card_memo(self):
+        workbook = self._source()
+        event = {
+            "date": "2026-09-25", "time": "17:00",
+            "title": "Гран-при Италии - Квалификация",
+            "sport": "Формула-1", "tournament": "",
+            "channel": "SETANTA SPORTS 1",
+            "start_at": "2026-09-25T17:00:00+05:00",
+            "platform_start_at": "2026-09-25T16:50:00+05:00",
+            "end_at": "2026-09-25T18:10:00+05:00",
+        }
+        result = build_working_xlsx(workbook, [event])
+        row = next(
+            r for r in range(2, result.active.max_row + 1)
+            if result.active.cell(r, 6).value == "Гран-при Италии - Квалификация"
+        )
+        self.assertEqual(result.active.cell(row, 20).value, "Гран-при Италии")
+        self.assertEqual(result.active.cell(row, 22).value, "")
+        self.assertEqual(
+            result.active.cell(row, 24).value,
+            "Формула-1. Квалификация",
+        )
+        result.close()
+
+    def test_combat_pair_and_tennis_stage_are_editorialized(self):
+        workbook = self._source()
+        combat = self._event(
+            "2026-09-25", "19:00",
+            "UFC 332: Силва - Ван - Main Card", "UFC 332",
+        )
+        combat["sport"] = "ММА"
+        tennis = self._event(
+            "2026-09-26", "15:00",
+            "ATP 250 Ханчжоу: Полуфинал 1", "ATP 250 Ханчжоу",
+        )
+        tennis["sport"] = "Теннис"
+        result = build_working_xlsx(workbook, [combat, tennis])
+        values = {
+            result.active.cell(r, 6).value: (
+                result.active.cell(r, 20).value,
+                result.active.cell(r, 22).value,
+                result.active.cell(r, 24).value,
+            )
+            for r in range(2, result.active.max_row + 1)
+        }
+        self.assertEqual(
+            values["UFC 332: Силва - Ван - Main Card"][:2],
+            ("Силва", "Ван"),
+        )
+        self.assertEqual(
+            values["ATP 250 Ханчжоу: Полуфинал 1"],
+            ("ATP 250 Ханчжоу", "", "Теннис. Полуфинал 1"),
+        )
+        result.close()
+
     def test_wrong_header_fails_without_losing_data(self):
         workbook = self._source()
         workbook.active["T1"] = "WRONG TEAM 1"
