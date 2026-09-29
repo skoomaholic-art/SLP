@@ -332,3 +332,19 @@ cloud resource was created. Existing Telegram production is unchanged.
 - Локальный аддитивный outbox подтверждает отправку только после ответа получателя; повторный импорт и повторное письмо не порождают новую задачу. До включения интеграции текущий импорт расписаний не меняется.
 - Настройка необязательная: `SPORT_ASSISTANT_NOTICE_URL` = HTTPS endpoint `/internal/slp/notice` существующего Worker, `SPORT_ASSISTANT_NOTICE_SECRET` = то же значение, что и `SLP_NOTICE_SECRET` в Worker. Нужны готовые OAuth Gmail, постоянное хранилище и запланированная синхронизация SLP; Secrets никогда не коммитить.
 - Статус: изменения только в PR #39. Секреты/Cloud Scheduler/SLP Cloud Run не подтверждены, живой Telegram не переключался, внешние тесты и платные API не запускались. Production Telegram/Railway entrypoint не изменён.
+
+## 2026-09-30 - Preview before manual supplier import
+
+- The web editor now calls authenticated POST /api/preview-epg before
+  /api/import-epg. Preview parses the same file and returns per-channel
+  new, kickoff-change, absent-from-update, unchanged and ambiguous counts,
+  without changing source snapshots or triggering a backup.
+- The browser asks for explicit approval of each file before posting to
+  the existing import route. Invalid files stop at preview; cancellation
+  leaves accepted schedules unchanged. The preview displays a clear
+  warning when the current database has no durable backup.
+- The existing import endpoint remains available for established API
+  callers, so the new browser confirmation is a UI safeguard, not a
+  server-enforced two-phase transaction. A later deployment should
+  consider signed previews / optimistic concurrency for multi-editor
+  races. No production instance was redeployed.
