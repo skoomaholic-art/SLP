@@ -22,8 +22,8 @@ from services.time_logic import KZ_TIMEZONE
 logger = logging.getLogger(__name__)
 SOURCE = "web_fightclub"
 GUIDE_ID = 497494
-_TIME_ROW = re.compile(r"^([01]?\\d|2[0-3]):([0-5]\\d)\\s+(.+)$")
-_DATE_ROW = re.compile(r"^(20\\d{2})-(\\d{2})-(\\d{2})$")
+_TIME_ROW = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)\s+(.+)$")
+_DATE_ROW = re.compile(r"^(20\d{2})-(\d{2})-(\d{2})$")
 _FIGHT_SPORTS = (
     (re.compile(r"бокс|box(?:ing)?|кикбокс|kickbox", re.I), "Бокс"),
     (re.compile(r"mma|мма|смешанн|ufc|lfa|efc|one championship|enfusion|sft combat", re.I), "ММА"),
@@ -43,7 +43,7 @@ def parse_fight_club_guide(html: str) -> dict[str, list[dict]]:
     # Absence of that structure must not be treated as an empty replacement.
     lines = [
         " ".join(line.split()) for line in
-        soup.get_text(separator="\\n", strip=True).splitlines()
+        soup.get_text(separator="\n", strip=True).splitlines()
     ]
     by_day: dict[str, list[dict]] = defaultdict(list)
     current_day = None
