@@ -170,6 +170,60 @@ class EPGExcelTests(unittest.TestCase):
                 1,
             )
 
+    def test_multisheet_workbook_routes_stations_separately(self):
+        from services.epg_excel import parse_epg_xlsx_channels
+        wb = Workbook()
+        first = wb.active
+        first.title = "Q ARENA"
+        first["C3"] = "29 сентября"
+        first["B4"] = "AST"
+        first["B5"] = .5
+        first["C5"] = "LIVE. Футбол. КПЛ, Команда А - Команда Б"
+        first["B6"] = .6
+        first["C6"] = "Новости"
+        second = wb.create_sheet("Q LEAGUE")
+        second["C3"] = "29 сентября"
+        second["B4"] = "AST"
+        second["B5"] = .55
+        second["C5"] = "LIVE. Футбол. КПЛ, Команда В - Команда Г"
+        second["B6"] = .65
+        second["C6"] = "Новости"
+        stream = BytesIO()
+        wb.save(stream)
+        wb.close()
+        content = stream.getvalue()
+        with self.assertRaises(InvalidEPG):
+            parse_epg_xlsx(content, "сетка Канала.xlsx",
+                           today=date(2026, 9, 29))
+        results = parse_epg_xlsx_channels(
+            content, "сетка Канала.xlsx",
+            today=date(2026, 9, 29), context="Сетки QSport",
+        )
+        self.assertEqual([r.channel for r in results], ["Q ARENA", "Q LEAGUE"])
+        self.assertEqual([len(r.events) for r in results], [1, 1])
+        self.assertNotEqual(results[0].content_hash, results[1].content_hash)
+        with tempfile.TemporaryDirectory() as folder:
+            db = SLPDatabase(Path(folder) / "slp.db")
+            for item in results:
+                import_parsed_epg(db, item)
+            self.assertEqual(db.active_event_count(), 2)
+
+    def test_multistation_unlabelled_sheet_is_not_guessed(self):
+        from services.epg_excel import parse_epg_xlsx_channels
+        wb = Workbook()
+        first = wb.active
+        first.title = "Q ARENA"
+        second = wb.create_sheet("Q LEAGUE")
+        wb.create_sheet("Неделя")
+        output = BytesIO()
+        wb.save(output)
+        wb.close()
+        with self.assertRaisesRegex(InvalidEPG, "не каждый лист"):
+            parse_epg_xlsx_channels(
+                output.getvalue(), "сетка Канала.xlsx",
+                today=date(2026, 9, 29),
+            )
+
     def test_generic_filename_uses_workbook_identity(self):
         data = workbook_bytes([
             (2, 1, "ПРОГРАММА ПЕРЕДАЧ ТЕЛЕКАНАЛА SETANTA SPORTS 1 KAZAKHSTAN"),
