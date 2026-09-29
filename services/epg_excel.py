@@ -566,12 +566,20 @@ def import_parsed_epg(database: SLPDatabase, parsed: ParsedEPG) -> dict:
     for event in parsed.events:
         by_day[event["date"]].append(event)
     source = SOURCE_KEY[parsed.channel]
-    # No destructive sweep for dates absent from this attachment.
+    # An empty date in an update is not evidence that every earlier LIVE
+    # broadcast vanished. Preserve the last-good day and flag it for review.
+    accepted_days: list[str] = []
+    held_days: list[str] = []
     for day in parsed.scope_dates:
+        day_events = by_day.get(day, [])
+        if not day_events and database.load_active_source_snapshot(source, day):
+            held_days.append(day)
+            continue
         database.upsert_source_snapshot(
             run_id="epg:" + parsed.content_hash[:20],
-            source=source, scope_date=day, events=by_day.get(day, []),
+            source=source, scope_date=day, events=day_events,
         )
+        accepted_days.append(day)
     with database._connect() as conn:
         conn.execute(
             "INSERT INTO epg_imports(file_hash,channel,filename,first_date,last_date,"
@@ -583,7 +591,8 @@ def import_parsed_epg(database: SLPDatabase, parsed: ParsedEPG) -> dict:
         )
         conn.executemany(
             "INSERT INTO epg_import_days(file_hash,scope_date) VALUES(?,?)",
-            [(parsed.content_hash, day) for day in parsed.scope_dates],
+            [(parsed.content_hash, day) for day in accepted_days],
         )
-    return {"status": "imported", "channel": parsed.channel,
-            "live_events": len(parsed.events), "dates": list(parsed.scope_dates)}
+    return {"status": "partial_review" if held_days else "imported",
+            "channel": parsed.channel, "live_events": len(parsed.events),
+            "dates": list(accepted_days), "held_dates": held_days}
