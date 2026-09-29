@@ -73,6 +73,23 @@ class EditorialExportTests(unittest.TestCase):
         reloaded.close()
         result.close()
 
+    def test_translation_from_approved_existing_rows(self):
+        workbook = self._source()
+        new_match = self._event(
+            "2026-09-27", "14:00", "Португалия - Уэльс",
+            "Лига наций УЕФА"
+        )
+        result = build_working_xlsx(workbook, [new_match])
+        sheet = result.active
+        added = next(row for row in sheet.iter_rows(min_row=2)
+                     if row[1].value == "27.09")
+        self.assertEqual(added[19].value, "Португалия")
+        self.assertEqual(added[20].value, "ПОРТУГАЛИЯ")
+        self.assertEqual(added[21].value, "Уэльс")
+        self.assertEqual(added[22].value, "УЭЛЬС")
+        self.assertEqual(added[24].value, "Футбол. УЕФА Ұлттар лигасы")
+        result.close()
+
     def test_wrong_header_fails_without_losing_data(self):
         workbook = self._source()
         workbook.active["T1"] = "WRONG TEAM 1"
