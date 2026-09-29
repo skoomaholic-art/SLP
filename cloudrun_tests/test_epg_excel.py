@@ -9,6 +9,7 @@ from openpyxl import Workbook
 
 from services.epg_excel import (
     InvalidEPG, import_parsed_epg, imported_epg_status, parse_epg_xlsx,
+    preview_parsed_epg,
 )
 from storage.database import SLPDatabase
 from cloudrun_web import event_rows
@@ -114,6 +115,35 @@ class EPGExcelTests(unittest.TestCase):
             self.assertEqual(len(db.load_active_source_snapshot(
                 "email_epg_qarena", "2026-09-30"
             )), 1)
+
+    def test_preview_shows_changed_time_without_inventing_cancellation(self):
+        def supplier(minutes):
+            return workbook_bytes([
+                (3, 3, "29 сентября"), (2, 4, "AST"),
+                (2, 5, minutes),
+                (3, 5, "LIVE. Футбол. АПЛ, Команда А - Команда Б"),
+                (2, 6, minutes + .15),
+                (3, 6, "Новости"),
+            ])
+        with tempfile.TemporaryDirectory() as folder:
+            db = SLPDatabase(Path(folder) / "db.sqlite")
+            initial = parse_epg_xlsx(
+                supplier(.5), "EPG QSport Arena 28.09.26 - 04.10.26_MEDIA.xlsx",
+                today=date(2026, 9, 29),
+            )
+            import_parsed_epg(db, initial)
+            changed = parse_epg_xlsx(
+                supplier(.55), "EPG QSport Arena 28.09.26 - 04.10.26_MEDIA.xlsx",
+                today=date(2026, 9, 29),
+            )
+            preview = preview_parsed_epg(db, changed)
+            self.assertEqual(preview["counts"]["time_changed"], 1)
+            self.assertEqual(preview["changes"][0]["before_times"], ["12:00"])
+            self.assertEqual(preview["changes"][0]["after_times"], ["13:12"])
+            self.assertEqual(
+                len(db.load_active_source_snapshot("email_epg_qarena", "2026-09-29")),
+                1,
+            )
 
     def test_unknown_channel_rejected(self):
         with self.assertRaises(InvalidEPG):
