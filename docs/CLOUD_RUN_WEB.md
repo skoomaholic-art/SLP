@@ -80,9 +80,12 @@ storage are configured, unambiguous supplier Excel files are imported on
 arrival without approval (SPORT_GMAIL_AUTO_IMPORT=true, default).
 Missing LIVE for a previously populated day, ambiguous channel identity
 or stale overlapping files go to review instead of overwriting accepted
-snapshots. A generic SPORT+ "сетка Канала.xlsx" without a confirmed
-schema/timezone is NOT imported automatically. An Excel that explicitly
-labels each station on separate sheets is split and imported per channel;
+snapshots. A generic SPORT+ "сетка Канала.xlsx" is accepted by the parser
+only if the actual worksheet identifies SPORT PLUS QAZAQSTAN and the undated
+Kazakh week headers can be resolved against a bounded receipt date. The
+first workbook from that sender/layout remains pending for editor approval;
+later confirmed layouts still face overlap and ambiguity guards. An Excel
+that explicitly labels each station on separate sheets is split per channel;
 ambiguous or unlabelled sheets are held. The editor can preview a real
 same-channel difference (new fixtures, one-to-one kickoff changes, ambiguous
 repeated fixtures, or programmes no longer listed). The diff does not update
@@ -160,7 +163,7 @@ disabled by default. Any unverified output requires editorial validation.
 
 STILL NOT CONNECTED OR NOT PROVEN: owner OAuth authorization, real outbound
 test message, 24/7 Cloud Scheduler/OIDC job, automatic parsing of unrecognized
-Sport+ mail spreadsheets, full multi-provider end-to-end LIVE correctness,
+supplier layouts, full multi-provider end-to-end LIVE correctness,
 editorial signoff on translations/25 columns, Google Cloud deployment,
 GCS durable backup and actual user/secret provisioning. None were performed
 or represented as complete. The existing site/ is informational.
@@ -309,11 +312,41 @@ as well as `.xlsx`. A bounded `xlrd` conversion preserves original raw-file
 SHA-256 identity for idempotency, while the existing explicit LIVE filtering,
 channel-identification and no-wipe guards still apply. This enables supported
 Setanta/QSport layouts in legacy files; it does **not** establish that an
-unseen viju+ Sport `.xls` or a supplier-specific SPORT+/QAZSPORT workbook is
-understood. Those need actual layout evidence and may remain review-only.
+unseen viju+ Sport `.xls` or any OTHER supplier-specific workbook is
+understood. Only the owner-supplied QAZSPORT/SPORT+ XLSX examples now have
+bounded dedicated parsers; new sender/layout mappings remain review-only.
 
 Per-channel Excel coverage now aggregates accepted date scopes across different
 files, rather than wrongly treating a newer partial/correction file as removing
 coverage from an earlier accepted workbook. Actual current LIVE counts are
 read from accepted per-day snapshots. No Cloud Run service, OAuth account,
 GCS bucket or Scheduler job was provisioned by this code change.
+
+## Official QAZSPORT / SPORT+ supplier XLSX (2026-09-30)
+
+The existing official website collectors remain the primary sources and the
+14-channel inventory is unchanged. Additional owner-provided official workbook
+examples established two bounded parsers:
+
+- QAZSPORT XLSX: explicit channel title, dated A-column programme rows, B start,
+  C title, D provider duration. Only explicit same-row direct-broadcast text
+  qualifies. Live studio programmes, unmarked matches/replays and Barys hockey
+  on QAZSPORT are excluded. Midnight programme times are normalized to UTC+5.
+- SPORT+ Qazaqstan XLSX: explicit station title, Kazakh dated week headings,
+  B start, C title, D provider duration. Without a year, the day is assigned
+  only within a bounded window around the mail receipt or manual upload date.
+  Unsupported/ambiguous years must be reviewed, never guessed. Only explicit
+  direct sport is included, not the generic sport programme grid.
+- Both formats route through the same manual file import and Gmail exception
+  queue. Initial Gmail sender/structure recognition requires an editor's
+  approval; proven subsequent formats retain existing safe auto-import guards.
+- Import results carry independent source keys and per-channel file hashes.
+  The existing website cards display approved supplier Excel coverage as a
+  secondary source, without inventing new channel cards.
+- Real samples are NOT embedded in repository tests or Git history.
+  Offline synthetic regressions establish safe parsing behavior only; a live
+  authorized end-to-end check is still required after permanent storage and
+  Gmail OAuth have been configured.
+
+This does not enable Gmail OAuth, create a paid resource, restart the
+ephemeral Render preview, or modify the production Telegram bot.
