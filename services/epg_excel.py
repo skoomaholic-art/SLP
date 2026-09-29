@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from io import BytesIO
 from pathlib import PurePath
@@ -17,7 +17,7 @@ import re
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 from services.live_evidence import event_is_editorial_or_replay
 from storage.database import SLPDatabase
@@ -333,18 +333,77 @@ def _read_programs(sheet, channel: str, filename: str, year: int) -> tuple[list[
     return starts, seen_dates, programmes
 
 
+def _legacy_xls_to_xlsx(data: bytes) -> bytes:
+    """Read a bounded BIFF .xls safely, retaining times and channel evidence.
+
+    This is a file-format adapter, not a claim that every supplier's
+    worksheet layout is supported. Unrecognized layouts still fail closed.
+    """
+    try:
+        import xlrd
+    except ImportError as exc:
+        raise InvalidEPG("Поддержка .xls не установлена") from exc
+    try:
+        book = xlrd.open_workbook(file_contents=data, on_demand=True)
+    except (ValueError, OSError, TypeError, xlrd.XLRDError) as exc:
+        raise InvalidEPG("Повреждённый или неподдерживаемый файл .xls") from exc
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    try:
+        if book.nsheets < 1 or book.nsheets > 20:
+            raise InvalidEPG("Недопустимое количество листов в .xls")
+        cell_budget = 100_000
+        for index in range(book.nsheets):
+            old = book.sheet_by_index(index)
+            if old.nrows > MAX_SHEET_ROWS or old.ncols > 32:
+                raise InvalidEPG("Лист .xls превышает допустимый размер")
+            cell_budget -= old.nrows * old.ncols
+            if cell_budget < 0:
+                raise InvalidEPG("Файл .xls содержит слишком много ячеек")
+            sheet = workbook.create_sheet(title=old.name[:31] or f"Лист{index + 1}")
+            for row in range(old.nrows):
+                for col in range(old.ncols):
+                    cell = old.cell(row, col)
+                    if cell.ctype in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK,
+                                      xlrd.XL_CELL_ERROR):
+                        continue
+                    if cell.ctype == xlrd.XL_CELL_DATE:
+                        try:
+                            parsed = xlrd.xldate_as_datetime(cell.value, book.datemode)
+                        except (ValueError, OverflowError) as exc:
+                            raise InvalidEPG("Некорректная дата в .xls") from exc
+                        value = parsed.time() if 0 <= cell.value < 1 else parsed
+                    elif cell.ctype == xlrd.XL_CELL_BOOLEAN:
+                        value = bool(cell.value)
+                    else:
+                        value = cell.value
+                    sheet.cell(row + 1, col + 1, value)
+        result = BytesIO()
+        workbook.save(result)
+        if result.tell() > MAX_WORKBOOK_BYTES:
+            raise InvalidEPG("Преобразованный .xls превышает 6 МБ")
+        return result.getvalue()
+    finally:
+        workbook.close()
+        book.release_resources()
+
+
 def parse_epg_xlsx(
     data: bytes, filename: str, *, today: date | None = None,
     context: str = "", only_channel: str = ""
 ) -> ParsedEPG:
-    if not filename.casefold().endswith(".xlsx"):
-        raise InvalidEPG("Поддерживаются только файлы .xlsx")
-    if not data or len(data) > MAX_WORKBOOK_BYTES:
-        raise InvalidEPG("Размер Excel превышает 6 МБ или файл пуст")
     # The supplied filename is untrusted, even after successful MIME parsing.
     filename = PurePath(filename.replace("\\", "/")).name
+    extension = filename.casefold()
+    if not (extension.endswith(".xlsx") or extension.endswith(".xls")):
+        raise InvalidEPG("Поддерживаются только файлы .xlsx и .xls")
+    if not data or len(data) > MAX_WORKBOOK_BYTES:
+        raise InvalidEPG("Размер Excel превышает 6 МБ или файл пуст")
     if len(filename) > 180 or not filename.strip():
         raise InvalidEPG("Недопустимое имя вложения")
+    raw_data = data
+    if extension.endswith(".xls"):
+        data = _legacy_xls_to_xlsx(data)
     try:
         with ZipFile(BytesIO(data)) as archive:
             infos = archive.infolist()
@@ -432,7 +491,7 @@ def parse_epg_xlsx(
         for e in events
     }
     return ParsedEPG(channel=channel, filename=filename,
-                     content_hash=hashlib.sha256(channel.encode() + b"\0" + data).hexdigest(),
+                     content_hash=hashlib.sha256(channel.encode() + b"\0" + raw_data).hexdigest(),
                      scope_dates=tuple(sorted(days | {e["date"] for e in unique.values()})),
                      all_programmes=count,
                      events=tuple(unique.values()))
@@ -447,10 +506,23 @@ def parse_epg_xlsx_channels(
     Never infer a station from adjacent sheets, titles alone, or a family name.
     Ambiguous sheets must be reviewed rather than silently misattributed.
     """
-    if not filename.casefold().endswith(".xlsx"):
-        raise InvalidEPG("Поддерживаются только .xlsx")
+    if not filename.casefold().endswith((".xlsx", ".xls")):
+        raise InvalidEPG("Поддерживаются только .xlsx и .xls")
     if not data or len(data) > MAX_WORKBOOK_BYTES:
         raise InvalidEPG("Excel слишком большой или пуст")
+    # Read BIFF only once; both sheet identification and event parsing use
+    # the same normalized workbook. Identity remains the ORIGINAL file hash.
+    original_data = data
+    if filename.casefold().endswith(".xls"):
+        data = _legacy_xls_to_xlsx(data)
+    virtual_filename = filename[:-4] + ".xlsx" if filename.casefold().endswith(".xls") else filename
+    def from_original(item: ParsedEPG) -> ParsedEPG:
+        return replace(
+            item, filename=filename,
+            content_hash=hashlib.sha256(
+                item.channel.encode() + b"\0" + original_data
+            ).hexdigest(),
+        )
     try:
         with ZipFile(BytesIO(data)) as archive:
             info = archive.infolist()
@@ -467,16 +539,16 @@ def parse_epg_xlsx_channels(
         workbook.close()
     all_channels: set[str] = set().union(*identities) if identities else set()
     if len(all_channels) <= 1:
-        return (parse_epg_xlsx(data, filename, today=today, context=context),)
+        return (from_original(parse_epg_xlsx(data, virtual_filename, today=today, context=context)),)
     if not all(len(channels) == 1 for channels in identities):
         raise InvalidEPG(
             "В Excel несколько каналов, но не каждый лист однозначно размечен"
         )
     return tuple(
-        parse_epg_xlsx(
-            data, filename, today=today, context=context,
+        from_original(parse_epg_xlsx(
+            data, virtual_filename, today=today, context=context,
             only_channel=channel
-        )
+        ))
         for channel in sorted(all_channels)
     )
 
