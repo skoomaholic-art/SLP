@@ -7,6 +7,7 @@ RUN python -m pip install --no-cache-dir -r requirements.txt -r requirements-clo
 COPY agents/ ./agents/
 COPY parsers/ ./parsers/
 COPY services/ ./services/
+COPY verifiers/ ./verifiers/
 COPY storage/ ./storage/
 COPY models.py config.py cloudrun_web.py ./
 COPY cloudrun_ui/ ./cloudrun_ui/
