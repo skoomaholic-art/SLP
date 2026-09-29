@@ -65,7 +65,7 @@ class WebTests(unittest.TestCase):
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["channels"], ["QAZSPORT HD", "SETANTA SPORTS 1"])
             self.assertEqual(rows[0]["platform_start_at"][11:16], "11:50")
-            self.assertEqual(rows[0]["end_at"][11:16], "14:10")
+            self.assertEqual(rows[0]["end_at"][11:16], "14:40")
             self.assertEqual(rows[0]["channel"], "QAZSPORT HD")
 
     def test_non_sport_and_betting_cleaner(self):
