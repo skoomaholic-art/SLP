@@ -72,6 +72,16 @@ details.sources summary{cursor:pointer;font-weight:700;font-size:16px}
 .mail-status{font-size:13px;color:var(--muted)}
 .mail-icon{display:inline-block;background:#0e2732;color:var(--accent);border-radius:7px;padding:4px 7px;font-weight:750}
 .mail-notice-count{border-radius:9px;padding:3px 7px;background:#4e3628;color:#ffddb4}
+.notification-list{display:grid;gap:8px;margin-top:10px}
+.notification-item{border:1px solid var(--line);border-radius:9px;padding:9px;background:#101b29}
+.notification-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+.notification-title{font-weight:750}
+.notification-time{color:var(--muted);font-size:11px;white-space:nowrap}
+.notification-message{color:var(--muted);font-size:12px;margin-top:4px}
+.notification-item.attention{border-color:#8d6434}
+.notification-item.error,.notification-item.critical{border-color:#934444}
+.notification-count{display:inline-grid;place-items:center;min-width:22px;height:22px;padding:0 6px;
+ border-radius:99px;background:#d94b4b;color:white;font-size:11px;margin-left:6px}
 .mail-request-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0}
 .mail-request-controls select{max-width:240px}
 .edit-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:9px;margin:12px 0}
@@ -110,6 +120,10 @@ footer{margin:25px 0;color:var(--muted);font-size:12px}
 <button id="logout">Выйти</button>
 </div>
 <div id="message" class="hide notice"></div>
+<details class="card sources" id="notificationPanel">
+<summary>Уведомления <span id="notificationCounter" class="notification-count hide"></span></summary>
+<div id="notifications" class="notification-list"><p class="muted-small">Загружаю изменения...</p></div>
+</details>
 <details class="card sources" id="gmailPanel">
 <summary><span class="mail-icon">✉ Gmail</span> Почта и обновления <span id="mailCounter" class="mail-notice-count hide"></span></summary>
 <p id="mailStatus" class="mail-status">Проверяю подключение...</p>
@@ -219,6 +233,7 @@ async function load(){
   renderCalendar();renderEvents();
   const status=await api("/api/sources");
   renderSources(status);
+  await loadNotifications();
   await loadMailStatus();
   await loadTemplateStatus();
  }catch(e){msg(e.message,"error")}
@@ -293,6 +308,49 @@ async function loadTemplateStatus(){
     "Шаблон найден: "+result.name:
     "Шаблон пока не загружен. "+(result.message||"Для выгрузки потребуется утверждённый XLSX.");
  }catch(e){$("templateStatus").textContent=e.message}
+}
+
+async function loadNotifications(){
+ try{
+  const response=await api("/api/notifications?limit=80");
+  const items=response.notifications||[];
+  const actionable=items.filter(x=>["attention","warning","error","critical"].includes(x.level));
+  $("notificationCounter").textContent=String(actionable.length);
+  $("notificationCounter").classList.toggle("hide",!actionable.length);
+  const root=$("notifications");root.replaceChildren();
+  for(const item of items){
+   const card=document.createElement("article");
+   card.className="notification-item "+(item.level||"info");
+   const top=document.createElement("div");top.className="notification-top";
+   const title=document.createElement("div");title.className="notification-title";
+   title.textContent=item.title||"Изменение";
+   const when=document.createElement("div");when.className="notification-time";
+   when.textContent=(item.created_at||"").slice(0,16).replace("T"," ");
+   top.append(title,when);
+   const message=document.createElement("div");message.className="notification-message";
+   message.textContent=item.message||"";
+   card.append(top,message);
+   if(item.action==="gmail"){
+    card.style.cursor="pointer";
+    card.addEventListener("click",()=>{$("gmailPanel").open=true;$("gmailPanel").scrollIntoView({behavior:"smooth",block:"nearest"})});
+   }else if(item.action==="archive"){
+    card.style.cursor="pointer";
+    card.addEventListener("click",async()=>{
+     if(!state.archive){state.archive=true;$("archiveToggle").setAttribute("aria-pressed","true");
+      $("archiveToggle").textContent="Показать текущее расписание";
+      $("archiveExport").classList.remove("hide");$("archiveNote").classList.remove("hide");await load();}
+    });
+   }else if(item.action==="sources"){
+    card.style.cursor="pointer";
+    card.addEventListener("click",()=>{$("sourcesPanel").open=true;$("sourcesPanel").scrollIntoView({behavior:"smooth",block:"nearest"})});
+   }
+   root.append(card);
+  }
+  if(!items.length){const empty=document.createElement("p");empty.className="muted-small";
+   empty.textContent="Новых изменений и ошибок источников нет.";root.append(empty)}
+ }catch(e){
+  const root=$("notifications");root.textContent=e.message;
+ }
 }
 
 async function loadMailStatus(){
