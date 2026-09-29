@@ -26,7 +26,6 @@ HEADERS = (
 MATCH_SPORTS = frozenset({
     "футбол", "хоккей", "баскетбол", "волейбол", "гандбол",
     "регби", "футзал", "американский футбол", "водное поло",
-    "теннис", "бокс", "мма",
 })
 STAGE_RE = re.compile(
     r"^(?:квалификац(?:ия|ии)|гонка|спринт|практика\s*\d*|"
@@ -136,12 +135,11 @@ def _participants(sport: str, title: str) -> tuple[str, str]:
 
 
 def _editorial_fields(event: dict) -> tuple[str, str, str]:
-    """Derive TEAM 1/2 and SUBTITLE without leaving TEAM 1 empty.
+    """Match the owner's approved 25-column workbook conventions.
 
-    Matches use participants. Non-match events follow the user's card memo:
-    a named race/tournament/session becomes TEAM 1, while the stage moves to
-    SUBTITLE, e.g. "Гран-при Италии - Квалификация" ->
-    TEAM 1 "Гран-при Италии", SUBTITLE "Формула-1. Квалификация".
+    Team sports -> TEAM 1/TEAM 2 are participants.
+    Individual disciplines -> TEAM 1 is the competition/card identity,
+    TEAM 2 stays empty and the session/stage belongs to SUBTITLE.
     """
     sport = str(event.get("sport") or "").strip()
     title = str(event.get("title") or "").strip()
@@ -156,34 +154,38 @@ def _editorial_fields(event: dict) -> tuple[str, str, str]:
 
     team1, team2 = _participants(sport, title)
     if team1:
-        return team1, team2, (
+        return team1.upper(), team2.upper(), (
             explicit_subtitle or ". ".join(x for x in (sport, tournament) if x)
         )
 
-    # Stage after a colon: "ATP 250 Ханчжоу: Полуфинал 1".
-    if ":" in title:
-        left, right = [part.strip() for part in title.rsplit(":", 1)]
-        if left and right and STAGE_RE.fullmatch(right):
-            return left, "", explicit_subtitle or ". ".join(
-                x for x in (sport, right) if x
-            )
+    if tournament:
+        team_label = tournament
+        subtitle_prefix = sport
 
-    # Stage after the last dash: "Гран-при Италии - Квалификация".
-    pieces = re.split(r"\s+[-–]\s+", title)
-    if len(pieces) >= 2 and STAGE_RE.fullmatch(pieces[-1].strip()):
-        left = " - ".join(part.strip() for part in pieces[:-1] if part.strip())
-        stage = pieces[-1].strip()
-        if left:
-            return left, "", explicit_subtitle or ". ".join(
-                x for x in (sport, stage) if x
-            )
+        grand_prix = re.search(r"Гран-при\s+(.+)$", tournament, re.I)
+        if grand_prix and sport.casefold() in {"автоспорт", "мотоспорт"}:
+            team_label = "ГП " + grand_prix.group(1).strip()
+            if "формула" in tournament.casefold():
+                subtitle_prefix = "Формула 1"
+            elif "motogp" in tournament.casefold():
+                subtitle_prefix = "MotoGP"
 
-    # Generic individual event: TEAM 1 must still carry the event label.
-    team1 = title or tournament or sport
-    subtitle = explicit_subtitle or ". ".join(
-        x for x in (sport, tournament) if x and x != team1
-    )
-    return team1, "", subtitle
+        detail = title
+        if sport.casefold() == "велоспорт" and "." in title:
+            first, rest = [x.strip() for x in title.split(".", 1)]
+            if first and rest and first.casefold() not in tournament.casefold():
+                team_label = tournament + ". " + first
+                detail = rest
+
+        if normalize_match_text(title) == normalize_match_text(tournament):
+            detail = ""
+
+        subtitle = explicit_subtitle or ". ".join(
+            x for x in (subtitle_prefix, detail) if x
+        )
+        return team_label.upper(), "", subtitle
+
+    return title.upper(), "", explicit_subtitle or sport
 
 
 def _excel_safe(text: str) -> str:
@@ -331,7 +333,6 @@ def build_working_xlsx(workbook: Workbook, events: list[dict]) -> Workbook:
             cell = sheet.cell(n, col)
             cell.value = value
             cell._style = copy(style)
-        # The supplied OTT template uses priorities 50000, 49900, ...
-        # Preserve that granularity while making room for long schedules.
-        sheet.cell(n, 1).value = max(50000, len(original)*100) - (n-2)*100
+        # Owner's approved workbook uses 60000, 59990, 59980 ... (step 10).
+        sheet.cell(n, 1).value = 60000 - (n-2)*10
     return workbook
