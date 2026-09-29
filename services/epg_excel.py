@@ -247,6 +247,35 @@ def _year(filename: str, today: date) -> int:
     return today.year
 
 
+_FILENAME_DATE_RE = re.compile(
+    r"(?<!\\d)(\\d{1,2})[.](\\d{1,2})[.](20\\d{2}|\\d{2})(?!\\d)"
+)
+
+
+def _cross_year_filename_window(filename: str) -> tuple[date, date] | None:
+    """Trust a year boundary only when two concrete supplier dates form a week.
+
+    A single year in a filename is not evidence that an undated January sheet
+    belongs to that year. In a Dec-Jan weekly EPG, however, the explicit
+    start/end dates disambiguate separate sheets as well as rows in one sheet.
+    """
+    dates: list[date] = []
+    for day, month, year in _FILENAME_DATE_RE.findall(filename):
+        parsed_year = int(year) if len(year) == 4 else 2000 + int(year)
+        try:
+            dates.append(date(parsed_year, int(month), int(day)))
+        except ValueError:
+            return None
+        if len(dates) == 2:
+            break
+    if len(dates) != 2:
+        return None
+    start, end = dates
+    if start.year + 1 != end.year or not 0 <= (end - start).days <= 14:
+        return None
+    return start, end
+
+
 def _day_header(value: Any, year: int) -> date | None:
     if not isinstance(value, str):
         return None
@@ -352,6 +381,7 @@ def _read_programs(sheet, channel: str, filename: str, year: int) -> tuple[list[
     previous_minutes: int | None = None
     rollover = 0
     programmes = 0
+    year_window = _cross_year_filename_window(filename)
     layout = ("A", "B") if channel == CHANNELS["setanta1"] else ("B", "C")
     t_idx = 0 if layout[0] == "A" else 1
     title_idx = 1 if layout[1] == "B" else 2
@@ -361,6 +391,25 @@ def _read_programs(sheet, channel: str, filename: str, year: int) -> tuple[list[
         for candidate in (row[1], row[2]):
             header = _day_header(candidate, year)
             if header:
+                # Supplier day headers may omit the year. A weekly filename
+                # spanning Dec-Jan disambiguates even a separate January sheet.
+                # Without an explicit filename range, infer rollover only
+                # from a chronological December -> January transition here.
+                match = DAY_RE.fullmatch(candidate.strip()) if isinstance(candidate, str) else None
+                if match and match.group(3) is None:
+                    if year_window:
+                        start, end = year_window
+                        possible = [
+                            date(candidate_year, header.month, header.day)
+                            for candidate_year in (start.year, end.year)
+                            if start <= date(candidate_year, header.month, header.day) <= end
+                        ]
+                        if len(possible) == 1:
+                            header = possible[0]
+                    elif (current_day is not None and current_day.month == 12
+                          and header.month == 1 and header.year <= current_day.year):
+                        header = header.replace(year=current_day.year + 1)
+                year = header.year
                 current_day = header
                 seen_dates.add(header.isoformat())
                 previous_minutes = None
