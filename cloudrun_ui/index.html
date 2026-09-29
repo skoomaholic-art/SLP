@@ -135,6 +135,8 @@ footer{margin:25px 0;color:var(--muted);font-size:12px}
 <select id="requestCategory" aria-label="Расписание какого поставщика">
 <option value="q">QSport</option><option value="setanta">Setanta</option><option value="all">QSport + Setanta</option>
 </select>
+<label>с <input id="requestStart" type="date" aria-label="Начало периода"></label>
+<label>по <input id="requestEnd" type="date" aria-label="Конец периода"></label>
 <button type="button" id="requestConfirm">Отправить запрос</button>
 <button type="button" id="requestCancel">Отмена</button>
 </div>
@@ -188,7 +190,7 @@ footer{margin:25px 0;color:var(--muted);font-size:12px}
 "use strict";
 const $=id=>document.getElementById(id);
 const state={all:[],date:"",month:new Date(),logged:false,archive:false,
- gmailConnected:false,gmailAdmin:false,gmailSend:false,gmailTestTo:"",mailPoll:null};
+ gmailConnected:false,gmailAdmin:false,gmailSend:false,gmailMode:"test",gmailTestTo:"",mailPoll:null};
 const kzToday=()=>new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Almaty",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
 const iso=(y,m,d)=>[y,String(m).padStart(2,"0"),String(d).padStart(2,"0")].join("-");
 function msg(text,kind=""){const n=$("message");n.textContent=text;n.className="notice "+kind}
@@ -263,13 +265,14 @@ function renderSources(data){
   const labels={
    ready:"Актуальный Excel",partial:"Excel покрывает часть недели",
    awaiting_approval:"Получен по почте - ждёт подтверждения",
+   awaiting_response:"Запрос отправлен - ожидается ответ",
    outdated:"Excel устарел",missing:"Excel не получен",
    ok:"Источник обработан",warning:"Обработан с предупреждением",
    error:"Ошибка источника",not_checked:"Источник ещё не проверялся"
   };
   state.textContent=labels[item.status]||item.status;
   state.className="source-state"+(["ok","ready"].includes(item.status)?" ok":"");
-  if(item.status==="awaiting_approval")state.style.color="#ffbf69";
+  if(["awaiting_approval","awaiting_response"].includes(item.status))state.style.color="#ffbf69";
   info.append(name,state);
   if(item.coverage?.length){
    const note=document.createElement("div");note.className="muted-small";
@@ -358,6 +361,7 @@ async function loadMailStatus(){
  state.gmailConnected=status.connected;
  state.gmailSend=status.send_enabled&&status.connected;
  state.gmailTestTo=status.connected?"" : "";
+ state.gmailMode=status.mail_mode||"test";
  $("mailStatus").textContent= !status.configured?
   "Gmail OAuth пока не настроен. Необходимы секреты клиента, ключ шифрования и постоянное GCS-хранилище.":
   status.connected?(status.auto_import?
@@ -367,9 +371,10 @@ async function loadMailStatus(){
  $("gmailConnect").classList.toggle("hide",!status.configured||!state.gmailAdmin);
  $("mailCheck").classList.toggle("hide",!status.connected);
  $("request").disabled=!state.gmailSend;
- $("request").title=state.gmailSend?"Отправка только на тестовый адрес":
-  "Ожидает подключения Gmail и разрешения тестовой отправки";
- $("requestTo").textContent="Тестовый получатель: "+
+ $("request").title=state.gmailSend?
+  (state.gmailMode==="production"?"Отправка подтверждённому поставщику":"Отправка на тестовый адрес"):
+  "Ожидает подключения Gmail и разрешения отправки";
+ $("requestTo").textContent=(state.gmailMode==="production"?"Режим PRODUCTION. Получатель берётся из конфигурации: ":"Тестовый получатель: ")+
   (state.gmailTestTo||"alexandr.petrossov@fmedia.kz");
  if(status.connected)await loadMailNotices();
  if(status.connected&&!state.mailPoll){
@@ -684,7 +689,11 @@ $("templateForm").addEventListener("submit",async event=>{
 
 $("mailCheck").addEventListener("click",()=>checkGmail(false));
 $("request").addEventListener("click",()=>{
- if(!state.gmailSend){msg("Тестовая отправка пока не разрешена.","error");return}
+ if(!state.gmailSend){msg("Отправка запросов пока не настроена.","error");return}
+ const start=new Date(),end=new Date(start.getTime()+6*86400000),
+  iso=d=>d.toISOString().slice(0,10);
+ if(!$("requestStart").value)$("requestStart").value=iso(start);
+ if(!$("requestEnd").value)$("requestEnd").value=iso(end);
  $("gmailPanel").open=true;
  $("mailRequestPanel").classList.remove("hide");
  $("mailRequestPanel").scrollIntoView({block:"nearest",behavior:"smooth"});
@@ -694,14 +703,16 @@ $("requestCancel").addEventListener("click",()=>{
 });
 $("requestConfirm").addEventListener("click",async()=>{
  if(!state.gmailSend)return;
- const category=$("requestCategory").value,labels={
+ const category=$("requestCategory").value,
+  period_start=$("requestStart").value,period_end=$("requestEnd").value,labels={
   q:"QSport",setanta:"Setanta",all:"QSport + Setanta"
  };
+ if(!period_start||!period_end){msg("Укажите период расписания.","error");return}
  if(!confirm("Отправить запрос "+labels[category]+
-   " с личного Gmail на тестовый адрес alexandr.petrossov@fmedia.kz?"))return;
+   " с подключённого Gmail на выбранный период?"))return;
  $("requestConfirm").disabled=true;
  try{
-  const result=await api("/api/gmail/request","POST",{category});
+  const result=await api("/api/gmail/request","POST",{category,period_start,period_end});
   msg("Gmail подтвердил отправку: "+result.subject+" → "+result.to,"success");
   $("mailRequestPanel").classList.add("hide");
  }catch(e){msg(e.message,"error")}

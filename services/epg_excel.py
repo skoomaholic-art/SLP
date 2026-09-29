@@ -11,6 +11,7 @@ from collections import defaultdict
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from io import BytesIO
+import json
 from pathlib import PurePath
 from zipfile import ZipFile, BadZipFile
 import re
@@ -129,6 +130,62 @@ def _sheet_channels(sheet) -> set[str]:
             if isinstance(value, str) and value.strip():
                 metadata.append(value[:300])
     return _channel_matches(" ".join(metadata))
+
+
+def workbook_fingerprint(data: bytes, filename: str) -> str:
+    """Hash workbook structure without retaining programme text.
+
+    The fingerprint is deliberately based on sheet/layout signals rather than
+    filenames or weekly fixture names. It may be used only after a user or a
+    content-explicit import confirmed the corresponding channel.
+    """
+    if not data or len(data) > MAX_WORKBOOK_BYTES:
+        raise InvalidEPG("Excel слишком большой или пуст")
+    normalized = data
+    if filename.casefold().endswith(".xls"):
+        normalized = _legacy_xls_to_xlsx(data)
+    try:
+        workbook = load_workbook(BytesIO(normalized), read_only=True, data_only=True)
+    except Exception as exc:
+        raise InvalidEPG("Не удалось прочитать Excel для определения формата") from exc
+    profiles = []
+    try:
+        if len(workbook.worksheets) > 20:
+            raise InvalidEPG("Слишком много листов в Excel")
+        current_year = datetime.now(KZ).year
+        for sheet in workbook.worksheets:
+            time_counts = [0] * 8
+            date_counts = [0] * 8
+            live_counts = [0] * 8
+            text_counts = [0] * 8
+            for row in sheet.iter_rows(
+                min_row=1, max_row=min(sheet.max_row, 80),
+                min_col=1, max_col=min(sheet.max_column, 8), values_only=True,
+            ):
+                for column, value in enumerate(row[:8]):
+                    if _clock_minutes(value) is not None:
+                        time_counts[column] += 1
+                    elif isinstance(value, str) and _day_header(value, current_year):
+                        date_counts[column] += 1
+                    elif isinstance(value, str) and LIVE_RE.match(value):
+                        live_counts[column] += 1
+                    elif isinstance(value, str) and value.strip():
+                        text_counts[column] += 1
+            title_shape = re.sub(r"\d+", "#", " ".join(sheet.title.casefold().split()))
+            profiles.append({
+                "title": title_shape[:80],
+                "columns": min(sheet.max_column, 32),
+                "channel_markers": sorted(_sheet_channels(sheet)),
+                "time_columns": [i + 1 for i, count in enumerate(time_counts) if count],
+                "date_columns": [i + 1 for i, count in enumerate(date_counts) if count],
+                "live_columns": [i + 1 for i, count in enumerate(live_counts) if count],
+                "text_columns": [i + 1 for i, count in enumerate(text_counts) if count],
+            })
+    finally:
+        workbook.close()
+    canonical = json.dumps(profiles, ensure_ascii=False, sort_keys=True,
+                           separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def detect_channel(filename: str, *, workbook=None, context: str = "") -> str:
@@ -436,8 +493,10 @@ def parse_epg_xlsx(
     try:
         year = _year(filename, today)
         for sheet in workbook.worksheets:
-            if only_channel and _sheet_channels(sheet) != {only_channel}:
-                continue
+            if only_channel:
+                identities = _sheet_channels(sheet)
+                if identities and identities != {only_channel}:
+                    continue
             slot_rows, sheet_days, programmes = _read_programs(sheet, channel, filename, year)
             days.update(sheet_days)
             count += programmes
@@ -499,7 +558,7 @@ def parse_epg_xlsx(
 
 def parse_epg_xlsx_channels(
     data: bytes, filename: str, *, today: date | None = None,
-    context: str = "",
+    context: str = "", confirmed_channel: str = "",
 ) -> tuple[ParsedEPG, ...]:
     """Split an explicitly labelled multi-station workbook into channels.
 
@@ -536,6 +595,13 @@ def parse_epg_xlsx_channels(
     try:
         identities = [_sheet_channels(sheet) for sheet in workbook.worksheets]
         all_channels: set[str] = set().union(*identities) if identities else set()
+        if confirmed_channel:
+            if confirmed_channel not in CHANNELS.values():
+                raise InvalidEPG("Справочник форматов содержит неизвестный канал")
+            if all_channels and all_channels != {confirmed_channel}:
+                raise InvalidEPG(
+                    "Подтверждённый формат противоречит каналу внутри Excel"
+                )
         if len(all_channels) == 1:
             # A named Setanta/Q channel next to an unlabelled but populated
             # regional sheet is NOT proof they belong to the same channel.
@@ -556,6 +622,11 @@ def parse_epg_xlsx_channels(
                     )
     finally:
         workbook.close()
+    if confirmed_channel:
+        return (from_original(parse_epg_xlsx(
+            data, virtual_filename, today=today, context=context,
+            only_channel=confirmed_channel,
+        )),)
     if len(all_channels) <= 1:
         return (from_original(parse_epg_xlsx(data, virtual_filename, today=today, context=context)),)
     if not all(len(channels) == 1 for channels in identities):

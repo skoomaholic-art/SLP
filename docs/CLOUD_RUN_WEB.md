@@ -59,13 +59,25 @@ approved supplier email overlaps its dates; the user may inspect historical
 source versions without rolling back the active programme.
 The browser checks for new mail approximately every 15 minutes only while the
 authorized application is open; continuous background polling is NOT active.
+The server sync also persists an internal-date checkpoint with a short overlap,
+so a protected Scheduler job can process only new or recently changed messages.
+Message and attachment failures are isolated, retried a bounded number of
+times, and then quarantined without blocking the rest of the inbox.
 
-Test-only outbound request code uses exactly the owner's preapproved work
-mailbox alexandr.petrossov@fmedia.kz as recipient, after the user explicitly
-confirms the selected fixed template and SPORT_GMAIL_ENABLE_TEST_SEND=true.
-The switch defaults to false. Anton addresses are not present in the active
-recipient configuration. SPORT_MAIL_FUTURE_CC reserves the same work mailbox
-as a later copy recipient; no production recipient routing is enabled.
+Rule classification stores provider, channels, explicit period, confidence and
+evidence. A structural workbook fingerprint can be linked to a sender and
+channel only after an editor approves the first import. Later generic filenames
+such as "сетка Канала.xlsx" may reuse that confirmed mapping, while a changed
+workbook structure is held for review. Multi-channel Setanta/QSport workbooks
+are still split into separate channel notices.
+
+Outbound requests have explicit TEST and PRODUCTION modes. TEST mode uses
+exactly the owner's preapproved work mailbox alexandr.petrossov@fmedia.kz and
+requires SPORT_GMAIL_ENABLE_TEST_SEND=true. PRODUCTION mode is disabled unless
+the owner sets SPORT_MAIL_QSPORT_TO and/or SPORT_MAIL_SETANTA_TO in deployment
+configuration; arbitrary browser recipients are rejected. Each request stores
+the selected channels, period, Gmail message ID, mode and status. Duplicate
+pending requests for the same recipient, supplier and period are rejected.
 No email was sent during development.
 
 The token exchange, Gmail scope checks and send path need an authorized
@@ -155,6 +167,7 @@ SPORT_GMAIL_CLIENT_ID: OAuth 2.0 Web application Client ID from owner's GCP
 SPORT_GMAIL_CLIENT_SECRET: same OAuth 2.0 Client secret
 SPORT_GMAIL_TOKEN_KEY: stable private Fernet symmetric key (Secret Manager)
 SPORT_GMAIL_ENABLE_TEST_SEND: false (default); enable only for authorized test
+SPORT_GMAIL_MAIL_MODE: test (default); production requires configured supplier recipients
 SPORT_GMAIL_AUTO_IMPORT: true (default); set false for review-only operation
 SPORT_AI_LOCAL_ENABLED: false (default); requires a user-operated LOCAL model
 SPORT_AI_MAIL_URL: http://127.0.0.1:11434/api/generate (optional, local only)
@@ -163,6 +176,8 @@ SPORT_AI_EDITOR_URL: http://127.0.0.1:11434/api/generate (optional, local only)
 SPORT_AI_EDITOR_MODEL: actual installed model ID
 SPORT_AI_EDITOR_AUTO_TRANSLATE: false (default); opt-in for unapproved KZ drafts
 SPORT_MAIL_TEST_TO: alexandr.petrossov@fmedia.kz (fixed test recipient)
+SPORT_MAIL_QSPORT_TO: unset; confirmed QSport production recipient
+SPORT_MAIL_SETANTA_TO: unset; confirmed Setanta production recipient
 SPORT_MAIL_FUTURE_CC: same address, reserved but not used for real sends
 SPORT_SCHEDULER_SERVICE_ACCOUNT: optional email of dedicated OIDC job identity
 
@@ -196,7 +211,10 @@ To activate Gmail in the existing Google Cloud project:
 6. Authorize a one-time test request only if desired, by explicitly setting
    SPORT_GMAIL_ENABLE_TEST_SEND=true. A browser confirmation is required.
    Only alexandr.petrossov@fmedia.kz may receive that test request.
-7. Optional: create a dedicated OIDC Cloud Scheduler job that POSTs to
+7. Production sending remains disabled in TEST mode. To enable it, set
+   SPORT_GMAIL_MAIL_MODE=production and configure only confirmed supplier
+   recipients in Secret Manager. Production requests require an admin action.
+8. Optional: create a dedicated OIDC Cloud Scheduler job that POSTs to
    /api/jobs/refresh for independent website parsers plus Gmail, or
    /api/jobs/gmail-sync for Gmail only. Set OIDC audience to the full
    target URL (including path) and SPORT_SCHEDULER_SERVICE_ACCOUNT to

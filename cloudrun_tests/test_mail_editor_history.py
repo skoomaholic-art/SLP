@@ -139,6 +139,100 @@ class GmailOfflineTests(unittest.TestCase):
         self.assertFalse(next(x for x in gmail.list_notices(self.db)
                               if x["id"] == pending["id"])["has_attachment"])
 
+    def test_checkpoint_waits_for_retryable_message_then_advances(self):
+        good_id, bad_id = "abcde1234501", "abcde1234502"
+        good = {
+            "id": good_id, "internalDate": "1790812800000", "snippet": "hello",
+            "payload": {"headers": [
+                {"name": "Subject", "value": "Other"},
+                {"name": "From", "value": "person@example.test"},
+            ]},
+        }
+
+        def fake_api(url, token, payload=None):
+            if "messages?" in url:
+                return {"messages": [{"id": good_id}, {"id": bad_id}]}
+            if bad_id in url:
+                raise gmail.GmailTransportError("temporary")
+            if good_id in url:
+                return good
+            raise AssertionError(url)
+
+        with patch.object(gmail, "_access_token", return_value="token"), \
+             patch.object(gmail, "_json_api", side_effect=fake_api):
+            first = gmail.sync_inbox(self.db)
+            second = gmail.sync_inbox(self.db)
+            third = gmail.sync_inbox(self.db)
+        self.assertFalse(first["checkpoint_advanced"])
+        self.assertFalse(second["checkpoint_advanced"])
+        self.assertTrue(third["checkpoint_advanced"])
+        self.assertEqual(third["failed_messages"], 1)
+        self.assertEqual(third["quarantined_messages"], 1)
+        with self.db._connect() as conn:
+            state = conn.execute(
+                "SELECT last_internal_date_ms FROM gmail_sync_state WHERE id=1"
+            ).fetchone()
+            error = conn.execute(
+                "SELECT attempts,resolved_at FROM gmail_processing_errors "
+                "WHERE message_id=?", (bad_id,),
+            ).fetchone()
+        self.assertEqual(state["last_internal_date_ms"], 1790812800000)
+        self.assertEqual(error["attempts"], 3)
+        self.assertEqual(error["resolved_at"], "")
+        self.assertTrue(all(query.startswith("after:")
+                            for query in gmail._search_queries(self.db)))
+
+    def test_approved_structure_is_reused_for_generic_filename(self):
+        blob = sample_xlsx()
+        first_id, second_id = "abcde1234511", "abcde1234512"
+
+        def envelope(message_id, filename, attachment_id, millis):
+            return {
+                "id": message_id, "internalDate": str(millis),
+                "snippet": "актуальная сетка", "payload": {
+                    "headers": [
+                        {"name": "Subject", "value": "Расписание"},
+                        {"name": "From", "value": "Supplier <same@example.test>"},
+                    ],
+                    "parts": [{"filename": filename, "body": {
+                        "size": len(blob), "attachmentId": attachment_id,
+                    }}],
+                },
+            }
+
+        messages = {first_id: envelope(
+            first_id, "EPG Setanta Sports 2 Kazakhstan.xlsx", "first-file",
+            1790812800000,
+        )}
+
+        def fake_api(url, token, payload=None):
+            if "messages?" in url:
+                return {"messages": [{"id": key} for key in messages]}
+            if "/attachments/" in url:
+                return {"data": base64.urlsafe_b64encode(blob).decode().rstrip("=")}
+            for key, value in messages.items():
+                if key in url:
+                    return value
+            raise AssertionError(url)
+
+        with patch.dict("os.environ", {"SPORT_GMAIL_AUTO_IMPORT": "false"}), \
+             patch.object(gmail, "_access_token", return_value="token"), \
+             patch.object(gmail, "_json_api", side_effect=fake_api):
+            gmail.sync_inbox(self.db)
+            first_notice = gmail.list_notices(self.db)[0]
+            gmail.approve_notice(self.db, first_notice["id"], username="Editor")
+            messages[second_id] = envelope(
+                second_id, "сетка Канала.xlsx", "second-file", 1790816400000,
+            )
+            outcome = gmail.sync_inbox(self.db)
+        self.assertEqual(outcome["new_attachments"], 1)
+        second_notice = next(
+            row for row in gmail.list_notices(self.db)
+            if row["source_document_sha256"] and row["status"] == "pending"
+        )
+        self.assertEqual(second_notice["detected_channel"], "SETANTA SPORTS 2")
+        self.assertEqual(second_notice["channel_detection_method"], "confirmed_format")
+
     def test_forwarded_mojibake_is_repaired_before_change_detection(self):
         broken = "РќР° 6 РѕРєС‚СЏР±СЂСЏ РґРѕР±Р°РІРёР»Рё РџСЂСЏРјРѕР№ СЌС„РёСЂ РўРµРЅРЅРёСЃР°"
         repaired = gmail._repair_forwarded_text(broken)
@@ -316,6 +410,44 @@ class GmailOfflineTests(unittest.TestCase):
                         destination="alexandr.petrossov@fmedia.kz"
                     )
                 post.assert_not_called()
+
+    def test_request_records_period_and_rejects_duplicate(self):
+        sent = {"id": "abcde1234599", "threadId": "thread-1"}
+        with patch.dict("os.environ", {
+            "SPORT_GMAIL_ENABLE_TEST_SEND": "true",
+            "SPORT_GMAIL_MAIL_MODE": "test",
+            "SPORT_MAIL_TEST_TO": "alexandr.petrossov@fmedia.kz",
+        }), patch.object(gmail, "_access_token", return_value="token"), \
+             patch.object(gmail, "_json_api", return_value=sent):
+            result = gmail.send_schedule_request(
+                self.db, username="Editor", category="q",
+                period_start="2026-10-01", period_end="2026-10-07",
+                destination="alexandr.petrossov@fmedia.kz",
+            )
+            self.assertEqual(result["mode"], "test")
+            with self.assertRaisesRegex(gmail.GmailTransportError, "уже ожидает"):
+                gmail.send_schedule_request(
+                    self.db, username="Editor", category="q",
+                    period_start="2026-10-01", period_end="2026-10-07",
+                    destination="alexandr.petrossov@fmedia.kz",
+                )
+        requests = gmail.list_requests(self.db)
+        self.assertEqual(requests[0]["period_start"], "2026-10-01")
+        self.assertEqual(requests[0]["requested_channels"], [
+            "Q LEAGUE", "Q ARENA", "Q FOOTBALL",
+        ])
+
+    def test_production_request_needs_configured_supplier_recipient(self):
+        with patch.dict("os.environ", {
+            "SPORT_GMAIL_MAIL_MODE": "production",
+            "SPORT_MAIL_QSPORT_TO": "",
+            "SPORT_MAIL_SETANTA_TO": "",
+        }):
+            with self.assertRaisesRegex(gmail.GmailNotConfigured, "получатель"):
+                gmail.send_schedule_request(
+                    self.db, username="Editor", category="q",
+                    period_start="2026-10-01", period_end="2026-10-07",
+                )
 
 
 class HistoryTests(unittest.TestCase):

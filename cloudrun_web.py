@@ -505,14 +505,25 @@ def _source_status(request: Request) -> dict:
         database, first=today, last=today + timedelta(days=6)
     )
     pending_notices = gmail.list_notices(database, limit=200)
+    mail_requests = gmail.list_requests(database, limit=100)
     pending_channels = {
         item["detected_channel"] for item in pending_notices
         if item["status"] == "pending" and item["detected_channel"]
+    }
+    awaiting_response = {
+        channel
+        for item in mail_requests
+        if item["status"] in ("pending", "partial")
+        for channel in item.get("requested_channels", [])
+        if channel not in set(item.get("received_channels", []))
     }
     for item in files:
         if (item["channel"] in pending_channels
                 and item["status"] in ("missing", "outdated", "partial")):
             item["status"] = "awaiting_approval"
+        elif (item["channel"] in awaiting_response
+              and item["status"] in ("missing", "outdated", "partial")):
+            item["status"] = "awaiting_response"
     source_runs = database.latest_source_runs()
     websites = []
     for source, label in (
@@ -530,8 +541,16 @@ def _source_status(request: Request) -> dict:
         })
     return {
         "websites": websites, "excel": files,
-        "mail_request": {"enabled": bool(gmail.status(database)["send_enabled"] and gmail.status(database)["connected"]),
-                         "test_to": MAIL_TEST_TO, "future_cc": MAIL_FUTURE_CC},
+        "mail_request": {
+            "enabled": bool(gmail.status(database)["send_enabled"]
+                            and gmail.status(database)["connected"]),
+            "mode": gmail.mail_mode(), "test_to": MAIL_TEST_TO,
+            "future_cc": MAIL_FUTURE_CC,
+            "pending": sum(
+                1 for item in mail_requests
+                if item["status"] in ("pending", "partial")
+            ),
+        },
         "pending_channels": [
             x["channel"] for x in files if x["status"] == "awaiting_approval"
         ],
@@ -601,6 +620,8 @@ async def import_epg(request: Request, upload: UploadFile = File(...)):
 
 class MailRequest(BaseModel):
     category: str
+    period_start: str = ""
+    period_end: str = ""
 
 
 def require_editor(request: Request) -> dict:
@@ -920,6 +941,12 @@ def gmail_notices(request: Request):
     return {"notices": gmail.list_notices(request.app.state.database)}
 
 
+@app.get("/api/gmail/requests")
+def gmail_requests(request: Request):
+    require_editor(request)
+    return {"requests": gmail.list_requests(request.app.state.database)}
+
+
 
 @app.get("/api/gmail/notices/{notice_id}/preview")
 def preview_mail_notice(request: Request, notice_id: int):
@@ -965,13 +992,17 @@ async def dismiss_mail(request: Request, notice_id: int):
 async def send_test_request(request: Request, options: MailRequest):
     user = require_editor(request)
     origin_guard(request)
+    if gmail.mail_mode() == "production":
+        user = require_admin(request)
     if not request.app.state.backup:
         raise HTTPException(503, "Отправка требует постоянного хранилища журнала")
     async with request.app.state.collect_lock:
         try:
             result = await asyncio.to_thread(
-                gmail.test_request, request.app.state.database,
+                gmail.send_schedule_request, request.app.state.database,
                 username=user["username"], category=options.category,
+                period_start=options.period_start,
+                period_end=options.period_end,
                 destination=MAIL_TEST_TO,
             )
         except (gmail.GmailTransportError, gmail.GmailNotConfigured) as exc:

@@ -11,7 +11,7 @@ from openpyxl import Workbook
 
 from services.epg_excel import (
     InvalidEPG, import_parsed_epg, imported_epg_status, parse_epg_xlsx,
-    parse_epg_xlsx_channels, preview_parsed_epg,
+    parse_epg_xlsx_channels, preview_parsed_epg, workbook_fingerprint,
 )
 from storage.database import SLPDatabase
 from cloudrun_web import event_rows
@@ -29,6 +29,41 @@ def workbook_bytes(rows):
 
 
 class EPGExcelTests(unittest.TestCase):
+    def test_structure_fingerprint_ignores_weekly_fixture_text(self):
+        first = workbook_bytes([
+            (3, 3, "29 сентября"), (2, 4, "AST"),
+            (2, 5, .5), (3, 5, "LIVE. Футбол. Лига, А - Б"),
+        ])
+        second = workbook_bytes([
+            (3, 3, "6 октября"), (2, 4, "AST"),
+            (2, 5, .6), (3, 5, "LIVE. Теннис. Турнир, В - Г"),
+        ])
+        self.assertEqual(
+            workbook_fingerprint(first, "EPG QSport Arena.xlsx"),
+            workbook_fingerprint(second, "сетка Канала.xlsx"),
+        )
+
+    def test_confirmed_format_accepts_unlabelled_sheet_but_not_conflict(self):
+        unlabelled = workbook_bytes([
+            (3, 3, "29 сентября"), (2, 4, "AST"),
+            (2, 5, .5), (3, 5, "LIVE. Футбол. Лига, А - Б"),
+        ])
+        parsed = parse_epg_xlsx_channels(
+            unlabelled, "сетка Канала.xlsx", today=date(2026, 9, 29),
+            confirmed_channel="Q ARENA",
+        )
+        self.assertEqual(parsed[0].channel, "Q ARENA")
+        conflict = workbook_bytes([
+            (2, 1, "SETANTA SPORTS 1 KAZAKHSTAN"),
+            (2, 4, "29 сентября"), (1, 5, "AST"),
+            (1, 6, .5), (2, 6, "LIVE. Футбол. Лига, А - Б"),
+        ])
+        with self.assertRaisesRegex(InvalidEPG, "противоречит"):
+            parse_epg_xlsx_channels(
+                conflict, "сетка Канала.xlsx", today=date(2026, 9, 29),
+                confirmed_channel="Q ARENA",
+            )
+
     def test_setanta1_one_sheet_live_only_and_epg_end(self):
         data = workbook_bytes([
             (2, 4, "29 сентября"), (1, 5, "AST"),

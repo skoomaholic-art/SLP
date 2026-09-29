@@ -17,6 +17,20 @@ class AIMailTests(unittest.TestCase):
         self.assertEqual(result.category, "SCHEDULE_NEW")
         self.assertEqual(result.method, "rules")
         self.assertFalse(result.requires_review)
+        self.assertEqual(result.provider, "SETANTA")
+        self.assertEqual(result.channels, ("SETANTA SPORTS 1",))
+        self.assertGreaterEqual(result.confidence, 0.9)
+        self.assertIn("channel:SETANTA SPORTS 1", result.evidence)
+
+    def test_rules_extract_period_without_model(self):
+        result = ai.classify_mail(
+            "QSport: сетка 29.09.2026 - 05.10.2026", "supplier@example.test",
+            "Расписание Q League", ["EPG Q LEAGUE.xlsx"],
+            fallback=lambda *args: self.fail("Rules should be sufficient"),
+        )
+        self.assertEqual(result.period_start, "2026-09-29")
+        self.assertEqual(result.period_end, "2026-10-05")
+        self.assertEqual(result.channels, ("Q LEAGUE",))
 
     def test_correction_is_only_classification_not_cancellation(self):
         result = ai.classify_mail(

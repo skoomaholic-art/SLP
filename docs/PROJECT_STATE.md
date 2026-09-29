@@ -204,3 +204,25 @@ cloud resource was created. Existing Telegram production is unchanged.
   automatic ingest until real samples are checked.
 - Cloud Run deployment, GCS persistence, Gmail OAuth, Scheduler, user/secret
   provisioning and real-source correctness are still open.
+
+## 2026-09-29 continuation: Gmail automation hardening
+
+- Gmail classification now records provider, separate known channels, explicit
+  date periods, confidence and evidence. Rules remain first; the optional
+  AI_MAIL adapter is used only when rules cannot classify the message.
+- Inbox synchronization stores a bounded internal-date checkpoint with overlap.
+  Message and attachment failures are isolated, retried up to three times and
+  quarantined after the limit. A failed message cannot block other imports or
+  advance the database by silently pretending it succeeded.
+- Supported multi-channel Excel files remain split into independent notices.
+  Approved sender plus structural workbook fingerprints can safely resolve
+  later generic filenames. Contradictory workbook identities stay in review.
+- Request records now include requested/received channels, period, thread,
+  answer state and delivery mode. TEST MODE remains fixed to the owner's
+  approved mailbox. PRODUCTION MODE is code-ready but BLOCKED until confirmed
+  supplier recipients are configured. Duplicate pending requests are rejected.
+- Local verification: python -m unittest discover -s cloudrun_tests -p
+  test_*.py -v passed 56 tests. This is repository verification only.
+- Still BLOCKED: actual owner OAuth, real Gmail messages, approved Freedom
+  Media template, GCS, Scheduler/OIDC provisioning, supplier recipient
+  configuration, live Cloud Run deployment and deployed source checks.

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 from datetime import datetime, timedelta
+from email.utils import parseaddr
 import hashlib
 import json
 import os
@@ -21,7 +22,10 @@ from urllib.request import Request, urlopen
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from services.epg_excel import InvalidEPG, MAX_WORKBOOK_BYTES, detect_channel, parse_epg_xlsx, parse_epg_xlsx_channels
+from services.epg_excel import (
+    InvalidEPG, MAX_WORKBOOK_BYTES, parse_epg_xlsx_channels,
+    workbook_fingerprint,
+)
 from services import ai_pipeline
 from services.time_logic import KZ_TIMEZONE
 
@@ -46,6 +50,8 @@ CHANGE_TOKENS = re.compile(
 MAX_LIST_MESSAGES = 100
 MAX_ATTACHMENTS_PER_SYNC = 35
 MAX_BODY_BYTES = 6000
+SYNC_OVERLAP_SECONDS = 300
+MAX_MESSAGE_ATTEMPTS = 3
 
 
 class GmailNotConfigured(RuntimeError):
@@ -135,6 +141,31 @@ def init_gmail_schema(database) -> None:
                 gmail_message_id TEXT NOT NULL,
                 sent_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS gmail_sync_state (
+                id INTEGER PRIMARY KEY CHECK (id=1),
+                last_internal_date_ms INTEGER NOT NULL DEFAULT 0,
+                last_success_at TEXT NOT NULL DEFAULT '',
+                last_error TEXT NOT NULL DEFAULT ''
+            );
+            INSERT OR IGNORE INTO gmail_sync_state(id) VALUES(1);
+            CREATE TABLE IF NOT EXISTS gmail_processing_errors (
+                message_id TEXT PRIMARY KEY,
+                stage TEXT NOT NULL,
+                error TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 1,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                resolved_at TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS gmail_format_mappings (
+                fingerprint TEXT NOT NULL,
+                sender_key TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                confirmed_by TEXT NOT NULL,
+                confirmed_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                PRIMARY KEY(fingerprint, sender_key, channel)
+            );
         """)
         existing_columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(gmail_notices)")
@@ -148,6 +179,44 @@ def init_gmail_schema(database) -> None:
             if name not in existing_columns:
                 conn.execute("ALTER TABLE gmail_notices ADD COLUMN " + name +
                              " TEXT NOT NULL DEFAULT ''")
+        notice_columns = {
+            "original_sender": "TEXT NOT NULL DEFAULT ''",
+            "thread_id": "TEXT NOT NULL DEFAULT ''",
+            "provider": "TEXT NOT NULL DEFAULT ''",
+            "period_start": "TEXT NOT NULL DEFAULT ''",
+            "period_end": "TEXT NOT NULL DEFAULT ''",
+            "classification_confidence": "REAL NOT NULL DEFAULT 0",
+            "classification_evidence": "TEXT NOT NULL DEFAULT '[]'",
+            "format_fingerprint": "TEXT NOT NULL DEFAULT ''",
+            "channel_detection_method": "TEXT NOT NULL DEFAULT ''",
+            "source_document_sha256": "TEXT NOT NULL DEFAULT ''",
+        }
+        existing_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(gmail_notices)")
+        }
+        for name, definition in notice_columns.items():
+            if name not in existing_columns:
+                conn.execute(
+                    "ALTER TABLE gmail_notices ADD COLUMN " + name + " " + definition
+                )
+        request_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(gmail_requests)")
+        }
+        for name, definition in {
+            "thread_id": "TEXT NOT NULL DEFAULT ''",
+            "requested_channels_json": "TEXT NOT NULL DEFAULT '[]'",
+            "received_channels_json": "TEXT NOT NULL DEFAULT '[]'",
+            "period_start": "TEXT NOT NULL DEFAULT ''",
+            "period_end": "TEXT NOT NULL DEFAULT ''",
+            "status": "TEXT NOT NULL DEFAULT 'pending'",
+            "answered_message_id": "TEXT NOT NULL DEFAULT ''",
+            "answered_at": "TEXT NOT NULL DEFAULT ''",
+            "delivery_mode": "TEXT NOT NULL DEFAULT 'test'",
+        }.items():
+            if name not in request_columns:
+                conn.execute(
+                    "ALTER TABLE gmail_requests ADD COLUMN " + name + " " + definition
+                )
 
 
 def _json_http(url: str, *, data: dict | None = None,
@@ -257,13 +326,33 @@ def status(database) -> dict:
         unread = conn.execute(
             "SELECT count(*) FROM gmail_notices WHERE status IN ('pending','review')"
         ).fetchone()[0]
+        sync = conn.execute(
+            "SELECT last_internal_date_ms,last_success_at,last_error "
+            "FROM gmail_sync_state WHERE id=1"
+        ).fetchone()
+        errors = conn.execute(
+            "SELECT count(*) FROM gmail_processing_errors WHERE resolved_at=''"
+        ).fetchone()[0]
+        requests = conn.execute(
+            "SELECT count(*) FROM gmail_requests WHERE status IN ('pending','partial')"
+        ).fetchone()[0]
     return {
         "configured": configured(),
         "connected": bool(row),
         "email": row["email"] if row else "",
         "connected_at": row["connected_at"] if row else "",
         "pending": int(unread),
-        "send_enabled": _env("SPORT_GMAIL_ENABLE_TEST_SEND").lower() == "true",
+        "pending_requests": int(requests),
+        "processing_errors": int(errors),
+        "last_sync_at": sync["last_success_at"] if sync else "",
+        "last_sync_error": sync["last_error"] if sync else "",
+        "mail_mode": mail_mode(),
+        "send_enabled": (
+            _env("SPORT_GMAIL_ENABLE_TEST_SEND").lower() == "true"
+            if mail_mode() == "test" else bool(
+                _env("SPORT_MAIL_QSPORT_TO") or _env("SPORT_MAIL_SETANTA_TO")
+            )
+        ),
     }
 
 
@@ -353,6 +442,121 @@ def _message_text(message: dict) -> str:
     return " ".join(fragments)[:MAX_BODY_BYTES]
 
 
+def _sender_key(value: str) -> str:
+    address = parseaddr(str(value or ""))[1].casefold().strip()
+    if not address:
+        match = re.search(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", str(value or ""))
+        address = match.group(0).casefold() if match else ""
+    return address[:250]
+
+
+def _original_sender(body: str, outer_sender: str) -> str:
+    """Extract the first forwarded From/От address without guessing identity."""
+    for match in re.finditer(
+        r"(?:^|[\s>|])(?:from|от)\s*:\s*([^\n\r]{1,300})",
+        str(body or ""), re.I,
+    ):
+        address = _sender_key(match.group(1))
+        if address and address != _sender_key(outer_sender):
+            return address
+    return ""
+
+
+def _confirmed_format_channel(database, fingerprint: str,
+                              sender_key: str) -> str:
+    if not fingerprint or not sender_key:
+        return ""
+    with database._connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT channel FROM gmail_format_mappings "
+            "WHERE fingerprint=? AND sender_key=?",
+            (fingerprint, sender_key),
+        ).fetchall()
+    channels = {str(row["channel"]) for row in rows}
+    return next(iter(channels)) if len(channels) == 1 else ""
+
+
+def _remember_format_mapping(database, *, fingerprint: str, sender_key: str,
+                             channel: str, username: str) -> None:
+    if not fingerprint or not sender_key or not channel:
+        return
+    now = datetime.now(KZ_TIMEZONE).isoformat()
+    with database._connect() as conn:
+        conn.execute(
+            "INSERT INTO gmail_format_mappings("
+            "fingerprint,sender_key,channel,confirmed_by,confirmed_at,last_seen_at"
+            ") VALUES(?,?,?,?,?,?) ON CONFLICT(fingerprint,sender_key,channel) "
+            "DO UPDATE SET last_seen_at=excluded.last_seen_at",
+            (fingerprint, sender_key, channel, username, now, now),
+        )
+
+
+def _record_processing_error(database, message_id: str, stage: str,
+                             exc: Exception) -> int:
+    now = datetime.now(KZ_TIMEZONE).isoformat()
+    message = (type(exc).__name__ + ": " + str(exc))[:400]
+    with database._connect() as conn:
+        conn.execute(
+            "INSERT INTO gmail_processing_errors("
+            "message_id,stage,error,attempts,first_seen_at,last_seen_at,resolved_at"
+            ") VALUES(?,?,?,1,?,?,'') ON CONFLICT(message_id) DO UPDATE SET "
+            "stage=excluded.stage,error=excluded.error,attempts=attempts+1,"
+            "last_seen_at=excluded.last_seen_at,resolved_at=''",
+            (message_id, stage, message, now, now),
+        )
+        row = conn.execute(
+            "SELECT attempts FROM gmail_processing_errors WHERE message_id=?",
+            (message_id,),
+        ).fetchone()
+    return int(row["attempts"])
+
+
+def _resolve_processing_error(database, message_id: str) -> None:
+    with database._connect() as conn:
+        conn.execute(
+            "UPDATE gmail_processing_errors SET resolved_at=? "
+            "WHERE message_id=? AND resolved_at=''",
+            (datetime.now(KZ_TIMEZONE).isoformat(), message_id),
+        )
+
+
+def _processing_attempts(database, message_id: str) -> int:
+    with database._connect() as conn:
+        row = conn.execute(
+            "SELECT attempts FROM gmail_processing_errors "
+            "WHERE message_id=? AND resolved_at=''",
+            (message_id,),
+        ).fetchone()
+    return int(row["attempts"] or 0) if row else 0
+
+
+def _search_queries(database) -> tuple[str, ...]:
+    with database._connect() as conn:
+        row = conn.execute(
+            "SELECT last_internal_date_ms FROM gmail_sync_state WHERE id=1"
+        ).fetchone()
+    last_ms = int(row["last_internal_date_ms"] or 0) if row else 0
+    boundary = (
+        "after:" + str(max(0, last_ms // 1000 - SYNC_OVERLAP_SECONDS))
+        if last_ms else "newer_than:21d"
+    )
+    return (
+        boundary + " (filename:xlsx OR filename:xls)",
+        boundary + " (setanta OR сетанта OR qsport OR SPORTPLUS OR SPORT+)",
+    )
+
+
+def _save_sync_checkpoint(database, *, internal_date_ms: int,
+                          error: str = "") -> None:
+    with database._connect() as conn:
+        conn.execute(
+            "UPDATE gmail_sync_state SET last_internal_date_ms=max("
+            "last_internal_date_ms,?),last_success_at=?,last_error=? WHERE id=1",
+            (max(0, int(internal_date_ms)),
+             datetime.now(KZ_TIMEZONE).isoformat(), str(error)[:400]),
+        )
+
+
 def _candidate(filename: str, subject: str) -> bool:
     # Unknown attachment names can still carry a valid channel inside XLSX.
     # Never classify unrelated documents as sport on the filename alone.
@@ -362,6 +566,76 @@ def _candidate(filename: str, subject: str) -> bool:
         or bool(re.search(r"сетка|программ|epg|schedule", name, re.I))
         or bool(re.search(r"setanta|q[ _-]?sport|viju|qsport", name, re.I))
     )
+
+
+REQUEST_CHANNELS = {
+    "q": ("Q LEAGUE", "Q ARENA", "Q FOOTBALL"),
+    "setanta": (
+        "SETANTA SPORTS 1", "SETANTA SPORTS 2", "SETANTA SPORTS KZ",
+    ),
+    "all": (
+        "Q LEAGUE", "Q ARENA", "Q FOOTBALL", "SETANTA SPORTS 1",
+        "SETANTA SPORTS 2", "SETANTA SPORTS KZ",
+    ),
+}
+
+
+def _mark_request_response(database, *, thread_id: str, message_id: str,
+                           channel: str, sender_key: str) -> None:
+    if not channel:
+        return
+    with database._connect() as conn:
+        rows = conn.execute(
+            "SELECT id,recipient,thread_id,requested_channels_json,"
+            "received_channels_json "
+            "FROM gmail_requests WHERE status IN ('pending','partial') "
+            "ORDER BY id DESC"
+        ).fetchall()
+        for row in rows:
+            try:
+                requested = set(json.loads(row["requested_channels_json"] or "[]"))
+                received = set(json.loads(row["received_channels_json"] or "[]"))
+            except (TypeError, ValueError):
+                continue
+            same_thread = bool(thread_id and row["thread_id"] == thread_id)
+            same_sender = bool(
+                sender_key and sender_key == _sender_key(row["recipient"])
+            )
+            if channel not in requested or not (same_thread or same_sender):
+                continue
+            received.add(channel)
+            complete = bool(requested) and requested <= received
+            conn.execute(
+                "UPDATE gmail_requests SET received_channels_json=?,status=?,"
+                "answered_message_id=?,answered_at=? WHERE id=?",
+                (json.dumps(sorted(received), ensure_ascii=False),
+                 "fulfilled" if complete else "partial", message_id,
+                 datetime.now(KZ_TIMEZONE).isoformat(), row["id"]),
+            )
+            break
+
+
+def list_requests(database, *, limit: int = 50) -> list[dict]:
+    init_gmail_schema(database)
+    with database._connect() as conn:
+        rows = conn.execute(
+            "SELECT id,recipient,subject,category,sent_by,gmail_message_id,"
+            "thread_id,requested_channels_json,received_channels_json,"
+            "period_start,period_end,status,answered_message_id,answered_at,sent_at,"
+            "delivery_mode "
+            "FROM gmail_requests ORDER BY id DESC LIMIT ?",
+            (max(1, min(200, int(limit))),),
+        ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        for key in ("requested_channels_json", "received_channels_json"):
+            try:
+                item[key[:-5]] = json.loads(item.pop(key) or "[]")
+            except (TypeError, ValueError):
+                item[key[:-5]] = []
+        result.append(item)
+    return result
 
 
 def _auto_import_enabled() -> bool:
@@ -405,25 +679,35 @@ def list_notices(database, *, limit: int = 100) -> list[dict]:
         rows = conn.execute(
             "SELECT id,filename,subject,sender,snippet,detected_channel,"
             "status,reason,received_at,created_at,reviewed_by,reviewed_at,"
-            "classification,classification_method,"
+            "classification,classification_method,original_sender,thread_id,"
+            "provider,period_start,period_end,classification_confidence,"
+            "classification_evidence,format_fingerprint,"
+            "channel_detection_method,source_document_sha256,"
             "attachment_bytes IS NOT NULL AS has_attachment "
             "FROM gmail_notices ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
-    return [dict(x) for x in rows]
+    result = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["classification_evidence"] = json.loads(
+                item["classification_evidence"] or "[]"
+            )
+        except (TypeError, ValueError):
+            item["classification_evidence"] = []
+        result.append(item)
+    return result
 
 
 def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
     """Read Gmail read-only; auto-accept only verified unambiguous LIVE EPG."""
 
     init_gmail_schema(database)
+    scan_started_ms = int(datetime.now(KZ_TIMEZONE).timestamp() * 1000)
     token = _access_token(database)
-    searches = (
-        "newer_than:21d (filename:xlsx OR filename:xls)",
-        "newer_than:21d (setanta OR сетанта OR qsport OR SPORTPLUS OR SPORT+)",
-    )
     message_ids: dict[str, dict] = {}
-    for query in searches:
+    for query in _search_queries(database):
         response = _json_api("/users/me/messages?" + urlencode({
             "q": query, "maxResults": str(MAX_LIST_MESSAGES),
         }), token)
@@ -433,26 +717,54 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
     created = 0
     reviewed = 0
     auto_imported = 0
+    failed_messages = 0
+    retryable_errors = 0
+    quarantined_messages = 0
+    max_internal_date_ms = 0
     for item in message_ids.values():
         msg_id = str(item.get("id") or "")
         if not re.fullmatch(r"[a-f0-9]{10,32}", msg_id):
             continue
-        message = _json_api("/users/me/messages/" + msg_id + "?format=full", token)
+        if _processing_attempts(database, msg_id) >= MAX_MESSAGE_ATTEMPTS:
+            quarantined_messages += 1
+            continue
+        try:
+            message = _json_api(
+                "/users/me/messages/" + msg_id + "?format=full", token
+            )
+        except GmailTransportError as exc:
+            failed_messages += 1
+            attempts = _record_processing_error(database, msg_id, "message", exc)
+            if attempts < MAX_MESSAGE_ATTEMPTS:
+                retryable_errors += 1
+            else:
+                quarantined_messages += 1
+            continue
         headers = _headers(message)
         subject = str(headers.get("subject", ""))[:400]
         sender = str(headers.get("from", ""))[:250]
         snippet = str(message.get("snippet") or "")[:MAX_BODY_BYTES]
         body_context = _message_text(message)
+        original_sender = _original_sender(body_context, sender)
+        sender_identity = _sender_key(original_sender or sender)
+        thread_id = str(message.get("threadId") or "")[:80]
         notice_context = " ".join((snippet, body_context))[:MAX_BODY_BYTES]
         millis = str(message.get("internalDate") or "0")
         try:
-            received = datetime.fromtimestamp(int(millis) / 1000, KZ_TIMEZONE).isoformat()
+            internal_date_ms = max(0, int(millis))
+            max_internal_date_ms = max(max_internal_date_ms, internal_date_ms)
+            received = datetime.fromtimestamp(
+                internal_date_ms / 1000, KZ_TIMEZONE
+            ).isoformat()
         except (ValueError, OverflowError):
+            internal_date_ms = 0
             received = datetime.now(KZ_TIMEZONE).isoformat()
         parts = list(_walk_parts(message.get("payload", {})))
-        context = " ".join((subject, sender, snippet, body_context))
+        context = " ".join(
+            (subject, sender, original_sender, snippet, body_context)
+        )
         decision = ai_pipeline.classify_mail(
-            subject, sender, body_context or snippet,
+            subject, " ".join((sender, original_sender)), body_context or snippet,
             [str(p.get("filename") or "") for p in parts],
         )
         relevant = bool(REVIEW_TOKENS.search(context))
@@ -468,15 +780,22 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
                     "INSERT OR IGNORE INTO gmail_notices("
                     "message_id,attachment_id,filename,subject,sender,snippet,"
                     "detected_channel,status,reason,received_at,created_at,"
-                    "classification,classification_method"
-                    ") VALUES(?,'__message__','',?,?,?,'','review',?,?,?,?,?)",
-                    (msg_id, subject, sender, notice_context,
+                    "classification,classification_method,original_sender,thread_id,"
+                    "provider,period_start,period_end,classification_confidence,"
+                    "classification_evidence"
+                    ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (msg_id, "__message__", "", subject, sender, notice_context,
+                     "", "review",
                      "Письмо об изменениях без распознанного XLSX",
                      received, datetime.now(KZ_TIMEZONE).isoformat(),
-                     decision.category, decision.method),
+                     decision.category, decision.method, original_sender, thread_id,
+                     decision.provider, decision.period_start, decision.period_end,
+                     decision.confidence,
+                     json.dumps(decision.evidence, ensure_ascii=False)),
                 )
                 if cur.rowcount:
                     reviewed += 1
+        message_processing_error = False
         for part in parts:
             filename = str(part.get("filename") or "")[:200]
             attachment_id = str(part["body"].get("attachmentId") or "")
@@ -495,16 +814,37 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
             size = int(part["body"].get("size") or 0)
             if size > MAX_WORKBOOK_BYTES:
                 continue
-            attachment = _json_api(
-                "/users/me/messages/" + msg_id + "/attachments/" + attachment_id,
-                token,
-            )
-            raw = _decode(str(attachment.get("data") or ""))
+            try:
+                attachment = _json_api(
+                    "/users/me/messages/" + msg_id + "/attachments/" + attachment_id,
+                    token,
+                )
+                raw = _decode(str(attachment.get("data") or ""))
+            except (GmailTransportError, ValueError) as exc:
+                failed_messages += 1
+                message_processing_error = True
+                attempts = _record_processing_error(
+                    database, msg_id, "attachment", exc
+                )
+                if attempts < MAX_MESSAGE_ATTEMPTS:
+                    retryable_errors += 1
+                else:
+                    quarantined_messages += 1
+                continue
             if not raw or len(raw) > MAX_WORKBOOK_BYTES:
                 continue
+            source_sha256 = hashlib.sha256(raw).hexdigest()
+            try:
+                fingerprint = workbook_fingerprint(raw, filename)
+            except InvalidEPG:
+                fingerprint = ""
+            confirmed_channel = _confirmed_format_channel(
+                database, fingerprint, sender_identity
+            )
             try:
                 parsed_list = parse_epg_xlsx_channels(
                     raw, filename, context=context,
+                    confirmed_channel=confirmed_channel,
                 )
                 parse_error = ""
             except InvalidEPG as exc:
@@ -520,6 +860,18 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
                     reviewed += 1
                 else:
                     status_value, channel, reason = "pending", parsed.channel, ""
+                scope = parsed.scope_dates if parsed is not None else ()
+                period_start = scope[0] if scope else decision.period_start
+                period_end = scope[-1] if scope else decision.period_end
+                detection_method = (
+                    "confirmed_format" if confirmed_channel
+                    else "workbook_content" if parsed is not None else ""
+                )
+                evidence = list(decision.evidence)
+                if parsed is not None:
+                    evidence.append("workbook_channel:" + parsed.channel)
+                if confirmed_channel:
+                    evidence.append("confirmed_format_mapping")
                 classification = (
                     decision.category if decision.category not in ("OTHER", "AMBIGUOUS")
                     else "SCHEDULE_NEW" if parsed is not None else "AMBIGUOUS"
@@ -533,14 +885,27 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
                         "INSERT OR IGNORE INTO gmail_notices("
                         "message_id,attachment_id,filename,subject,sender,snippet,"
                         "detected_channel,status,reason,received_at,created_at,"
-                        "attachment_bytes,classification,classification_method"
-                        ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "attachment_bytes,classification,classification_method,"
+                        "original_sender,thread_id,provider,period_start,period_end,"
+                        "classification_confidence,classification_evidence,"
+                        "format_fingerprint,channel_detection_method,"
+                        "source_document_sha256"
+                        ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (msg_id, notice_attachment_id, filename, subject, sender,
                          notice_context, channel, status_value, reason, received,
                          datetime.now(KZ_TIMEZONE).isoformat(), raw,
-                         classification, decision.method),
+                         classification, decision.method, original_sender, thread_id,
+                         decision.provider, period_start, period_end,
+                         decision.confidence,
+                         json.dumps(evidence, ensure_ascii=False), fingerprint,
+                         detection_method, source_sha256),
                     )
                     notice_id = cur.lastrowid if cur.rowcount else None
+                if notice_id and parsed is not None:
+                    _mark_request_response(
+                        database, thread_id=thread_id, message_id=msg_id,
+                        channel=parsed.channel, sender_key=sender_identity,
+                    )
                 if (notice_id and parsed is not None and allow_auto_import
                         and _auto_import_enabled() and
                         classification != "SCHEDULE_CANCELLATION"):
@@ -556,18 +921,37 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
                                 (why or "Нужна проверка версии расписания", notice_id),
                             )
                 created += 1
+        if not message_processing_error:
+            _resolve_processing_error(database, msg_id)
+    checkpoint_advanced = retryable_errors == 0
+    _save_sync_checkpoint(
+        database,
+        internal_date_ms=(max(max_internal_date_ms, scan_started_ms)
+                          if checkpoint_advanced else 0),
+        error=("Есть письма для повторной обработки" if retryable_errors else ""),
+    )
     return {"new_attachments": created, "auto_imported": auto_imported,
             "requires_review": reviewed, "pending": status(database)["pending"],
             "mode": "automatic" if allow_auto_import and _auto_import_enabled()
                     else "review_only",
-            "scanned_messages": len(message_ids)}
+            "scanned_messages": len(message_ids),
+            "failed_messages": failed_messages,
+            "retryable_errors": retryable_errors,
+            "quarantined_messages": quarantined_messages,
+            "checkpoint_advanced": checkpoint_advanced}
 
 
 
 def _parse_notice(row):
+    confirmed_channel = (
+        str(row["detected_channel"] or "")
+        if str(row["channel_detection_method"] or "") == "confirmed_format"
+        else ""
+    )
     candidates = parse_epg_xlsx_channels(
         bytes(row["attachment_bytes"]), row["filename"],
         context=" ".join((row["subject"], row["sender"], row["snippet"])),
+        confirmed_channel=confirmed_channel,
     )
     station = str(row["detected_channel"] or "")
     if len(candidates) == 1 and (not station or candidates[0].channel == station):
@@ -584,7 +968,8 @@ def preview_notice(database, notice_id: int) -> dict:
     init_gmail_schema(database)
     with database._connect() as conn:
         row = conn.execute(
-            "SELECT filename,attachment_bytes,status,subject,sender,snippet,detected_channel "
+            "SELECT filename,attachment_bytes,status,subject,sender,snippet,"
+            "detected_channel,channel_detection_method "
             "FROM gmail_notices WHERE id=?",
             (notice_id,),
         ).fetchone()
@@ -602,7 +987,9 @@ def approve_notice(database, notice_id: int, *, username: str) -> dict:
     with database._connect() as conn:
         row = conn.execute(
             "SELECT id,filename,attachment_bytes,status,detected_channel,"
-            "received_at,subject,sender,snippet FROM gmail_notices WHERE id=?",
+            "received_at,subject,sender,snippet,original_sender,"
+            "format_fingerprint,channel_detection_method "
+            "FROM gmail_notices WHERE id=?",
             (notice_id,),
         ).fetchone()
         if row is None:
@@ -633,6 +1020,11 @@ def approve_notice(database, notice_id: int, *, username: str) -> dict:
             "Старый файл нельзя применять поверх него."
         )
     outcome = import_parsed_epg(database, parsed)
+    _remember_format_mapping(
+        database, fingerprint=str(row["format_fingerprint"] or ""),
+        sender_key=_sender_key(row["original_sender"] or row["sender"]),
+        channel=parsed.channel, username=username,
+    )
     with database._connect() as conn:
         conn.execute(
             "UPDATE gmail_notices SET status='imported',attachment_bytes=NULL,"
@@ -656,19 +1048,58 @@ def dismiss_notice(database, notice_id: int, *, username: str) -> None:
             raise GmailTransportError("Уведомление уже обработано или не найдено")
 
 
-def test_request(database, *, username: str, category: str, destination: str) -> dict:
-    """Send ONLY to the owner's fixed test mailbox after explicit enable.
+def mail_mode() -> str:
+    mode = _env("SPORT_GMAIL_MAIL_MODE").casefold()
+    return mode if mode in ("test", "production") else "test"
 
-    Never accept arbitrary addresses from the browser. To: Anton/Sabina is
-    intentionally NOT implemented until the owner approves production sending.
-    """
-    if _env("SPORT_GMAIL_ENABLE_TEST_SEND").lower() != "true":
-        raise GmailNotConfigured("Тестовая отправка выключена в настройках")
-    expected = _env("SPORT_MAIL_TEST_TO") or "alexandr.petrossov@fmedia.kz"
-    if not expected or expected.casefold() != "alexandr.petrossov@fmedia.kz":
-        raise GmailNotConfigured("Разрешён только подтверждённый тестовый получатель")
-    if destination != expected:
-        raise GmailTransportError("Недопустимый получатель")
+
+def _request_period(period_start: str, period_end: str) -> tuple[str, str]:
+    if not period_start or not period_end:
+        raise GmailTransportError("Нужно указать период расписания")
+    try:
+        first = datetime.strptime(period_start, "%Y-%m-%d").date()
+        last = datetime.strptime(period_end, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise GmailTransportError("Период должен быть в формате YYYY-MM-DD") from exc
+    if first > last or (last - first).days > 62:
+        raise GmailTransportError("Некорректный или слишком большой период запроса")
+    return first.isoformat(), last.isoformat()
+
+
+def send_schedule_request(database, *, username: str, category: str,
+                          period_start: str, period_end: str,
+                          destination: str = "") -> dict:
+    """Send an explicitly requested mail in configured TEST or PRODUCTION mode."""
+    if category not in REQUEST_CHANNELS:
+        raise GmailTransportError("Неверный тип запроса")
+    period_start, period_end = _request_period(period_start, period_end)
+    mode = mail_mode()
+    if mode == "test":
+        if _env("SPORT_GMAIL_ENABLE_TEST_SEND").lower() != "true":
+            raise GmailNotConfigured("Тестовая отправка выключена в настройках")
+        expected = _env("SPORT_MAIL_TEST_TO") or "alexandr.petrossov@fmedia.kz"
+        if not expected or expected.casefold() != "alexandr.petrossov@fmedia.kz":
+            raise GmailNotConfigured("Разрешён только подтверждённый тестовый получатель")
+        if destination != expected:
+            raise GmailTransportError("Недопустимый получатель")
+    else:
+        if category == "all":
+            raise GmailNotConfigured("Для PRODUCTION выберите одного поставщика")
+        expected = _env(
+            "SPORT_MAIL_QSPORT_TO" if category == "q" else "SPORT_MAIL_SETANTA_TO"
+        )
+        if not expected or "@" not in expected:
+            raise GmailNotConfigured(
+                "В PRODUCTION MODE не настроен подтверждённый получатель поставщика"
+            )
+    with database._connect() as conn:
+        duplicate = conn.execute(
+            "SELECT id FROM gmail_requests WHERE recipient=? AND category=? "
+            "AND period_start=? AND period_end=? AND status IN ('pending','partial')",
+            (expected, category, period_start, period_end),
+        ).fetchone()
+    if duplicate:
+        raise GmailTransportError("Аналогичный запрос уже ожидает ответа")
     texts = {
         "q": ("Запрос расписаний QSport",
               "Антон, добрый день!\n\nПрошу направить актуальные расписания "
@@ -686,10 +1117,10 @@ def test_request(database, *, username: str, category: str, destination: str) ->
                 "В случае изменений прошу направлять обновлённые сетки вещания."
                 "\n\nСпасибо!"),
     }
-    if category not in texts:
-        raise GmailTransportError("Неверный тип запроса")
     import email.message
     subject, body = texts[category]
+    body += (f"\n\nПериод: {period_start} - {period_end}\n"
+             "Просьба прислать только подтверждённые сетки в формате Excel.")
     msg = email.message.EmailMessage()
     msg["From"] = OWNER_ACCOUNT
     msg["To"] = expected
@@ -701,13 +1132,31 @@ def test_request(database, *, username: str, category: str, destination: str) ->
     message_id = sent.get("id", "")
     if not message_id:
         raise GmailTransportError("Gmail не подтвердил отправку")
+    thread_id = str(sent.get("threadId") or "")[:80]
+    requested_channels = REQUEST_CHANNELS[category]
     with database._connect() as conn:
         conn.execute(
             "INSERT INTO gmail_requests("
-            "recipient,subject,category,sent_by,gmail_message_id,sent_at"
-            ") VALUES(?,?,?,?,?,?)",
+            "recipient,subject,category,sent_by,gmail_message_id,sent_at,"
+            "thread_id,requested_channels_json,status,"
+            "period_start,period_end,delivery_mode"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             (expected, subject, category, username, message_id,
-             datetime.now(KZ_TIMEZONE).isoformat()),
+             datetime.now(KZ_TIMEZONE).isoformat(), thread_id,
+             json.dumps(requested_channels, ensure_ascii=False), "pending",
+             period_start, period_end, mode),
         )
     return {"sent": True, "to": expected, "subject": subject,
-            "gmail_message_id": message_id, "category": category}
+            "gmail_message_id": message_id, "thread_id": thread_id,
+            "category": category, "channels": list(requested_channels),
+            "period_start": period_start, "period_end": period_end,
+            "mode": mode}
+
+
+def test_request(database, *, username: str, category: str, destination: str) -> dict:
+    """Compatibility wrapper for the existing TEST MODE endpoint."""
+    today = datetime.now(KZ_TIMEZONE).date()
+    return send_schedule_request(
+        database, username=username, category=category, destination=destination,
+        period_start=today.isoformat(), period_end=(today + timedelta(days=6)).isoformat(),
+    )
