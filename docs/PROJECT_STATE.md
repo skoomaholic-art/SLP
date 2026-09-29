@@ -1,6 +1,6 @@
 # SLP project state
 
-Last updated: 2026-09-13 (Asia/Almaty)
+Last updated: 2026-09-29 (Asia/Almaty)
 
 This file is the durable handoff between coding-agent sessions. Update it after meaningful verified work. Do not use chat history as the authoritative project state.
 
@@ -146,3 +146,45 @@ Until production verification is completed, status is: **NOT DONE**.
 - GitHub CI must be checked for the latest candidate before merging. Production
   Railway release is independent and must NOT be triggered by web work.
   Cloud Run setup/secrets/OAuth instructions: docs/CLOUD_RUN_WEB.md.
+
+
+## 2026-09-29 SLP web continuation (PR #39)
+
+**In code, not deployed or merged:**
+
+- Replaced the user-provided red puppet icon with a white-on-black image
+  without changing its composition; favicon and web header use that image.
+  Removed the duplicate PRIME/HD overlay badges. The actual KHL PRIME and
+  KHL HD source logos remain separate, as do Setanta 1/2/KZ and Eurosport 1/2.
+  The source panel displays exactly 14 TV channels; TVGuide remains an
+  internal parser, not a fictitious 15th channel.
+- Gmail scan now uses deterministic classification first. It stores
+  SCHEDULE_NEW / SCHEDULE_UPDATE / SCHEDULE_CORRECTION /
+  SCHEDULE_CANCELLATION / SCHEDULE_RESPONSE / OTHER / AMBIGUOUS metadata.
+  The optional AI_MAIL adapter is called only for unresolved messages;
+  no external AI is contacted or configured by default.
+- Confirmed supplier XLSX is imported without individual approval only
+  when OAuth, GCS backup and SPORT_GMAIL_AUTO_IMPORT are enabled.
+  Old overlapping files, unclear channels, empty LIVE updates for a
+  previously populated day and ambiguous repeated fixtures are withheld
+  for review. No text-only cancellation is applied as a confirmed fact.
+- Explicitly identified multi-channel Excel sheets are split into
+  independent Q or Setanta source snapshots. An unlabelled sheet in a
+  multi-station workbook is NOT guessed.
+- AI_EDITOR has an optional local adapter for missing translation text,
+  with an additional explicit opt-in for KZ auto-fill. It cannot change
+  channel, LIVE or times. No local inference service is provisioned,
+  so any missing unapproved KZ strings still remain blank.
+- The original approved workbook's priority scale remains 60000,
+  59990, 59980...; existing rows and editorial overrides are retained.
+  A newer empty LIVE day cannot wipe an accepted earlier populated day.
+- Offline regressions cover real supplier shapes, auto-import,
+  multi-sheet workbooks, 14-channel inventory, no extra logo badges,
+  local-only AI boundaries and preservation of historical data.
+
+**Not complete:** Owner OAuth consent in the actual Google project, service
+secrets and account provisioning, loading the approved XLSX, setting up
+persistent GCS, authenticated 24/7 Cloud Scheduler, site deployment and
+verified live broadcasts on all 14 sources. Sport+ / Qazsport incoming XLSX
+require real format samples before claiming automatic parsing. No paid
+cloud resource was created. Existing Telegram production is unchanged.
