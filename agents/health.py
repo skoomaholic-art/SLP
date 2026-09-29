@@ -15,12 +15,11 @@ CHANNEL_SOURCES = tuple(
         (
             "Qazsport" if channel.name == "QAZSPORT HD" else
             "Sport+ Qazaqstan" if channel.name == "SPORT+ Qazaqstan" else
-            channel.tvplus_name if channel.tvplus_name else "Fight Club"
+            channel.tvplus_name
         ),
         (
             "qazsport" if channel.name == "QAZSPORT HD" else
             "sportplus" if channel.name == "SPORT+ Qazaqstan" else
-            "web_fightclub" if channel.name == "FIGHT CLUB" else
             "tvguide"
         )
     )
