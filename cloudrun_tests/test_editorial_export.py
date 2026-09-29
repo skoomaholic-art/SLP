@@ -136,13 +136,33 @@ class EditorialExportTests(unittest.TestCase):
             for r in range(2, result.active.max_row + 1)
         }
         self.assertEqual(
-            values["UFC 332: Силва - Ван - Main Card"][:2],
-            ("Силва", "Ван"),
+            values["UFC 332: Силва - Ван - Main Card"],
+            ("UFC 332", "", "ММА. UFC 332: Силва - Ван - Main Card"),
         )
         self.assertEqual(
             values["ATP 250 Ханчжоу: Полуфинал 1"],
-            ("ATP 250 Ханчжоу", "", "Теннис. Полуфинал 1"),
+            ("ATP 250 ХАНЧЖОУ", "", "Теннис. ATP 250 Ханчжоу: Полуфинал 1"),
         )
+        result.close()
+
+    def test_formula_one_matches_approved_team_and_subtitle_pattern(self):
+        workbook = self._source()
+        event = {
+            "date": "2026-10-03", "time": "13:00",
+            "title": "Квалификация", "sport": "Автоспорт",
+            "tournament": "Формула-1. Гран-при Бахрейна",
+            "channel": "SETANTA SPORTS 1",
+            "start_at": "2026-10-03T13:00:00+05:00",
+            "platform_start_at": "2026-10-03T12:50:00+05:00",
+            "end_at": "2026-10-03T15:10:00+05:00",
+        }
+        result = build_working_xlsx(workbook, [event])
+        row = next(r for r in range(2, result.active.max_row + 1)
+                   if result.active.cell(r, 6).value == "Квалификация")
+        self.assertEqual(result.active.cell(row, 20).value, "ГП БАХРЕЙНА")
+        self.assertEqual(result.active.cell(row, 22).value, "")
+        self.assertEqual(result.active.cell(row, 24).value,
+                         "Формула 1. Квалификация")
         result.close()
 
     def test_wrong_header_fails_without_losing_data(self):
