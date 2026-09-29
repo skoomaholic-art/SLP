@@ -26,7 +26,18 @@ HEADERS = (
 MATCH_SPORTS = frozenset({
     "футбол", "хоккей", "баскетбол", "волейбол", "гандбол",
     "регби", "футзал", "американский футбол", "водное поло",
+    "теннис", "бокс", "мма",
 })
+STAGE_RE = re.compile(
+    r"^(?:квалификац(?:ия|ии)|гонка|спринт|практика\s*\d*|"
+    r"свободная практика\s*\d*|финал|полуфинал(?:\s*\d+)?|"
+    r"четвертьфинал(?:\s*\d+)?|1/\d+ финала|матч\s*\d+|"
+    r"main card|prelims?|предварительн(?:ый|ые) кард)$", re.I
+)
+TRAILING_CARD_RE = re.compile(
+    r"\s+[-–]\s+(?:main card|prelims?|предварительн(?:ый|ые) кард)\s*$",
+    re.I,
+)
 SPORT_CODES = {
     "футбол": "FBL", "хоккей": "HKY", "баскетбол": "BSK",
     "волейбол": "VBL", "теннис": "TNS", "бокс": "BOX",
@@ -109,9 +120,70 @@ def _slug(value: str) -> str:
 def _participants(sport: str, title: str) -> tuple[str, str]:
     if sport.casefold() not in MATCH_SPORTS:
         return "", ""
-    # A programme such as a boxing card is not necessarily a two-team match.
-    pair = re.split(r"\s+[-–]\s+", title, maxsplit=1)
-    return (pair[0].strip(), pair[1].strip()) if len(pair) == 2 else ("", "")
+    candidate = str(title or "").strip()
+    # Combat listings often include a series prefix and a trailing card type:
+    # "UFC 332: Силва - Ван - Main Card".
+    if ":" in candidate and sport.casefold() in {"мма", "бокс"}:
+        candidate = candidate.rsplit(":", 1)[1].strip()
+    candidate = TRAILING_CARD_RE.sub("", candidate).strip()
+    pair = re.split(r"\s+[-–]\s+", candidate, maxsplit=1)
+    if len(pair) != 2:
+        return "", ""
+    left, right = pair[0].strip(), pair[1].strip()
+    if not left or not right or STAGE_RE.fullmatch(right):
+        return "", ""
+    return left, right
+
+
+def _editorial_fields(event: dict) -> tuple[str, str, str]:
+    """Derive TEAM 1/2 and SUBTITLE without leaving TEAM 1 empty.
+
+    Matches use participants. Non-match events follow the user's card memo:
+    a named race/tournament/session becomes TEAM 1, while the stage moves to
+    SUBTITLE, e.g. "Гран-при Италии - Квалификация" ->
+    TEAM 1 "Гран-при Италии", SUBTITLE "Формула-1. Квалификация".
+    """
+    sport = str(event.get("sport") or "").strip()
+    title = str(event.get("title") or "").strip()
+    tournament = str(event.get("tournament") or "").strip()
+    explicit_team1 = str(event.get("team1_ru") or "").strip()
+    explicit_team2 = str(event.get("team2_ru") or "").strip()
+    explicit_subtitle = str(event.get("subtitle_ru") or "").strip()
+    if explicit_team1:
+        return explicit_team1, explicit_team2, (
+            explicit_subtitle or ". ".join(x for x in (sport, tournament) if x)
+        )
+
+    team1, team2 = _participants(sport, title)
+    if team1:
+        return team1, team2, (
+            explicit_subtitle or ". ".join(x for x in (sport, tournament) if x)
+        )
+
+    # Stage after a colon: "ATP 250 Ханчжоу: Полуфинал 1".
+    if ":" in title:
+        left, right = [part.strip() for part in title.rsplit(":", 1)]
+        if left and right and STAGE_RE.fullmatch(right):
+            return left, "", explicit_subtitle or ". ".join(
+                x for x in (sport, right) if x
+            )
+
+    # Stage after the last dash: "Гран-при Италии - Квалификация".
+    pieces = re.split(r"\s+[-–]\s+", title)
+    if len(pieces) >= 2 and STAGE_RE.fullmatch(pieces[-1].strip()):
+        left = " - ".join(part.strip() for part in pieces[:-1] if part.strip())
+        stage = pieces[-1].strip()
+        if left:
+            return left, "", explicit_subtitle or ". ".join(
+                x for x in (sport, stage) if x
+            )
+
+    # Generic individual event: TEAM 1 must still carry the event label.
+    team1 = title or tournament or sport
+    subtitle = explicit_subtitle or ". ".join(
+        x for x in (sport, tournament) if x and x != team1
+    )
+    return team1, "", subtitle
 
 
 def _excel_safe(text: str) -> str:
@@ -144,11 +216,7 @@ def _new_row(event: dict) -> list:
     if tournament:
         suffix_hash = hashlib.sha1(tournament.encode()).hexdigest()[:6].upper()
         slug += "_" + suffix_hash
-    inferred_team1, inferred_team2 = _participants(sport, title)
-    team1 = str(event.get("team1_ru") or inferred_team1)
-    team2 = str(event.get("team2_ru") or inferred_team2)
-    subtitle = str(event.get("subtitle_ru") or
-                   ". ".join(x for x in (sport, tournament) if x))
+    team1, team2, subtitle = _editorial_fields(event)
     return [
         None, start.strftime("%d.%m"), start.strftime("%H:%M"),
         _excel_safe(sport), _excel_safe(tournament), _excel_safe(title),
@@ -192,12 +260,7 @@ def _reuse_approved_translations(rows: list[dict], event: dict) -> dict:
                 dictionary.setdefault((category, key), set()).add(translated)
 
     enriched = dict(event)
-    team1, team2 = _participants(
-        str(event.get("sport") or ""), str(event.get("title") or "")
-    )
-    original_subtitle = ". ".join(
-        str(x) for x in (event.get("sport"), event.get("tournament")) if x
-    )
+    team1, team2, original_subtitle = _editorial_fields(event)
     for ru_field, kz_field, category, fallback in (
         ("team1_ru", "team1_kz", "team", team1),
         ("team2_ru", "team2_kz", "team", team2),
