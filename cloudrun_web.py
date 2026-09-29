@@ -716,6 +716,16 @@ def gmail_notices(request: Request):
     return {"notices": gmail.list_notices(request.app.state.database)}
 
 
+
+@app.get("/api/gmail/notices/{notice_id}/preview")
+def preview_mail_notice(request: Request, notice_id: int):
+    require_editor(request)
+    try:
+        return gmail.preview_notice(request.app.state.database, notice_id)
+    except gmail.GmailTransportError as exc:
+        raise _gmail_failure(exc) from exc
+
+
 @app.post("/api/gmail/notices/{notice_id}/approve")
 async def approve_mail(request: Request, notice_id: int):
     user = require_editor(request)
