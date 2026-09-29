@@ -564,23 +564,34 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
 
 
 
+def _parse_notice(row):
+    candidates = parse_epg_xlsx_channels(
+        bytes(row["attachment_bytes"]), row["filename"],
+        context=" ".join((row["subject"], row["sender"], row["snippet"])),
+    )
+    station = str(row["detected_channel"] or "")
+    if len(candidates) == 1 and (not station or candidates[0].channel == station):
+        return candidates[0]
+    matching = [item for item in candidates if item.channel == station]
+    if len(matching) == 1:
+        return matching[0]
+    raise GmailTransportError("Не удалось подтвердить канал этого листа Excel")
+
+
 def preview_notice(database, notice_id: int) -> dict:
     """Show the editor a supplier file's precise changes before import."""
     from services.epg_excel import preview_parsed_epg
     init_gmail_schema(database)
     with database._connect() as conn:
         row = conn.execute(
-            "SELECT filename,attachment_bytes,status,subject,sender,snippet "
+            "SELECT filename,attachment_bytes,status,subject,sender,snippet,detected_channel "
             "FROM gmail_notices WHERE id=?",
             (notice_id,),
         ).fetchone()
     if not row or row["status"] != "pending" or not row["attachment_bytes"]:
         raise GmailTransportError("Файл для сравнения не найден или уже обработан")
     try:
-        parsed = parse_epg_xlsx(
-            bytes(row["attachment_bytes"]), row["filename"],
-            context=" ".join((row["subject"], row["sender"], row["snippet"])),
-        )
+        parsed = _parse_notice(row)
     except InvalidEPG as exc:
         raise GmailTransportError("Не удалось прочитать Excel: " + str(exc)) from exc
     return preview_parsed_epg(database, parsed)
@@ -600,10 +611,7 @@ def approve_notice(database, notice_id: int, *, username: str) -> dict:
             raise GmailTransportError("Вложение недоступно для импорта")
         filename, raw = row["filename"], bytes(row["attachment_bytes"])
     from services.epg_excel import import_parsed_epg, initialize_epg_imports
-    parsed = parse_epg_xlsx(
-        raw, filename,
-        context=" ".join((row["subject"], row["sender"], row["snippet"])),
-    )
+    parsed = _parse_notice(row)
     initialize_epg_imports(database)
     # If the editor already approved a more recently received supplier file
     # for any overlapping day on this SAME channel, reject this older file.
