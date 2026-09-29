@@ -164,6 +164,35 @@ class EPGExcelTests(unittest.TestCase):
             ["2026-12-31", "2027-01-01"],
         )
 
+    def test_weekly_setanta_file_ignores_stale_june_sheet(self):
+        """Real weekly KZ workbooks may contain an unrelated dated sheet."""
+        workbook = Workbook()
+        for sheet_name, header, title in (
+            ("ПН", "28 сентября", "LIVE. Теннис. Турнир: Финал"),
+            ("СР_03.06", "03 июня", "LIVE. Футбол. Лига, Команда А - Команда Б"),
+            ("ВТ_06.10", "06 октября", "LIVE. ММА. UFC 332: Финал"),
+        ):
+            sheet = workbook.active if sheet_name == "ПН" else workbook.create_sheet()
+            sheet.title = sheet_name
+            sheet["C3"] = header
+            sheet["B4"] = "AST"
+            sheet["B5"] = .5
+            sheet["C5"] = title
+        output = BytesIO()
+        workbook.save(output)
+        workbook.close()
+        parsed, = parse_epg_xlsx_channels(
+            output.getvalue(),
+            "EPG SETANTA QAZAQSTAN 29.09.26 - 05.10.26_MEDIA.xlsx",
+            today=date(2026, 9, 29),
+        )
+        self.assertEqual(
+            [event["date"] for event in parsed.events],
+            ["2026-09-28", "2026-10-06"],
+        )
+        self.assertEqual(parsed.scope_dates, ("2026-09-28", "2026-10-06"))
+        self.assertEqual(parsed.all_programmes, 2)
+
     def test_real_setanta_formula_one_and_tennis_title_shapes(self):
         data = workbook_bytes([
             (2, 4, "3 октября"), (1, 5, "AST"),
