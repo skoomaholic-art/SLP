@@ -38,8 +38,8 @@ SPORTS = {
     "волейбол": "Волейбол", "пляжный волейбол": "Пляжный волейбол",
     "теннис": "Теннис", "хоккей": "Хоккей", "мма": "ММА",
     "mma": "ММА", "бокс": "Бокс", "дзюдо": "Дзюдо",
-    "мотоспорт": "Мотоспорт", "формула 1": "Формула-1",
-    "формула-1": "Формула-1", "снукер": "Снукер",
+    "мотоспорт": "Мотоспорт", "формула 1": "Автоспорт",
+    "формула-1": "Автоспорт", "снукер": "Снукер",
     "фигурное катание": "Фигурное катание",
     "киберспорт": "Киберспорт", "гандбол": "Гандбол",
     "регби": "Регби", "велоспорт": "Велоспорт",
@@ -228,17 +228,50 @@ def _text_parts(raw: str) -> tuple[str, str, str] | None:
     title = " ".join(LIVE_RE.sub("", raw, count=1).split()).strip(" .")
     if not title:
         return None
-    prefix, dot, rest = title.partition(".")
-    sport = SPORTS.get(prefix.strip().casefold())
-    if not dot or not sport:
-        return None  # an opaque LIVE entry must be reviewed, not invented
+
+    # Supplier uses both "Теннис. ..." and "Формула 1: ...".
+    match = re.match(r"^([^.:]+)\s*[.:]\s*(.+)$", title)
+    if not match:
+        return None
+    prefix, rest = match.group(1).strip(), match.group(2).strip()
+    sport = SPORTS.get(prefix.casefold())
+    if not sport:
+        return None
+
     event = {
         "raw_title": title, "title": title,
-        "sport": sport, "tournament": rest.strip().split(",")[0].strip(),
+        "sport": sport, "tournament": rest.split(",")[0].strip(),
     }
     if event_is_editorial_or_replay(event):
         return None
-    # Extract participant pair only when it is the last complete comma clause.
+
+    # Formula 1 supplier form:
+    # "Формула 1: Гран-при Бахрейна - Квалификация"
+    if prefix.casefold() in ("формула 1", "формула-1"):
+        pieces = re.split(r"\s+[-–]\s+", rest)
+        if len(pieces) >= 2:
+            stage = pieces[-1].strip()
+            grand_prix = " - ".join(x.strip() for x in pieces[:-1] if x.strip())
+            return sport, "Формула-1. " + grand_prix, stage
+        return sport, "Формула-1. " + rest, rest
+
+    # Tennis commonly arrives as "ATP 250 Ханчжоу: Финал".
+    if sport == "Теннис" and ":" in rest:
+        tournament, stage = [x.strip() for x in rest.rsplit(":", 1)]
+        if tournament and stage:
+            return sport, tournament, stage
+
+    # Combat cards keep the numbered event as the card identity rather than
+    # pretending the two fighters are TEAM 1/TEAM 2 in the OTT template.
+    if sport in ("ММА", "Бокс") and ":" in rest:
+        card, fight = [x.strip() for x in rest.split(":", 1)]
+        series = re.match(r"^[A-Za-zА-Яа-яЁё+]+", card)
+        tournament = series.group(0) if series else card
+        display = card + ". " + re.sub(r"\s+[-–]\s+(Main Card|Prelims?)$", r". \1", fight, flags=re.I)
+        return sport, tournament, display
+
+    # Team sports usually finish with the fixture after comma-separated
+    # competition metadata.
     segments = [x.strip() for x in rest.split(",")]
     tail = segments[-1] if segments else rest
     if len(segments) >= 2 and re.search(r"\s+[-–]\s+", tail):
