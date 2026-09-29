@@ -77,6 +77,31 @@ class EPGExcelTests(unittest.TestCase):
         self.assertEqual(result.events[0]["estimated_broadcast_end"], "02:10")
         self.assertEqual(result.events[1]["date"], "2026-10-01")
 
+    def test_real_setanta_formula_one_and_tennis_title_shapes(self):
+        data = workbook_bytes([
+            (2, 4, "3 октября"), (1, 5, "AST"),
+            (1, 6, 0.50),
+            (2, 6, "LIVE. Формула 1: Гран-при Бахрейна - Квалификация"),
+            (1, 7, 0.60),
+            (2, 7, "LIVE. Теннис. ATP 250 Ханчжоу: Финал"),
+            (1, 8, 0.70), (2, 8, "Обзор матчей"),
+        ])
+        result = parse_epg_xlsx(
+            data,
+            "EPG Setanta Sports 1 Kazakhstan 29.09.26 - 05.10.26_MEDIA.xlsx",
+            today=date(2026, 9, 29),
+        )
+        self.assertEqual(len(result.events), 2)
+        f1, tennis = result.events
+        self.assertEqual(
+            (f1["sport"], f1["tournament"], f1["title"]),
+            ("Автоспорт", "Формула-1. Гран-при Бахрейна", "Квалификация"),
+        )
+        self.assertEqual(
+            (tennis["sport"], tennis["tournament"], tennis["title"]),
+            ("Теннис", "ATP 250 Ханчжоу", "Финал"),
+        )
+
     def test_missing_live_is_not_invented_and_hash_idempotent(self):
         data = workbook_bytes([
             (3, 3, "1 октября"), (2, 4, "AST"),
