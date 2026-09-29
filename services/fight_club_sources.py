@@ -48,7 +48,7 @@ def parse_fight_club_guide(html: str) -> dict[str, list[dict]]:
     by_day: dict[str, list[dict]] = defaultdict(list)
     current_day = None
     seen = set()
-    for line in lines:
+    for position, line in enumerate(lines):
         date_match = _DATE_ROW.fullmatch(line)
         if date_match:
             try:
@@ -59,10 +59,14 @@ def parse_fight_club_guide(html: str) -> dict[str, list[dict]]:
         if not current_day:
             continue
         match = _TIME_ROW.match(line)
-        if not match:
+        if match:
+            time_text = f"{int(match.group(1)):02d}:{match.group(2)}"
+            title = match.group(3).strip()
+        elif re.fullmatch(r"(?:[01]?\d|2[0-3]):[0-5]\d", line):
+            time_text = line.zfill(5)
+            title = lines[position + 1] if position + 1 < len(lines) else ""
+        else:
             continue
-        time_text = f"{int(match.group(1)):02d}:{match.group(2)}"
-        title = match.group(3).strip()
         if not title or len(title) < 5:
             continue
         key = (current_day, time_text, title.casefold())
