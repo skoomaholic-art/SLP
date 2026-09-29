@@ -21,7 +21,7 @@ from urllib.request import Request, urlopen
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from services.epg_excel import InvalidEPG, MAX_WORKBOOK_BYTES, detect_channel, parse_epg_xlsx
+from services.epg_excel import InvalidEPG, MAX_WORKBOOK_BYTES, detect_channel, parse_epg_xlsx, parse_epg_xlsx_channels
 from services import ai_pipeline
 from services.time_logic import KZ_TIMEZONE
 
@@ -443,6 +443,7 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
         sender = str(headers.get("from", ""))[:250]
         snippet = str(message.get("snippet") or "")[:MAX_BODY_BYTES]
         body_context = _message_text(message)
+        notice_context = " ".join((snippet, body_context))[:MAX_BODY_BYTES]
         millis = str(message.get("internalDate") or "0")
         try:
             received = datetime.fromtimestamp(int(millis) / 1000, KZ_TIMEZONE).isoformat()
@@ -469,7 +470,7 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
                     "detected_channel,status,reason,received_at,created_at,"
                     "classification,classification_method"
                     ") VALUES(?,'__message__','',?,?,?,'','review',?,?,?,?,?)",
-                    (msg_id, subject, sender, snippet,
+                    (msg_id, subject, sender, notice_context,
                      "Письмо об изменениях без распознанного XLSX",
                      received, datetime.now(KZ_TIMEZONE).isoformat(),
                      decision.category, decision.method),
@@ -483,8 +484,10 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
                 continue
             with database._connect() as conn:
                 if conn.execute(
-                    "SELECT 1 FROM gmail_notices WHERE message_id=? AND attachment_id=?",
-                    (msg_id, attachment_id),
+                    "SELECT 1 FROM gmail_notices WHERE message_id=? "
+                    "AND (attachment_id=? OR "
+                    "substr(attachment_id,1,length(?)+1)=?||'#')",
+                    (msg_id, attachment_id, attachment_id, attachment_id),
                 ).fetchone():
                     continue
             if created >= MAX_ATTACHMENTS_PER_SYNC:
@@ -500,51 +503,59 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
             if not raw or len(raw) > MAX_WORKBOOK_BYTES:
                 continue
             try:
-                parsed = parse_epg_xlsx(
+                parsed_list = parse_epg_xlsx_channels(
                     raw, filename, context=context,
                 )
+                parse_error = ""
             except InvalidEPG as exc:
-                # Avoid spamming the user's ordinary correspondence about
-                # non-sporting workbooks discovered by broad EPG search.
                 if not relevant:
                     continue
-                status_value, channel, reason = "review", "", str(exc)[:200]
-                reviewed += 1
-                parsed = None
-            else:
-                status_value, channel, reason = "pending", parsed.channel, ""
-            classification = (
-                decision.category if decision.category not in ("OTHER", "AMBIGUOUS")
-                else "SCHEDULE_NEW" if parsed is not None else "AMBIGUOUS"
-            )
-            with database._connect() as conn:
-                cur = conn.execute(
-                    "INSERT OR IGNORE INTO gmail_notices("
-                    "message_id,attachment_id,filename,subject,sender,snippet,"
-                    "detected_channel,status,reason,received_at,created_at,attachment_bytes,"
-                    "classification,classification_method"
-                    ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (msg_id, attachment_id, filename, subject, sender, snippet,
-                     channel, status_value, reason, received,
-                     datetime.now(KZ_TIMEZONE).isoformat(), raw,
-                     classification, decision.method),
-                )
-                notice_id = cur.lastrowid if cur.rowcount else None
-            if (notice_id and parsed is not None and allow_auto_import
-                    and _auto_import_enabled() and
-                    classification != "SCHEDULE_CANCELLATION"):
-                accepted, why = _safe_auto_apply(database, notice_id, parsed)
-                if accepted:
-                    auto_imported += 1
-                else:
+                parsed_list = (None,)
+                parse_error = str(exc)[:200]
+            for parsed in parsed_list:
+                if created >= MAX_ATTACHMENTS_PER_SYNC:
+                    break
+                if parsed is None:
+                    status_value, channel, reason = "review", "", parse_error
                     reviewed += 1
-                    with database._connect() as conn:
-                        conn.execute(
-                            "UPDATE gmail_notices SET status='review', reason=? "
-                            "WHERE id=? AND status='pending'",
-                            (why or "Нужна проверка версии расписания", notice_id),
-                        )
-            created += 1
+                else:
+                    status_value, channel, reason = "pending", parsed.channel, ""
+                classification = (
+                    decision.category if decision.category not in ("OTHER", "AMBIGUOUS")
+                    else "SCHEDULE_NEW" if parsed is not None else "AMBIGUOUS"
+                )
+                notice_attachment_id = (
+                    attachment_id + "#" + channel
+                    if len(parsed_list) > 1 and channel else attachment_id
+                )
+                with database._connect() as conn:
+                    cur = conn.execute(
+                        "INSERT OR IGNORE INTO gmail_notices("
+                        "message_id,attachment_id,filename,subject,sender,snippet,"
+                        "detected_channel,status,reason,received_at,created_at,"
+                        "attachment_bytes,classification,classification_method"
+                        ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (msg_id, notice_attachment_id, filename, subject, sender,
+                         notice_context, channel, status_value, reason, received,
+                         datetime.now(KZ_TIMEZONE).isoformat(), raw,
+                         classification, decision.method),
+                    )
+                    notice_id = cur.lastrowid if cur.rowcount else None
+                if (notice_id and parsed is not None and allow_auto_import
+                        and _auto_import_enabled() and
+                        classification != "SCHEDULE_CANCELLATION"):
+                    accepted, why = _safe_auto_apply(database, notice_id, parsed)
+                    if accepted:
+                        auto_imported += 1
+                    else:
+                        reviewed += 1
+                        with database._connect() as conn:
+                            conn.execute(
+                                "UPDATE gmail_notices SET status='review', reason=? "
+                                "WHERE id=? AND status='pending'",
+                                (why or "Нужна проверка версии расписания", notice_id),
+                            )
+                created += 1
     return {"new_attachments": created, "auto_imported": auto_imported,
             "requires_review": reviewed, "pending": status(database)["pending"],
             "mode": "automatic" if allow_auto_import and _auto_import_enabled()
