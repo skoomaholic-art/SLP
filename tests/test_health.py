@@ -19,6 +19,7 @@ class FakeDatabase:
         return {
             "qazsport": [{"channel": "Qazsport"}],
             "sportplus": [],
+            "web_fightclub": [],
             "tvguide": [
                 {"channel": "KHL HD"},
                 {"channel": "KHL HD"},
