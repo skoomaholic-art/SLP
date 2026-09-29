@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SLP - Спортивное расписание</title>
+<meta name="theme-color" content="#0e121b">
+<link rel="icon" type="image/png" sizes="64x64" href="/assets/app-icon.png">
+<link rel="apple-touch-icon" href="/assets/app-icon.png">
 <style>
 :root{color-scheme:dark;--bg:#0e121b;--card:#171e2b;--line:#2c3545;--muted:#a1aec1;--text:#eef2f7;--accent:#41dcc2;--danger:#f5a38f}
 *{box-sizing:border-box}body{background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;margin:0}
@@ -10,7 +13,13 @@ button,input,select{font:inherit}button{cursor:pointer;background:#233344;border
 button:hover{border-color:var(--accent)}button.primary{background:var(--accent);color:#0a2830;border-color:var(--accent);font-weight:700}
 button:disabled{opacity:.46;cursor:not-allowed}input,select{border:1px solid #36475d;background:#101723;color:var(--text);border-radius:8px;padding:9px;width:100%;max-width:100%}
 header{padding:19px 5%;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:16px}
-.brand{font-size:22px;font-weight:850;letter-spacing:.1em}.brand span{color:var(--accent)}.who{color:var(--muted);font-size:13px}
+.brand{display:flex;align-items:center;gap:10px;font-size:22px;font-weight:850;letter-spacing:.1em}
+.brand span{color:var(--accent)}
+.app-icon{width:46px;height:46px;object-fit:contain;background:#000;border:1px solid #334153;border-radius:12px;flex:none}
+.profile{display:flex;align-items:center;gap:9px;min-width:0}
+.who{color:var(--muted);font-size:13px;overflow-wrap:anywhere}
+.user-avatar,.avatar-fallback{height:42px;width:42px;flex:none;border-radius:50%;object-fit:cover;border:2px solid #465970;background:#1a2836}
+.avatar-fallback{display:grid;place-items:center;font-size:23px}
 main{max-width:1240px;margin:30px auto;padding:0 18px}.hide{display:none!important}
 h1{font-size:30px;margin:0 0 7px}h2{font-size:19px;margin:0 0 12px}.subtitle,.muted{color:var(--muted)}
 .actions,.filters,.calendar-tools,.item-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -33,11 +42,19 @@ h1{font-size:30px;margin:0 0 7px}h2{font-size:19px;margin:0 0 12px}.subtitle,.mu
 .event{background:#101722;border:1px solid #29384b;border-radius:11px;padding:13px}
 .item-top{justify-content:space-between;gap:8px}.name{font-weight:700;margin:8px 0 2px}.channel{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:7px;color:var(--accent);font-size:12px}
 .channel-pill{display:inline-flex;align-items:center;gap:6px;border:1px solid #3a495e;border-radius:7px;padding:4px 8px;min-height:30px;max-width:100%}
-.channel-logo{width:54px;height:22px;object-fit:contain;flex:0 0 54px}
+.logo-frame{display:inline-flex;align-items:center;justify-content:center;position:relative;
+  width:86px;height:38px;flex:0 0 86px;overflow:visible;background:#142032;
+  border-radius:8px;padding:3px}
+.channel-logo{display:block;width:100%;height:100%;object-fit:contain;object-position:center}
+.logo-variant{position:absolute;bottom:-3px;right:-3px;z-index:1;padding:1px 4px;
+  border:1px solid #607891;border-radius:4px;background:#102037;
+  font-size:10px;line-height:1.3;font-weight:800;color:#f0f6ff;letter-spacing:.02em}
+.channel-pill .logo-frame{width:67px;height:30px;flex-basis:67px;padding:2px}
+.channel-pill .logo-variant{font-size:8px;padding:0 2px;bottom:-3px;right:-2px}
 .channel-label{overflow-wrap:anywhere;word-break:normal}
 .source-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px;margin:12px 0}
-.source-item{display:flex;gap:9px;align-items:center;border:1px solid var(--line);border-radius:10px;padding:9px;min-width:0}
-.source-item .channel-logo{width:62px;flex-basis:62px}
+.source-item{display:flex;gap:11px;align-items:center;border:1px solid var(--line);border-radius:10px;padding:9px;min-width:0;min-height:68px}
+.source-item .logo-frame{width:105px;flex-basis:105px;height:47px}
 .source-text{min-width:0;overflow-wrap:anywhere}
 .source-state{color:var(--muted);font-size:12px}
 .source-state.ok{color:var(--accent)}
@@ -50,7 +67,11 @@ footer{margin:25px 0;color:var(--muted);font-size:12px}
 </style>
 </head>
 <body>
-<header><div class="brand">SLP <span>SPORT EPG</span></div><div class="who" id="who">UTC+5</div></header>
+<header>
+<div class="brand"><img class="app-icon" src="/assets/app-icon.png" width="46" height="46" alt=""><div>SLP <span>SPORT EPG</span></div></div>
+<div class="profile"><img id="userAvatar" class="user-avatar hide" src="/assets/skoomaholic.webp" alt="">
+<span id="avatarFallback" class="avatar-fallback hide"></span><div class="who" id="who">UTC+5</div></div>
+</header>
 <main>
 <section class="card hide" id="login">
 <h1>Вход в систему</h1><p class="subtitle">Спортивное расписание, календарь и архив</p>
@@ -118,10 +139,25 @@ async function api(url,method="GET",body){
   if(!res.ok)throw Object.assign(new Error(typeof data.detail==="string"?data.detail:(data.detail?.message||"Ошибка сервера "+res.status)),{status:res.status,detail:data.detail});
   return data;
 }
-function showLogin(){ $("login").classList.remove("hide");$("workspace").classList.add("hide");state.logged=false}
+function showLogin(){
+ $("login").classList.remove("hide");$("workspace").classList.add("hide");
+ $("userAvatar").classList.add("hide");$("avatarFallback").classList.add("hide");
+ $("who").textContent="UTC+5";state.logged=false
+}
 function showApp(user){
   $("login").classList.add("hide");$("workspace").classList.remove("hide");
-  $("who").textContent=(user.avatar||"")+" "+user.username+" · UTC+5";state.logged=true;load();
+  $("who").textContent=user.username+" · UTC+5";
+  const portrait=$("userAvatar"),fallback=$("avatarFallback");
+  portrait.classList.add("hide");fallback.classList.add("hide");
+  const approved={
+    "Skoomaholic":"/assets/skoomaholic.webp",
+    "Дания":"/assets/daniya.webp",
+    "Вадим":"/assets/vadim.webp"
+  };
+  const url=approved[user.username];
+  if(url&&user.avatar_url===url){portrait.src=url;portrait.classList.remove("hide")}
+  else if(user.avatar){fallback.textContent=user.avatar;fallback.classList.remove("hide")}
+  state.logged=true;load();
 }
 async function load(){
  try{
@@ -133,13 +169,23 @@ async function load(){
  }catch(e){msg(e.message,"error")}
 }
 
+function channelLogo(channel){
+ const uri=typeof CHANNEL_LOGOS==="object"&&CHANNEL_LOGOS[channel];
+ if(!uri)return null;
+ const frame=document.createElement("span");frame.className="logo-frame";
+ const img=document.createElement("img");img.className="channel-logo";
+ img.src=uri;img.alt="";img.setAttribute("aria-hidden","true");img.loading="lazy";
+ frame.append(img);
+ if(channel==="KHL PRIME"||channel==="KHL HD"){
+  const label=document.createElement("span");label.className="logo-variant";
+  label.textContent=channel==="KHL PRIME"?"PRIME":"HD";
+  frame.append(label);
+ }
+ return frame;
+}
 function channelPill(channel){
  const chip=document.createElement("span");chip.className="channel-pill";
- const uri=typeof CHANNEL_LOGOS==="object"&&CHANNEL_LOGOS[channel];
- if(uri){
-  const img=document.createElement("img");img.className="channel-logo";img.src=uri;
-  img.alt="";img.setAttribute("aria-hidden","true");chip.append(img);
- }
+ const logo=channelLogo(channel);if(logo)chip.append(logo);
  const name=document.createElement("span");name.className="channel-label";name.textContent=channel;
  chip.append(name);return chip;
 }
@@ -148,8 +194,8 @@ function renderSources(data){
  const grid=document.createElement("div");grid.className="source-grid";
  for(const item of [...(data.websites||[]),...(data.excel||[])]){
   const row=document.createElement("div");row.className="source-item";
-  const icon=typeof CHANNEL_LOGOS==="object"&&CHANNEL_LOGOS[item.channel];
-  if(icon){const img=document.createElement("img");img.className="channel-logo";img.src=icon;img.alt="";row.append(img)}
+  const logo=channelLogo(item.channel);
+  if(logo)row.append(logo);
   const info=document.createElement("div");info.className="source-text";
   const name=document.createElement("strong");name.textContent=item.channel;
   const state=document.createElement("div");
