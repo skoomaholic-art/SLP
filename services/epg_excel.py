@@ -98,14 +98,17 @@ def _channel_matches(text: str) -> set[str]:
         )),
         (CHANNELS["qleague"], (
             r"\bq[\s_-]*league\b",
+            r"\bq\s*sport[\s_-]*league\b",
             r"\bq\s*лига\b",
         )),
         (CHANNELS["qarena"], (
             r"\bq[\s_-]*arena\b",
+            r"\bq\s*sport[\s_-]*arena\b",
             r"\bq\s*арена\b",
         )),
         (CHANNELS["qfootball"], (
             r"\bq[\s_-]*football\b",
+            r"\bq\s*sport[\s_-]*football\b",
             r"\bq\s*футбол\b",
         )),
     )
