@@ -175,8 +175,9 @@ Until production verification is completed, status is: **NOT DONE**.
   with an additional explicit opt-in for KZ auto-fill. It cannot change
   channel, LIVE or times. No local inference service is provisioned,
   so any missing unapproved KZ strings still remain blank.
-- The original approved workbook's priority scale remains 60000,
-  59990, 59980...; existing rows and editorial overrides are retained.
+- Export now derives its priority scale from the approved workbook rather
+  than assuming 60000, 59990, 59980. The owner's archived example uses
+  50000, 49900, 49800. Existing rows and editorial overrides are retained.
   A newer empty LIVE day cannot wipe an accepted earlier populated day.
 - Offline regressions cover real supplier shapes, auto-import,
   multi-sheet workbooks, 14-channel inventory, no extra logo badges,
@@ -226,3 +227,28 @@ cloud resource was created. Existing Telegram production is unchanged.
 - Still BLOCKED: actual owner OAuth, real Gmail messages, approved Freedom
   Media template, GCS, Scheduler/OIDC provisioning, supplier recipient
   configuration, live Cloud Run deployment and deployed source checks.
+
+## 2026-09-30 web configuration without choosing a host
+
+- Render Free hosts an isolated preview of PR #39 at https://slp-web.onrender.com.
+  It has working named-user sign-in, but its local SQLite disk is ephemeral,
+  and auto-deploy is disabled. Do not use that preview as the only data store.
+- Supplier Excel importer now resolves Dec-Jan weekly ranges from concrete
+  start/end dates in the supplied filename, including independent worksheets;
+  a single chronological sheet can infer December-to-January rollover.
+  Synthetic regressions cover both cases; no supplier mail was read.
+- Approved 25-column template upload now also supports an explicitly configured
+  absolute SPORT_TEMPLATE_PATH on any host, using validated atomic replacement.
+  On a temporary filesystem, the UI must warn that the workbook can be lost.
+  This feature does not create or mount permanent storage.
+- A real owner-provided sample named Sport_generation_Final_FIXED_FORMAT.xlsx
+  was inspected outside GitHub; its priority column starts 50000, 49900,
+  49800. The web export now derives the descending priority step from the
+  uploaded workbook instead of imposing an earlier 60000/10 convention.
+  The private workbook itself has not been committed or uploaded to Render.
+- Code CI and web regression checks succeeded for the code through commit
+  a8c9f9677d10c08623717939267889663038535f.
+  Recheck the latest branch head's CI after later export changes.
+- Gmail OAuth, vendor auto-import, provider mail contacts, persistent storage,
+  24/7 scheduling, exact approved workbook upload and full live-source
+  validation are NOT finished. Production Telegram release is untouched.
