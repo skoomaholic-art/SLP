@@ -10,6 +10,7 @@ on:
       - "cloudrun_ui/**"
       - "cloudrun_tests/**"
       - "services/epg_excel.py"
+      - "services/official_supplier_excel.py"
       - "services/editorial_export.py"
       - "services/editorial_store.py"
       - "services/gmail_integration.py"
@@ -32,7 +33,7 @@ jobs:
       - name: Install web and parser dependencies
         run: python -m pip install -r requirements.txt -r requirements-cloudrun.txt
       - name: Compile web entrypoint
-        run: python -m compileall -q cloudrun_web.py services/epg_excel.py services/editorial_export.py services/editorial_store.py services/gmail_integration.py services/vsetv_sources.py storage/database.py cloudrun_tests scripts/cloudrun_users.py
+        run: python -m compileall -q cloudrun_web.py services/epg_excel.py services/official_supplier_excel.py services/editorial_export.py services/editorial_store.py services/gmail_integration.py services/vsetv_sources.py storage/database.py cloudrun_tests scripts/cloudrun_users.py
       - name: Web-only regression
         run: PYTHONPATH=. python -m unittest discover -s cloudrun_tests -p "test_*.py" -v
       - name: Check browser script syntax and separate logo registry
