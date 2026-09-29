@@ -186,6 +186,10 @@ def _editorial_fields(event: dict) -> tuple[str, str, str]:
                     team_label = card or tournament
                     remainder = re.sub(r"\bMain Card\b", "Основной кард", remainder, flags=re.I)
                     remainder = re.sub(r"\bPrelims?\b", "Предварительный кард", remainder, flags=re.I)
+                    remainder = re.sub(
+                        r"\s+[-–]\s+(Основной кард|Предварительный кард)$",
+                        r". \1", remainder, flags=re.I
+                    )
                     subtitle = explicit_subtitle or ". ".join(
                         x for x in (sport, remainder) if x
                     )
