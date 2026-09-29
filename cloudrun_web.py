@@ -1059,15 +1059,28 @@ async def collect(request: Request, options: CollectOptions):
 
 
 
+def _local_template_path() -> Path | None:
+    """An explicitly configured path, independent of the eventual web host."""
+    raw = os.getenv("SPORT_TEMPLATE_PATH", "").strip()
+    if not raw:
+        return None
+    target = Path(raw).expanduser()
+    if not target.is_absolute() or target.suffix.casefold() != ".xlsx":
+        raise HTTPException(503, "SPORT_TEMPLATE_PATH должен быть абсолютным путём к XLSX")
+    return target
+
+
 @app.get("/api/template/status")
 def template_status(request: Request):
     current_user(request)
-    local = os.getenv("SPORT_TEMPLATE_PATH", "")
-    if local and Path(local).is_file():
-        return {"available": True, "location": "local", "name": Path(local).name}
+    local = _local_template_path()
+    if local and local.is_file():
+        return {"available": True, "location": "local", "name": local.name,
+                "message": "Постоянство локального файла зависит от диска хостинга"}
     if not GCS_BUCKET:
         return {"available": False, "location": "not_configured",
-                "message": "Нужно подключить GCS"}
+                "message": ("Настройте SPORT_TEMPLATE_PATH или GCS"
+                            if not local else "По SPORT_TEMPLATE_PATH файл пока не найден")}
     try:
         from google.cloud import storage
         blob = storage.Client().bucket(GCS_BUCKET).blob(TEMPLATE_OBJECT)
@@ -1082,8 +1095,9 @@ def template_status(request: Request):
 async def upload_template(request: Request, upload: UploadFile = File(...)):
     require_admin(request)
     origin_guard(request)
-    if not GCS_BUCKET or not request.app.state.backup:
-        raise HTTPException(503, "Загрузка шаблона требует постоянного GCS-хранилища")
+    local_target = _local_template_path()
+    if not local_target and (not GCS_BUCKET or not request.app.state.backup):
+        raise HTTPException(503, "Настройте SPORT_TEMPLATE_PATH или постоянный GCS")
     if not str(upload.filename or "").casefold().endswith(".xlsx"):
         raise HTTPException(422, "Требуется XLSX-шаблон")
     try:
@@ -1107,8 +1121,35 @@ async def upload_template(request: Request, upload: UploadFile = File(...)):
             workbook.close()
     except (BadZipFile, ValueError, InvalidTemplate) as exc:
         raise HTTPException(422, "Неверный шаблон: " + str(exc)) from exc
-    # A replacement is explicit and generation-checked, so simultaneous
-    # uploads cannot silently overwrite an approved workbook.
+    if local_target:
+        # Explicitly configured filesystem storage works with any host.
+        # Never claim that a filesystem is durable merely because it exists:
+        # the hosting operator must mount persistent storage separately.
+        temporary = None
+        try:
+            async with request.app.state.collect_lock:
+                local_target.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(
+                    mode="wb", dir=local_target.parent, suffix=".xlsx", delete=False,
+                ) as saved:
+                    temporary = Path(saved.name)
+                    saved.write(raw)
+                    saved.flush()
+                    os.fsync(saved.fileno())
+                os.replace(temporary, local_target)
+        except OSError as exc:
+            raise HTTPException(
+                503, "Не удалось сохранить локальный шаблон: " + type(exc).__name__
+            ) from exc
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+        return {
+            "uploaded": True, "name": str(upload.filename),
+            "bytes": len(raw), "destination": "local",
+            "warning": "Без постоянного тома шаблон исчезнет при перезапуске сервера",
+        }
+    # GCS uses a generation precondition against concurrent replacements.
     try:
         from google.cloud import storage
         from google.api_core.exceptions import NotFound, PreconditionFailed
@@ -1132,8 +1173,8 @@ async def upload_template(request: Request, upload: UploadFile = File(...)):
 
 
 def load_template():
-    local = os.getenv("SPORT_TEMPLATE_PATH", "")
-    if local and Path(local).is_file():
+    local = _local_template_path()
+    if local and local.is_file():
         return load_workbook(local)
     if GCS_BUCKET:
         try:
