@@ -31,6 +31,7 @@ from agents.runtime_orchestrator import RuntimeParserOrchestrator
 from services.live_evidence import event_is_live_broadcast, event_is_schedule_candidate
 from services.editorial_export import InvalidTemplate, build_working_xlsx
 from services import gmail_integration as gmail
+from services import editorial_store as editorial
 from services.epg_excel import (MAX_WORKBOOK_BYTES, InvalidEPG, import_parsed_epg,
                                imported_epg_status, initialize_epg_imports,
                                parse_epg_xlsx)
@@ -184,10 +185,20 @@ def event_rows(
             (int(include_inactive), first, first, last, last),
         ).fetchall()
     now = datetime.now(KZ_TIMEZONE)
+    overrides = editorial.get_editorial(
+        database, [row["storage_id"] for row in rows]
+    )
     exact: dict[tuple, dict] = {}
     for row in rows:
         try:
             raw = json.loads(row["payload_json"])
+            patch = overrides.get(row["storage_id"], {})
+            raw.update({key: value for key, value in patch.items()
+                        if key != "end_time"})
+            if patch.get("end_time"):
+                raw["estimated_broadcast_end_date"] = raw["date"]
+                raw["estimated_broadcast_end"] = patch["end_time"]
+                raw["end_estimation_method"] = "explicit"
             if not (event_is_live_broadcast(raw)
                     and event_is_schedule_candidate(raw)
                     and is_user_event(raw)):
@@ -220,6 +231,13 @@ def event_rows(
                 ), "end_known": known_end, "active": bool(row["active"]),
                 "first_seen_at": row["first_seen_at"],
                 "last_seen_at": row["last_seen_at"],
+                "editorial": patch,
+                "team1_ru": raw.get("team1_ru", ""),
+                "team1_kz": raw.get("team1_kz", ""),
+                "team2_ru": raw.get("team2_ru", ""),
+                "team2_kz": raw.get("team2_kz", ""),
+                "subtitle_ru": raw.get("subtitle_ru", ""),
+                "subtitle_kz": raw.get("subtitle_kz", ""),
                 "status": "past" if end < now else (
                     "live" if start <= now else "upcoming"
                 ),
@@ -278,7 +296,8 @@ def event_rows(
         entry["channels"] = channels
         entry["archived"] = not any(e["active"] for e in group)
         entry["broadcasts"] = [{
-            "channel": e["channel"], "start_at": e["start"].isoformat(),
+            "channel": e["channel"], "source_record_id": e["source_record_id"],
+            "start_at": e["start"].isoformat(),
             "end_at": e["end"].isoformat(), "source": e["source"],
             "active": e["active"], "first_seen_at": e["first_seen_at"],
             "last_seen_at": e["last_seen_at"],
@@ -344,6 +363,7 @@ async def lifespan(application: FastAPI):
     database = SLPDatabase(DB_PATH)
     initialize_epg_imports(database)
     gmail.init_gmail_schema(database)
+    editorial.init_editorial(database)
     application.state.database = database
     application.state.schedule = ScheduleService(
         RuntimeParserOrchestrator(database=database)
@@ -558,6 +578,44 @@ async def _save_state(request: Request) -> None:
         except Exception as exc:
             raise HTTPException(503, "Данные изменены, но резервное "
                                 "копирование не удалось: " + type(exc).__name__) from exc
+
+
+
+class EditorialChange(BaseModel):
+    values: dict[str, str]
+
+
+@app.patch("/api/editorial/{storage_id}")
+async def save_editorial_change(request: Request, storage_id: str,
+                                change: EditorialChange):
+    user = require_editor(request)
+    origin_guard(request)
+    async with request.app.state.collect_lock:
+        try:
+            result = editorial.apply_edit(
+                request.app.state.database, storage_id=storage_id,
+                values=change.values, username=user["username"],
+            )
+        except editorial.EditorialError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        await _save_state(request)
+    return result
+
+
+@app.get("/api/editorial/{storage_id}/history")
+def editorial_history(request: Request, storage_id: str):
+    current_user(request)
+    return {"history": editorial.edit_history(
+        request.app.state.database, storage_id=storage_id
+    )}
+
+
+@app.get("/api/archive/revisions")
+def archive_revisions(request: Request, storage_id: str = ""):
+    current_user(request)
+    if storage_id and not re.fullmatch(r"[a-f0-9]{24}", storage_id):
+        raise HTTPException(400, "Неверный идентификатор")
+    return {"revisions": request.app.state.database.event_revisions(storage_id)}
 
 
 @app.get("/api/gmail/status")
