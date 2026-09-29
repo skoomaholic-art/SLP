@@ -535,9 +535,27 @@ def parse_epg_xlsx_channels(
         raise InvalidEPG("Повреждённый XLSX") from exc
     try:
         identities = [_sheet_channels(sheet) for sheet in workbook.worksheets]
+        all_channels: set[str] = set().union(*identities) if identities else set()
+        if len(all_channels) == 1:
+            # A named Setanta/Q channel next to an unlabelled but populated
+            # regional sheet is NOT proof they belong to the same channel.
+            # The former implementation imported both sheets under one
+            # station, silently misattributing the second schedule.
+            known_channel = next(iter(all_channels))
+            year = _year(filename, today or datetime.now(KZ).date())
+            for sheet, identity in zip(workbook.worksheets, identities):
+                if identity:
+                    continue
+                _, _, programmes = _read_programs(
+                    sheet, known_channel, filename, year,
+                )
+                if programmes:
+                    raise InvalidEPG(
+                        "В книге есть лист с программой без указания канала: "
+                        + str(sheet.title)[:70] + ". Нужна проверка."
+                    )
     finally:
         workbook.close()
-    all_channels: set[str] = set().union(*identities) if identities else set()
     if len(all_channels) <= 1:
         return (from_original(parse_epg_xlsx(data, virtual_filename, today=today, context=context)),)
     if not all(len(channels) == 1 for channels in identities):
