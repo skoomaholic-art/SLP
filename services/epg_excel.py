@@ -577,31 +577,40 @@ def initialize_epg_imports(database: SLPDatabase) -> None:
 
 
 def imported_epg_status(database: SLPDatabase, *, first: date, last: date) -> list[dict]:
-    """Distinguish unavailable, old, and partially covered Excel sources."""
+    """Report real per-day coverage across all accepted supplier files.
+
+    A newer partial/correction file does not invalidate the remaining days
+    from a previous accepted file. Per-channel provenance stays intact.
+    """
     initialize_epg_imports(database)
     result = []
     with database._connect() as conn:
         for channel in CHANNELS.values():
-            row = conn.execute(
+            latest = conn.execute(
                 "SELECT * FROM epg_imports WHERE channel=? "
-                "ORDER BY imported_at DESC LIMIT 1", (channel,)
+                "ORDER BY imported_at DESC, rowid DESC LIMIT 1", (channel,)
             ).fetchone()
-            if row is None:
+            if latest is None:
                 result.append({"channel": channel, "status": "missing",
                                "coverage": [], "live_events": 0})
                 continue
-            days = [x[0] for x in conn.execute(
-                "SELECT scope_date FROM epg_import_days WHERE file_hash=? ORDER BY scope_date",
-                (row["file_hash"],),
+            days = [record[0] for record in conn.execute(
+                "SELECT DISTINCT d.scope_date FROM epg_import_days d "
+                "JOIN epg_imports i ON d.file_hash=i.file_hash "
+                "WHERE i.channel=? ORDER BY d.scope_date", (channel,),
             ).fetchall()]
-            covered = [day for day in days if first.isoformat() <= day <= last.isoformat()]
-            state = ("ready" if len(covered) == (last-first).days+1 else
+            covered = [day for day in days
+                       if first.isoformat() <= day <= last.isoformat()]
+            state = ("ready" if len(covered) == (last - first).days + 1 else
                      "partial" if covered else "outdated")
-            result.append({"channel": channel, "status": state,
-                           "coverage": days, "live_events": row["live_count"],
-                           "filename": row["filename"], "imported_at": row["imported_at"]})
+            result.append({
+                "channel": channel, "status": state,
+                "coverage": days,
+                "live_events": sum(len(database.load_active_source_snapshot(
+                    SOURCE_KEY[channel], day)) for day in covered),
+                "filename": latest["filename"], "imported_at": latest["imported_at"],
+            })
     return result
-
 
 
 def preview_parsed_epg(database: SLPDatabase, parsed: ParsedEPG) -> dict:
