@@ -197,9 +197,11 @@ To activate Gmail in the existing Google Cloud project:
    SPORT_GMAIL_ENABLE_TEST_SEND=true. A browser confirmation is required.
    Only alexandr.petrossov@fmedia.kz may receive that test request.
 7. Optional: create a dedicated OIDC Cloud Scheduler job that POSTs to
-   /api/jobs/gmail-sync, with the audience set to the exact URL including
-   the path and SPORT_SCHEDULER_SERVICE_ACCOUNT to that job's verified
-   service account. A schedule is NOT provisioned by this code.
+   /api/jobs/refresh for independent website parsers plus Gmail, or
+   /api/jobs/gmail-sync for Gmail only. Set OIDC audience to the full
+   target URL (including path) and SPORT_SCHEDULER_SERVICE_ACCOUNT to
+   the verified caller identity. The full refresh requires private GCS.
+   A schedule is NOT provisioned by this code.
    Scheduler, Cloud Run, Secret Manager and GCS may incur billing; get the
    owner's explicit approval before creating resources.
 
