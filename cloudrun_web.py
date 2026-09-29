@@ -31,6 +31,7 @@ from agents.runtime_orchestrator import RuntimeParserOrchestrator
 from services.live_evidence import event_is_live_broadcast, event_is_schedule_candidate
 from services.editorial_export import InvalidTemplate, build_working_xlsx, validate_template
 from services import gmail_integration as gmail
+from services import assistant_bridge
 from services import ai_pipeline
 from services import editorial_store as editorial
 from services.vsetv_sources import WEB_CHANNEL_IDS, refresh_vsetv_web_sources
@@ -843,8 +844,14 @@ async def gmail_sync(request: Request):
             )
         except (gmail.GmailTransportError, gmail.GmailNotConfigured) as exc:
             raise _gmail_failure(exc) from exc
-        if result["new_attachments"] or result["requires_review"]:
+        # Only existing SLP editorial notices are sent; never mail bodies or Excel.
+        bridge = (await asyncio.to_thread(
+            assistant_bridge.deliver_pending, request.app.state.database
+        ) if request.app.state.backup else
+            {"enabled": False, "delivered": 0, "failed": 0})
+        if result["new_attachments"] or result["requires_review"] or bridge["delivered"]:
             await _save_state(request)
+        result["assistant_notifications"] = bridge
     return result
 
 
@@ -880,8 +887,14 @@ async def scheduled_gmail_sync(request: Request):
             )
         except (gmail.GmailTransportError, gmail.GmailNotConfigured) as exc:
             raise _gmail_failure(exc) from exc
-        if result["new_attachments"] or result["requires_review"]:
+        # Only existing SLP editorial notices are sent; never mail bodies or Excel.
+        bridge = (await asyncio.to_thread(
+            assistant_bridge.deliver_pending, request.app.state.database
+        ) if request.app.state.backup else
+            {"enabled": False, "delivered": 0, "failed": 0})
+        if result["new_attachments"] or result["requires_review"] or bridge["delivered"]:
             await _save_state(request)
+        result["assistant_notifications"] = bridge
     return result
 
 
