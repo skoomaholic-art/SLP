@@ -294,12 +294,12 @@ _FILENAME_DATE_RE = re.compile(
 )
 
 
-def _cross_year_filename_window(filename: str) -> tuple[date, date] | None:
-    """Trust a year boundary only when two concrete supplier dates form a week.
+def _filename_week_window(filename: str) -> tuple[date, date] | None:
+    """Trust only a concrete, short period printed in the supplier filename.
 
-    A single year in a filename is not evidence that an undated January sheet
-    belongs to that year. In a Dec-Jan weekly EPG, however, the explicit
-    start/end dates disambiguate separate sheets as well as rows in one sheet.
+    Some actual weekly Setanta files contain a forgotten worksheet from an
+    unrelated month. Such rows must not enter the active schedule. One-day
+    margins admit the supplier's previous/next-day overlaps and night slots.
     """
     dates: list[date] = []
     for day, month, year in _FILENAME_DATE_RE.findall(filename):
@@ -313,9 +313,13 @@ def _cross_year_filename_window(filename: str) -> tuple[date, date] | None:
     if len(dates) != 2:
         return None
     start, end = dates
-    if start.year + 1 != end.year or not 0 <= (end - start).days <= 14:
-        return None
-    return start, end
+    return (start, end) if 0 <= (end - start).days <= 14 else None
+
+
+def _cross_year_filename_window(filename: str) -> tuple[date, date] | None:
+    """Disambiguate Dec-Jan headers only with an explicit weekly period."""
+    window = _filename_week_window(filename)
+    return window if window and window[0].year != window[1].year else None
 
 
 def _day_header(value: Any, year: int) -> date | None:
@@ -424,6 +428,7 @@ def _read_programs(sheet, channel: str, filename: str, year: int) -> tuple[list[
     rollover = 0
     programmes = 0
     year_window = _cross_year_filename_window(filename)
+    week_window = _filename_week_window(filename)
     layout = ("A", "B") if channel == CHANNELS["setanta1"] else ("B", "C")
     t_idx = 0 if layout[0] == "A" else 1
     title_idx = 1 if layout[1] == "B" else 2
@@ -441,16 +446,29 @@ def _read_programs(sheet, channel: str, filename: str, year: int) -> tuple[list[
                 if match and match.group(3) is None:
                     if year_window:
                         start, end = year_window
-                        possible = [
-                            date(candidate_year, header.month, header.day)
-                            for candidate_year in (start.year, end.year)
-                            if start <= date(candidate_year, header.month, header.day) <= end
-                        ]
+                        possible = []
+                        for candidate_year in (start.year, end.year):
+                            try:
+                                dated = date(candidate_year, header.month, header.day)
+                            except ValueError:
+                                continue
+                            if start - timedelta(days=1) <= dated <= end + timedelta(days=1):
+                                possible.append(dated)
                         if len(possible) == 1:
                             header = possible[0]
                     elif (current_day is not None and current_day.month == 12
                           and header.month == 1 and header.year <= current_day.year):
                         header = header.replace(year=current_day.year + 1)
+                if week_window and not (
+                    week_window[0] - timedelta(days=1)
+                    <= header <= week_window[1] + timedelta(days=1)
+                ):
+                    # A stale old-month sheet in a current weekly XLSX is
+                    # not a current event. Suppress its entire day section.
+                    current_day = None
+                    previous_minutes = None
+                    rollover = 0
+                    continue
                 year = header.year
                 current_day = header
                 seen_dates.add(header.isoformat())
