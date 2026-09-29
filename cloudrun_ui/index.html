@@ -147,7 +147,7 @@ footer{margin:25px 0;color:var(--muted);font-size:12px}
 <input id="epgFiles" type="file" accept=".xlsx" multiple aria-label="Выберите EPG-файлы QSport или Setanta">
 <button type="submit" id="epgUpload">Загрузить Excel</button>
 </form>
-<p class="muted-small">Можно загрузить исходные XLSX вручную. После OAuth новые файлы появятся в почтовой очереди. В расписание попадут только подтверждённые LIVE.</p>
+<p class="muted-small">Ручная загрузка остаётся запасным вариантом. После подключения Gmail и постоянного хранилища подтверждённые LIVE из Excel поступают автоматически. Только противоречия попадают в очередь.</p>
 <div id="templateArea" class="hide">
 <h3>Утверждённый Excel-шаблон</h3><p id="templateStatus" class="status-line">Проверяю шаблон...</p>
 <form id="templateForm" class="template-bar">
@@ -280,8 +280,15 @@ function renderSources(data){
  }
  node.append(grid);
  const mail=document.createElement("p");mail.className="muted-small";
- mail.textContent=data.gmail_connected?"Gmail подключён":
+ mail.textContent=data.gmail_connected?(data.auto_import?
+   "Gmail подключён. Однозначные расписания обрабатываются автоматически.":
+   "Gmail подключён. Для автоматического импорта нужно постоянное хранилище."):
    "Gmail пока не подключён. Файлы загружаются вручную.";node.append(mail);
+ const ai=document.createElement("p");ai.className="muted-small";
+ const aiStatus=data.ai||{};
+ ai.textContent="Обработка: сначала правила. AI_MAIL "+(aiStatus.mail_local_ready?"подключён":"не подключён")+
+   ", AI_EDITOR "+(aiStatus.editor_local_ready?"подключён":"не подключён")+".";
+ node.append(ai);
  if(data.mail_request && !data.mail_request.enabled){
   const request=document.createElement("p");request.className="muted-small";
   request.textContent="Почтовые запросы пока отключены. Тестовый получатель: "+
@@ -353,7 +360,9 @@ async function loadMailStatus(){
  state.gmailTestTo=status.connected?"" : "";
  $("mailStatus").textContent= !status.configured?
   "Gmail OAuth пока не настроен. Необходимы секреты клиента, ключ шифрования и постоянное GCS-хранилище.":
-  status.connected?"Подключён "+status.email+". Вложения не загружаются в расписание до подтверждения.":
+  status.connected?(status.auto_import?
+   "Gmail подключён ("+status.email+"). Подтверждённые Excel загружаются автоматически; противоречия отправляются на проверку.":
+   "Gmail подключён ("+status.email+"). Автоматический импорт ожидает постоянное GCS-хранилище."):
   "OAuth настроен, но владелец ещё не авторизовал Gmail.";
  $("gmailConnect").classList.toggle("hide",!status.configured||!state.gmailAdmin);
  $("mailCheck").classList.toggle("hide",!status.connected);
@@ -446,8 +455,10 @@ async function checkGmail(silent=false){
  try{
   const result=await api("/api/gmail/sync","POST",{});
   if(!silent||result.new_attachments)msg("Новых вложений: "+result.new_attachments+
-     ". Требуют ручной проверки: "+result.requires_review+".","success");
-  await loadMailNotices();
+     ". Автоматически загружено: "+result.auto_imported+
+     ". Требуют проверки: "+result.requires_review+".","success");
+  if(result.auto_imported){await load();}
+  else await loadMailNotices();
  }catch(e){if(!silent)msg(e.message,"error")}
  finally{$("mailCheck").disabled=false}
 }
