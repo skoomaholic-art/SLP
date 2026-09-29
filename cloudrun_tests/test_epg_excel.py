@@ -257,6 +257,29 @@ class EPGExcelTests(unittest.TestCase):
         with self.assertRaises(InvalidEPG):
             parse_epg_xlsx(b"not a spreadsheet", "mystery.xlsx")
 
+    def test_unlabelled_regional_sheet_is_not_mislabeled_as_known_channel(self):
+        book = Workbook()
+        known = book.active
+        known.title = "Q ARENA"
+        known["C3"] = "30 сентября"
+        known["B4"] = "AST"
+        known["B5"] = 0.50
+        known["C5"] = "LIVE. Футбол. КПЛ, 27 тур, Команда А - Команда Б"
+        other = book.create_sheet("Другой регион")
+        other["C3"] = "30 сентября"
+        other["B4"] = "AST"
+        other["B5"] = 0.60
+        other["C5"] = "LIVE. Футбол. КПЛ, 27 тур, Команда В - Команда Г"
+        payload = BytesIO()
+        book.save(payload)
+        book.close()
+        with self.assertRaisesRegex(InvalidEPG, "без указания канала"):
+            parse_epg_xlsx_channels(
+                payload.getvalue(), "сетка Канала.xlsx",
+                today=date(2026, 9, 29),
+                context="Расписание Q ARENA",
+            )
+
     def test_legacy_xls_routes_by_actual_workbook_and_retains_original_hash(self):
         # A converted workbook is injected here; the real BIFF decoder is
         # exercised by the dependency at integration time with supplier files.
