@@ -507,7 +507,7 @@ def _source_status(request: Request) -> dict:
                          "test_to": MAIL_TEST_TO, "future_cc": MAIL_FUTURE_CC},
         "missing_channels": [
             x["channel"] for x in files
-            if x["status"] in ("missing", "outdated")
+            if x["status"] in ("missing", "outdated", "partial")
         ], "gmail_connected": gmail.status(database)["connected"],
         "note": "Новые Gmail-вложения попадают в очередь на подтверждение." if gmail.status(database)["connected"] else
                 "Для автоматической обработки нужно подключить OAuth владельца.",
