@@ -125,7 +125,24 @@ Until production verification is completed, status is: **NOT DONE**.
 - 25-column template export preserves pre-existing editorial cells, approved
   RU/KZ and IDs; unknown KZ remains blank for review. Approved template must
   be configured; no production claims for final editorial correctness.
-- Gmail OAuth, automatic mail XLSX ingestion, sending requests, review alerts
-  and complete change history remain open. No Cloud Run deployment occurred.
-- CI evidence must be read from PR #39 before merge; Railway P0 remains
-  open independently. Deployment configuration is docs/CLOUD_RUN_WEB.md.
+- Owner Gmail OAuth code, encrypted refresh-token storage and a bounded
+  read-only Gmail inbox scan exist in the feature branch. Incoming supplier
+  attachments are staged for manual confirmation; text-only change messages
+  are review-only, never treated as confirmed cancellations. Real Gmail
+  OAuth has NOT been configured and no message has been sent.
+- Fixed, templated outgoing QSport/Setanta test requests are implemented,
+  but disabled by default. Only the owner's fixed work address is an allowed
+  test recipient; Anton's address is not an active recipient.
+- Source-revision events (added/changed/removed from current EPG) are
+  append-only; editor fields/attribution are stored separately. This is
+  source/audit history, not a guarantee that every supplier reschedule is
+  matched to a single stable event identity.
+- Six distinct VseTV web source IDs are wired to the web collector with
+  LIVE evidence and MSK -> UTC+5 conversion. Their live site coverage still
+  needs a real deployment check; bot parsers are not changed.
+- The admin can upload an approved 25-column workbook to configured GCS,
+  but the workbook has not been uploaded and translations/TEAM mapping
+  still need owner editorial validation. No Cloud Run deployment occurred.
+- GitHub CI must be checked for the latest candidate before merging. Production
+  Railway release is independent and must NOT be triggered by web work.
+  Cloud Run setup/secrets/OAuth instructions: docs/CLOUD_RUN_WEB.md.
