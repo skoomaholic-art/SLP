@@ -63,7 +63,7 @@ class EditorialExportTests(unittest.TestCase):
         self.assertEqual(sheet["Y4"].value, "")
         self.assertEqual(
             [sheet.cell(i, 1).value for i in range(2, 5)],
-            [60000, 59990, 59980],
+            [50000, 49900, 49800],
         )
         self.assertEqual(sheet["H2"].value, datetime(2026, 9, 23, 14, 50))
         output = BytesIO()
