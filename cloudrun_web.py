@@ -36,7 +36,7 @@ from services import editorial_store as editorial
 from services.vsetv_sources import WEB_CHANNEL_IDS, refresh_vsetv_web_sources
 from services.epg_excel import (MAX_WORKBOOK_BYTES, InvalidEPG, import_parsed_epg,
                                imported_epg_status, initialize_epg_imports,
-                               parse_epg_xlsx)
+                               parse_epg_xlsx, parse_epg_xlsx_channels)
 from services.schedule_merge import same_sporting_event, normalize_match_text
 from services.schedule_service import ScheduleService, is_user_event
 from services.time_logic import KZ_TIMEZONE, get_scheduled_datetimes
@@ -570,19 +570,33 @@ async def import_epg(request: Request, upload: UploadFile = File(...)):
     finally:
         await upload.close()
     try:
-        parsed = parse_epg_xlsx(data, filename)
+        parsed_batches = parse_epg_xlsx_channels(data, filename)
     except InvalidEPG as exc:
         raise HTTPException(422, str(exc)) from exc
     async with request.app.state.collect_lock:
-        result = import_parsed_epg(request.app.state.database, parsed)
-        if request.app.state.backup and result["status"] == "imported":
+        results = [
+            import_parsed_epg(request.app.state.database, parsed)
+            for parsed in parsed_batches
+        ]
+        if request.app.state.backup and any(
+            result["status"] in ("imported", "partial_review") for result in results
+        ):
             try:
                 await asyncio.to_thread(request.app.state.backup.save)
             except Exception as exc:
                 raise HTTPException(503, "Импорт выполнен, но резервная копия "
                                     "в GCS не сохранена: " + type(exc).__name__) from exc
-    result["durable_storage"] = bool(request.app.state.backup)
-    return result
+    response = results[0] if len(results) == 1 else {
+        "status": "imported" if all(
+            result["status"] in ("imported", "already_imported")
+            for result in results
+        ) else "partial_review",
+        "channel": ", ".join(result["channel"] for result in results),
+        "live_events": sum(result["live_events"] for result in results),
+        "results": results,
+    }
+    response["durable_storage"] = bool(request.app.state.backup)
+    return response
 
 
 
