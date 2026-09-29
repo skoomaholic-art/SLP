@@ -10,7 +10,7 @@ from storage.database import SLPDatabase
 
 
 SOURCE_NAMES = SOURCE_LABELS
-CHANNEL_SOURCES = tuple(sorted(
+CHANNEL_SOURCES = tuple(
     (
         (
             "Qazsport" if channel.name == "QAZSPORT HD" else
@@ -25,7 +25,7 @@ CHANNEL_SOURCES = tuple(sorted(
         )
     )
     for channel in CHANNELS
-), key=lambda item: item[0].casefold())
+)
 
 
 STATUS_ICON = {
