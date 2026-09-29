@@ -175,9 +175,10 @@ Until production verification is completed, status is: **NOT DONE**.
   with an additional explicit opt-in for KZ auto-fill. It cannot change
   channel, LIVE or times. No local inference service is provisioned,
   so any missing unapproved KZ strings still remain blank.
-- Export now derives its priority scale from the approved workbook rather
-  than assuming 60000, 59990, 59980. The owner's archived example uses
-  50000, 49900, 49800. Existing rows and editorial overrides are retained.
+- Export preserves every existing approved priority exactly rather than
+  assuming any single arithmetic step. The owner's actual workbook contains
+  variable gaps, including 100, 25 and 9. New rows use free integer slots
+  between neighboring approved rows; an exhausted gap fails closed.
   A newer empty LIVE day cannot wipe an accepted earlier populated day.
 - Offline regressions cover real supplier shapes, auto-import,
   multi-sheet workbooks, 14-channel inventory, no extra logo badges,
@@ -282,3 +283,26 @@ cloud resource was created. Existing Telegram production is unchanged.
 - No auto-deploy to ephemeral Render, no production mail, and no Telegram
   release. Runtime imports are not persistent until a real durable backend
   is selected.
+
+## 2026-09-30 source and editorial regressions
+
+- Read-only inspection of the real current Setanta Sports 1, Setanta
+  Sports 2 and Setanta KZ XLSX showed their explicit LIVE prefixes match
+  the existing supplier sport parser. The Setanta KZ workbook also has
+  a stale June worksheet among the September/October schedules.
+  The importer now bounds scope days to the concrete filename period,
+  plus one day either side; this guards against importing unrelated
+  historical worksheets while keeping overnight spill and supplier
+  overlaps. No original supplier workbook was checked into Git.
+- The original 25-column owner template has nonuniform approved priority
+  gaps. Old priority cells now remain untouched. Chronologically inserted
+  rows receive available unique integer priorities, with an explicit
+  fail-closed case if there is no space between approved values.
+- Explicit unique supplier kickoff changes preserve manual editor
+  overrides on the replacement storage ID, with a transfer audit entry.
+  Both original edit and historical source revision are retained.
+  Same-day repeat programmes never inherit an ambiguous edit.
+- Regression tests are synthetic and execute in branch CI; actual
+  production LIVE source and OAuth end-to-end remain unverified.
+- Render preview remains unchanged; no Telegram deployment or
+  paid cloud provisioning is included.
