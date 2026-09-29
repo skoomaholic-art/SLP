@@ -365,6 +365,82 @@ def imported_epg_status(database: SLPDatabase, *, first: date, last: date) -> li
     return result
 
 
+
+def preview_parsed_epg(database: SLPDatabase, parsed: ParsedEPG) -> dict:
+    """Compare one real supplier file to accepted rows without writing.
+
+    A fixture disappearing from a later EPG is NOT a confirmed cancellation.
+    A one-to-one changed kickoff is a candidate reschedule, not a source fact.
+    Any ambiguous duplicate titles remain separate for editorial review.
+    """
+    from services.schedule_merge import normalize_match_text
+
+    source = SOURCE_KEY[parsed.channel]
+    existing: list[dict] = []
+    for day in parsed.scope_dates:
+        existing.extend(database.load_active_source_snapshot(source, day))
+
+    def identity(event: dict) -> tuple:
+        return (
+            str(event.get("date") or ""),
+            normalize_match_text(str(event.get("title") or "")),
+            normalize_match_text(str(event.get("sport") or "")),
+            normalize_match_text(str(event.get("tournament") or "")),
+        )
+
+    current_by_key: dict[tuple, list] = defaultdict(list)
+    new_by_key: dict[tuple, list] = defaultdict(list)
+    for event in existing:
+        current_by_key[identity(event)].append(event)
+    for event in parsed.events:
+        new_by_key[identity(event)].append(event)
+    changes = []
+    counts = {"new": 0, "time_changed": 0, "missing_from_update": 0,
+              "unchanged": 0, "ambiguous": 0}
+    for key in sorted(set(current_by_key) | set(new_by_key)):
+        before, after = current_by_key.get(key, []), new_by_key.get(key, [])
+        old_times = sorted(str(e.get("time") or "") for e in before)
+        new_times = sorted(str(e.get("time") or "") for e in after)
+        if old_times == new_times:
+            counts["unchanged"] += len(after)
+            continue
+        if len(before) == len(after) == 1:
+            kind = "time_changed"
+        elif before and after:
+            kind = "ambiguous"
+        elif before:
+            kind = "missing_from_update"
+        else:
+            kind = "new"
+        counts[kind] += max(len(before), len(after))
+        if len(changes) < 100:
+            changes.append({
+                "kind": kind, "date": key[0],
+                "title": after[0]["title"] if after else before[0]["title"],
+                "before_times": old_times, "after_times": new_times,
+                "note": (
+                    "Исчезновение из EPG не подтверждает отмену"
+                    if kind == "missing_from_update" else
+                    "Нужна проверка: одинаковое событие встречается несколько раз"
+                    if kind == "ambiguous" else
+                    "Новое подтверждённое время, проверьте перенос"
+                    if kind == "time_changed" else
+                    "Новое подтверждённое LIVE событие"
+                ),
+            })
+    return {
+        "filename": parsed.filename,
+        "channel": parsed.channel,
+        "dates": list(parsed.scope_dates),
+        "current_count": len(existing),
+        "new_count": len(parsed.events),
+        "counts": counts, "changes": changes,
+        "changes_truncated": max(
+            0, sum(counts[k] for k in counts if k != "unchanged") - len(changes)
+        ),
+    }
+
+
 def import_parsed_epg(database: SLPDatabase, parsed: ParsedEPG) -> dict:
     """Idempotent on attachment SHA; preserve other channels and unrelated days."""
     initialize_epg_imports(database)
