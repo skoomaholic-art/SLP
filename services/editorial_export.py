@@ -164,6 +164,54 @@ def _new_row(event: dict) -> list:
     ]
 
 
+
+def _translation_key(value: str) -> str:
+    # Intentionally strict. "Спартак" must not pick a women's or reserve
+    # team through aggressive fuzzy matching.
+    return " ".join(str(value or "").casefold().split()).replace("–", "-")
+
+
+def _reuse_approved_translations(rows: list[dict], event: dict) -> dict:
+    """Reuse only unambiguous TEAM/SUBTITLE translations from user's XLSX.
+
+    The workbook itself stays private in GCS. A conflict between two
+    existing KZ spellings results in no automatic translation.
+    """
+    dictionary: dict[tuple[str, str], set[str]] = {}
+    for row in rows:
+        cells = row["values"]
+        for category, ru_col, kz_col in (
+            ("team", 19, 20), ("team", 21, 22), ("subtitle", 23, 24),
+        ):
+            source_ru, source_kz = cells[ru_col], cells[kz_col]
+            if not isinstance(source_ru, str) or not isinstance(source_kz, str):
+                continue
+            key = _translation_key(source_ru)
+            translated = source_kz.strip()
+            if key and translated:
+                dictionary.setdefault((category, key), set()).add(translated)
+
+    enriched = dict(event)
+    team1, team2 = _participants(
+        str(event.get("sport") or ""), str(event.get("title") or "")
+    )
+    original_subtitle = ". ".join(
+        str(x) for x in (event.get("sport"), event.get("tournament")) if x
+    )
+    for ru_field, kz_field, category, fallback in (
+        ("team1_ru", "team1_kz", "team", team1),
+        ("team2_ru", "team2_kz", "team", team2),
+        ("subtitle_ru", "subtitle_kz", "subtitle", original_subtitle),
+    ):
+        if str(enriched.get(kz_field) or "").strip():
+            continue
+        source_ru = str(enriched.get(ru_field) or fallback)
+        candidates = dictionary.get((category, _translation_key(source_ru)), set())
+        if len(candidates) == 1:
+            enriched[kz_field] = next(iter(candidates))
+    return enriched
+
+
 def build_working_xlsx(workbook: Workbook, events: list[dict]) -> Workbook:
     """Sort current + existing events, preserving every existing editorial field.
 
@@ -198,7 +246,10 @@ def build_working_xlsx(workbook: Workbook, events: list[dict]) -> Workbook:
             continue
         known_keys.add(identity)
         original.append({
-            "values": _new_row(event),
+            "values": _new_row(_reuse_approved_translations(
+                [row for row in original if row["original_index"] <= sheet.max_row],
+                event,
+            )),
             "styles": [copy(style) for style in styles],
             "sort": datetime.fromisoformat(event["start_at"]).replace(tzinfo=None),
             "original_index": next_index,
