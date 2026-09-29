@@ -325,3 +325,10 @@ cloud resource was created. Existing Telegram production is unchanged.
 - Source originals and the approved 25-column template are not
   committed, not uploaded to Render and not emailed onward.
   Successful CI alone does not establish production Gmail/OAuth readiness.
+
+## 2026-09-30 - Метаданные уведомлений для персонального помощника
+
+- В PR #39 добавлен опциональный `services/assistant_bridge.py`. После ручной или защищённой плановой синхронизации Gmail он отправляет только идентификатор уведомления, статус `pending/review` и обнаруженный канал по HTTPS с Bearer-секретом. Тела письма, сведения об отправителе, названия файлов и Excel не передаются.
+- Локальный аддитивный outbox подтверждает отправку только после ответа получателя; повторный импорт и повторное письмо не порождают новую задачу. До включения интеграции текущий импорт расписаний не меняется.
+- Настройка необязательная: `SPORT_ASSISTANT_NOTICE_URL` = HTTPS endpoint `/internal/slp/notice` существующего Worker, `SPORT_ASSISTANT_NOTICE_SECRET` = то же значение, что и `SLP_NOTICE_SECRET` в Worker. Нужны готовые OAuth Gmail, постоянное хранилище и запланированная синхронизация SLP; Secrets никогда не коммитить.
+- Статус: изменения только в PR #39. Секреты/Cloud Scheduler/SLP Cloud Run не подтверждены, живой Telegram не переключался, внешние тесты и платные API не запускались. Production Telegram/Railway entrypoint не изменён.
