@@ -10,6 +10,7 @@ on:
       - "cloudrun_ui/**"
       - "cloudrun_tests/**"
       - "services/epg_excel.py"
+      - "services/editorial_export.py"
       - "scripts/cloudrun_users.py"
       - ".github/workflows/cloudrun-web.yml"
   workflow_dispatch:
@@ -27,7 +28,7 @@ jobs:
       - name: Install web and parser dependencies
         run: python -m pip install -r requirements.txt -r requirements-cloudrun.txt
       - name: Compile web entrypoint
-        run: python -m compileall -q cloudrun_web.py services/epg_excel.py cloudrun_tests scripts/cloudrun_users.py
+        run: python -m compileall -q cloudrun_web.py services/epg_excel.py services/editorial_export.py cloudrun_tests scripts/cloudrun_users.py
       - name: Web-only regression
         run: PYTHONPATH=. python -m unittest discover -s cloudrun_tests -p "test_*.py" -v
       - name: Build Cloud Run image (without deployment)
