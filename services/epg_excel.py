@@ -78,29 +78,98 @@ class ParsedEPG:
     events: tuple[dict[str, Any], ...]
 
 
-def detect_channel(filename: str) -> str:
-    name = re.sub(r"\s+", " ", filename.casefold())
-    if "setanta" in name:
-        if re.search(r"\bsports\s*1\b", name):
-            return CHANNELS["setanta1"]
-        if re.search(r"\bsports\s*2\b", name):
-            return CHANNELS["setanta2"]
-        if re.search(r"\b(qazaqstan|kazakhstan\s*kz|setanta\s*kz)\b", name):
-            return CHANNELS["setantakz"]
-    for label, key in (
-        ("league", "qleague"), ("arena", "qarena"),
-        ("football", "qfootball"),
-    ):
-        if re.search(r"\bq[\s_-]*" + label + r"\b", name):
-            return CHANNELS[key]
-    if re.search(r"\bq\s*sport\b|\bqsport\b", name):
-        for marker, key in (
-            ("league", "qleague"), ("arena", "qarena"),
-            ("football", "qfootball"),
-        ):
-            if re.search(r"\b" + marker + r"\b", name):
-                return CHANNELS[key]
-    raise InvalidEPG("Не удалось подтвердить телеканал по названию файла")
+def _channel_matches(text: str) -> set[str]:
+    """Return only explicit channel identities, never provider-family guesses."""
+    value = re.sub(r"\s+", " ", str(text or "").casefold())
+    matches: set[str] = set()
+    patterns = (
+        (CHANNELS["setanta1"], (
+            r"\bsetanta\s+sports\s*1\b",
+            r"\bsetanta\s*1\s+kazakhstan\b",
+        )),
+        (CHANNELS["setanta2"], (
+            r"\bsetanta\s+sports\s*2\b",
+            r"\bsetanta\s*2\s+kazakhstan\b",
+        )),
+        (CHANNELS["setantakz"], (
+            r"\bsetanta\s+qazaqstan\b",
+            r"\bsetanta\s+kz\b",
+            r"\bsetanta\s+sports\s+kz\b",
+        )),
+        (CHANNELS["qleague"], (
+            r"\bq[\s_-]*league\b",
+            r"\bq\s*лига\b",
+        )),
+        (CHANNELS["qarena"], (
+            r"\bq[\s_-]*arena\b",
+            r"\bq\s*арена\b",
+        )),
+        (CHANNELS["qfootball"], (
+            r"\bq[\s_-]*football\b",
+            r"\bq\s*футбол\b",
+        )),
+    )
+    for channel, expressions in patterns:
+        if any(re.search(expression, value, re.I) for expression in expressions):
+            matches.add(channel)
+    return matches
+
+
+def detect_channel(filename: str, *, workbook=None, context: str = "") -> str:
+    """Identify the station from independent evidence.
+
+    Priority is workbook content, then the attachment filename, then e-mail
+    context. A provider-family phrase such as "QSport" or "Setanta" alone is
+    deliberately insufficient because one message can contain several grids.
+    """
+    evidence: list[tuple[str, set[str]]] = []
+    file_matches = _channel_matches(filename)
+    if file_matches:
+        evidence.append(("имя файла", file_matches))
+
+    if workbook is not None:
+        snippets: list[str] = []
+        for sheet in workbook.worksheets[:20]:
+            snippets.append(str(sheet.title))
+            for row in sheet.iter_rows(
+                min_row=1, max_row=min(sheet.max_row, 45),
+                min_col=1, max_col=min(sheet.max_column, 8),
+                values_only=True,
+            ):
+                for value in row:
+                    if isinstance(value, str) and value.strip():
+                        snippets.append(value[:300])
+        content_matches = _channel_matches(" ".join(snippets))
+        if content_matches:
+            evidence.insert(0, ("содержимое Excel", content_matches))
+
+    context_matches = _channel_matches(context)
+    if context_matches:
+        evidence.append(("контекст письма", context_matches))
+
+    # Strongest source wins only when it identifies exactly one channel.
+    for source, matches in evidence:
+        if len(matches) == 1:
+            candidate = next(iter(matches))
+            # If a stronger workbook identity exists, a contradictory file
+            # name/context must not silently relabel the attachment.
+            stronger = evidence[0] if evidence else None
+            if source != "содержимое Excel" and stronger and stronger[0] == "содержимое Excel":
+                workbook_matches = stronger[1]
+                if len(workbook_matches) == 1 and candidate not in workbook_matches:
+                    raise InvalidEPG(
+                        "Имя/контекст письма противоречит телеканалу внутри Excel"
+                    )
+            return candidate
+        if len(matches) > 1 and source == "содержимое Excel":
+            raise InvalidEPG(
+                "В одном Excel обнаружено несколько телеканалов: " +
+                ", ".join(sorted(matches))
+            )
+    raise InvalidEPG(
+        "Не удалось однозначно определить телеканал по содержимому Excel, "
+        "имени файла или контексту письма"
+    )
 
 
 def _year(filename: str, today: date) -> int:
@@ -224,7 +293,10 @@ def _read_programs(sheet, channel: str, filename: str, year: int) -> tuple[list[
     return starts, seen_dates, programmes
 
 
-def parse_epg_xlsx(data: bytes, filename: str, *, today: date | None = None) -> ParsedEPG:
+def parse_epg_xlsx(
+    data: bytes, filename: str, *, today: date | None = None,
+    context: str = ""
+) -> ParsedEPG:
     if not filename.casefold().endswith(".xlsx"):
         raise InvalidEPG("Поддерживаются только файлы .xlsx")
     if not data or len(data) > MAX_WORKBOOK_BYTES:
@@ -233,7 +305,6 @@ def parse_epg_xlsx(data: bytes, filename: str, *, today: date | None = None) -> 
     filename = PurePath(filename.replace("\\", "/")).name
     if len(filename) > 180 or not filename.strip():
         raise InvalidEPG("Недопустимое имя вложения")
-    channel = detect_channel(filename)
     try:
         with ZipFile(BytesIO(data)) as archive:
             infos = archive.infolist()
@@ -250,6 +321,11 @@ def parse_epg_xlsx(data: bytes, filename: str, *, today: date | None = None) -> 
         workbook = load_workbook(BytesIO(data), read_only=True, data_only=True)
     except Exception as exc:
         raise InvalidEPG("Не удалось прочитать XLSX") from exc
+    try:
+        channel = detect_channel(filename, workbook=workbook, context=context)
+    except Exception:
+        workbook.close()
+        raise
     rows = []
     days: set[str] = set()
     count = 0
