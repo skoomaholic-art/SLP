@@ -34,6 +34,51 @@ class VseTVSourceTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["source_url"], "mirror-two")
 
+    def test_partial_web_week_keeps_last_good_day(self):
+        import asyncio
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from storage.database import SLPDatabase
+        from services.vsetv_sources import refresh_vsetv_web_sources
+
+        with tempfile.TemporaryDirectory() as folder:
+            database = SLPDatabase(Path(folder) / "sports.db")
+            channel = "KHL PRIME"
+            day = "2026-10-01"
+            original = {
+                "source": "web_vsetv_806", "channel": channel,
+                "date": day, "time": "21:20", "title": "Матч А",
+                "sport": "Хоккей", "is_live": True,
+            }
+            database.upsert_source_snapshot(
+                run_id="original", source="web_vsetv_806",
+                scope_date=day, events=[original],
+            )
+            partial = {
+                "third_party_live_badge": True,
+                "date": day, "time": "20:00",
+                "title": "Хоккей. КХЛ. Матч Б",
+            }
+
+            async def fetched(session, name, channel_id, today):
+                if name == channel:
+                    return [partial], None
+                return [], "source_unavailable"
+
+            with patch("services.vsetv_sources._fetch_week_channel",
+                       side_effect=fetched), \
+                 patch("services.vsetv_sources.asyncio.sleep",
+                       new_callable=__import__("unittest").mock.AsyncMock):
+                result = asyncio.run(refresh_vsetv_web_sources(
+                    database, today=date(2026, 10, 1),
+                ))
+            saved = database.load_active_source_snapshot("web_vsetv_806", day)
+            self.assertEqual(len(saved), 1)
+            self.assertEqual(saved[0]["title"], "Матч А")
+            self.assertEqual(result["sources"][0]["status"], "warning")
+            self.assertIn("partial_update_held", result["sources"][0]["error"])
+
     def test_source_channels_are_not_conflated(self):
         self.assertEqual(WEB_CHANNEL_IDS["KHL PRIME"], 806)
         self.assertEqual(WEB_CHANNEL_IDS["KHL HD"], 1641)
