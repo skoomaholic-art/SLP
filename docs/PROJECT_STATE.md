@@ -110,14 +110,22 @@ Until production verification is completed, status is: **NOT DONE**.
 
 ## Cloud Run web candidate (2026-09-29, isolated feature branch)
 
-- Branch: feature/cloud-run-sports-web, PR #39 (draft, NOT MERGED).
+- Branch: feature/cloud-run-sports-web, PR #39 (open for review, NOT MERGED).
 - Adds Dockerfile-based HTTP entrypoint cloudrun_web:app; existing
   python main.py Telegram/Railway production entrypoint is unchanged.
 - Reuses the parser/orchestrator and source snapshot store, with separate
   browser login, calendar, cross-channel archive list and template export.
 - Web sign-in requires external user-hash and session secrets. Private
   GCS snapshot storage and approved XLSX template require separate setup.
-- Gmail/Setanta/QSport mail and XLSX workflows remain open. The new web
-  service has not been deployed; no Cloud Run production claims are made.
+- Manual supplier XLSX import added for Setanta Sports 1/2/KZ and Q
+  League/Arena/Football, with SHA-idempotent import and per-day freshness.
+- Fourteen distinct user-provided logos embedded and served by web UI;
+  archive mode can show inactive source snapshots and export per-channel XLSX.
+  This is NOT a complete field-level change journal.
+- 25-column template export preserves pre-existing editorial cells, approved
+  RU/KZ and IDs; unknown KZ remains blank for review. Approved template must
+  be configured; no production claims for final editorial correctness.
+- Gmail OAuth, automatic mail XLSX ingestion, sending requests, review alerts
+  and complete change history remain open. No Cloud Run deployment occurred.
 - CI evidence must be read from PR #39 before merge; Railway P0 remains
   open independently. Deployment configuration is docs/CLOUD_RUN_WEB.md.
