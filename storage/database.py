@@ -86,6 +86,22 @@ class SLPDatabase:
                 CREATE INDEX IF NOT EXISTS idx_events_start_at
                     ON events(start_at);
 
+                CREATE TABLE IF NOT EXISTS event_revisions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    storage_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    scope_date TEXT NOT NULL,
+                    change_kind TEXT NOT NULL,
+                    before_json TEXT,
+                    after_json TEXT,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_revisions_event
+                    ON event_revisions(storage_id, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_revisions_source
+                    ON event_revisions(source, scope_date, id DESC);
+
                 CREATE TABLE IF NOT EXISTS parser_runs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     run_id TEXT NOT NULL,
@@ -242,6 +258,29 @@ class SLPDatabase:
         event_list = list(events)
 
         with self._connect() as connection:
+            before = {
+                row["storage_id"]: row
+                for row in connection.execute(
+                    "SELECT storage_id,payload_json FROM events "
+                    "WHERE source=? AND scope_date=? AND active=1",
+                    (source, scope_date),
+                ).fetchall()
+            }
+            # Record a superseded programme as removed from the EPG, not
+            # as cancelled. A disappearing listing is not proof of cancellation.
+            next_ids = {
+                _event_storage_id(source, scope_date, event)
+                for event in event_list
+            }
+            for removed_id in before.keys() - next_ids:
+                connection.execute(
+                    "INSERT INTO event_revisions("
+                    "storage_id,run_id,source,scope_date,change_kind,"
+                    "before_json,after_json,created_at) "
+                    "VALUES(?,?,?,?,'removed_from_source',?,NULL,?)",
+                    (removed_id,run_id,source,scope_date,
+                     before[removed_id]["payload_json"],now_iso),
+                )
             connection.execute(
                 "UPDATE events SET active = 0 WHERE source = ? AND scope_date = ?",
                 (source, scope_date),
@@ -254,6 +293,18 @@ class SLPDatabase:
                 normalized_title = str(
                     event.get("title") or event.get("raw_title") or ""
                 ).strip()
+                old_payload = before.get(storage_id)
+                if old_payload is None or old_payload["payload_json"] != payload:
+                    connection.execute(
+                        "INSERT INTO event_revisions("
+                        "storage_id,run_id,source,scope_date,change_kind,"
+                        "before_json,after_json,created_at) "
+                        "VALUES(?,?,?,?,?,?,?,?)",
+                        (storage_id,run_id,source,scope_date,
+                         "added_to_source" if old_payload is None else "source_changed",
+                         old_payload["payload_json"] if old_payload else None,
+                         payload,now_iso),
+                    )
 
                 connection.execute(
                     """
@@ -308,6 +359,22 @@ class SLPDatabase:
                         payload,
                     ),
                 )
+
+    def event_revisions(self, storage_id: str = "", limit: int = 100) -> list[dict]:
+        limit = min(max(int(limit), 1), 500)
+        with self._connect() as connection:
+            if storage_id:
+                rows = connection.execute(
+                    "SELECT * FROM event_revisions WHERE storage_id=? "
+                    "ORDER BY id DESC LIMIT ?",
+                    (storage_id, limit),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM event_revisions ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+        return [dict(row) for row in rows]
 
     def load_active_source_snapshot(self, source: str, scope_date: str) -> list[dict]:
         with self._connect() as connection:
