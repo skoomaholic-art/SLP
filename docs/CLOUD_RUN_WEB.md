@@ -134,7 +134,7 @@ only unambiguous approved RU/KZ TEAM/SUBTITLE mappings from the private
 template (not from a generic machine translation). It escapes
 potential spreadsheet formulas and sorts events in UTC+5. Unknown Kazakh
 translations remain blank for review, not guessed or copied from Russian.
-Priorities follow the first descending numeric priorities in the supplied workbook (for example, 50000, 49900 ...); the scale is not hardcoded.
+Every pre-approved priority in the supplied workbook is preserved exactly. New events receive unique integer priorities between neighboring approved rows when free slots exist; if no integer slot remains, export fails closed rather than renumbering approved rows.
 An admin-only /api/template upload endpoint validates the 25 approved headers
 and saves the workbook to configured GCS (generation precondition) or an
 explicit absolute SPORT_TEMPLATE_PATH (atomic local replacement).
@@ -350,3 +350,30 @@ examples established two bounded parsers:
 
 This does not enable Gmail OAuth, create a paid resource, restart the
 ephemeral Render preview, or modify the production Telegram bot.
+
+## Accepted workbook regression findings (2026-09-30)
+
+Real Setanta 1, Setanta 2 and Setanta KZ Excel examples were inspected
+read-only outside this repository. All observed explicit LIVE row sport
+prefixes match the existing known parser prefix set. In the Setanta KZ
+week covering 29 September to 5 October, the workbook also contains a
+legacy 3 June sheet among current worksheets. The XLSX importer now uses
+the concrete filename week window, with a one-day margin for adjacent
+day and overnight broadcasts, so such unrelated sheets cannot enter the
+accepted snapshot. Tests synthesize the same fixture shape without
+committing any supplier file.
+
+The owner's real approved OTT template is NOT a uniform 100/25/10-step
+priority sequence. Existing historic rows retain their exact priorities,
+IDs, formats and translations. Only new rows get priority numbers, using
+free integers between chronological neighbors. If two approved rows
+leave no available integer slot, export explicitly asks for manual
+template priority adjustment instead of changing accepted priorities.
+
+When a supplier changes a confirmed event's kickoff, the source
+storage ID changes. An unambiguous one-to-one same-day, same-channel,
+same-sport, same-tournament and same-title replacement now preserves
+the event's manual editorial override. Both the old revision and an
+explicit transfer audit record remain. Repeated/ambiguous same-day
+fixtures never inherit corrections by guess. Neither the production
+Telegram bot nor source-specific LIVE evidence rules are modified.
