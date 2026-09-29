@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SLP - Спортивное расписание</title>
+<style>
+:root{color-scheme:dark;--bg:#0e121b;--card:#171e2b;--line:#2c3545;--muted:#a1aec1;--text:#eef2f7;--accent:#41dcc2;--danger:#f5a38f}
+*{box-sizing:border-box}body{background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;margin:0}
+button,input,select{font:inherit}button{cursor:pointer;background:#233344;border:1px solid #405266;border-radius:10px;color:var(--text);padding:10px 14px}
+button:hover{border-color:var(--accent)}button.primary{background:var(--accent);color:#0a2830;border-color:var(--accent);font-weight:700}
+button:disabled{opacity:.46;cursor:not-allowed}input,select{border:1px solid #36475d;background:#101723;color:var(--text);border-radius:8px;padding:9px;width:100%;max-width:100%}
+header{padding:19px 5%;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:16px}
+.brand{font-size:22px;font-weight:850;letter-spacing:.1em}.brand span{color:var(--accent)}.who{color:var(--muted);font-size:13px}
+main{max-width:1240px;margin:30px auto;padding:0 18px}.hide{display:none!important}
+h1{font-size:30px;margin:0 0 7px}h2{font-size:19px;margin:0 0 12px}.subtitle,.muted{color:var(--muted)}
+.actions,.filters,.calendar-tools,.item-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.actions{margin:22px 0 14px}.muted-small{font-size:12px;color:var(--muted)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px}
+.grid{display:grid;grid-template-columns:minmax(260px,380px) minmax(0,1fr);gap:18px;margin-top:18px}
+@media(max-width:850px){.grid{grid-template-columns:1fr}h1{font-size:25px}}
+#login{max-width:440px;margin:9vh auto;padding:26px}#login label{display:block;margin:14px 0 5px;color:var(--muted)}
+#login button{width:100%;margin-top:20px}.notice{border-radius:10px;border:1px solid #755c43;background:#34291f;padding:12px;margin:12px 0}
+.notice.success{border-color:#276959;background:#123529}.notice.error{border-color:#85484a;background:#341e26}
+.days{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;margin:16px 0}
+.week{text-align:center;color:var(--muted);font-size:12px}
+.day{padding:10px 0;min-height:46px;border:1px solid transparent;background:#1d2938;border-radius:8px;color:var(--text);position:relative;text-align:center}
+.day.has:after{content:"";width:5px;height:5px;display:block;border-radius:50%;background:var(--accent);margin:1px auto -6px}
+.day.selected{border-color:var(--accent)}.day.blank{background:transparent}
+.toolbar{margin:14px 0}.filters input{max-width:280px}.filters select{width:auto;min-width:170px}
+.badge{font-size:11px;letter-spacing:.02em;background:#233c4d;color:#d5e4f0;padding:4px 8px;border-radius:6px}
+.badge.live{background:#14564d;color:#a8ffec}.badge.past{background:#303a48;color:#c1ccda}
+.events{display:grid;gap:8px;max-height:620px;overflow:auto}
+.event{background:#101722;border:1px solid #29384b;border-radius:11px;padding:13px}
+.item-top{justify-content:space-between;gap:8px}.name{font-weight:700;margin:8px 0 2px}.channel{color:var(--accent);font-size:12px}
+footer{margin:25px 0;color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+<header><div class="brand">SLP <span>SPORT EPG</span></div><div class="who" id="who">UTC+5</div></header>
+<main>
+<section class="card hide" id="login">
+<h1>Вход в систему</h1><p class="subtitle">Спортивное расписание, календарь и архив</p>
+<form id="loginForm"><label for="loginName">Логин</label><input id="loginName" autocomplete="username" required>
+<label for="loginPassword">Пароль</label><input id="loginPassword" type="password" autocomplete="current-password" required>
+<button type="submit" class="primary">Войти</button></form>
+<p id="loginMessage" class="muted-small"></p>
+</section>
+<section id="workspace" class="hide">
+<h1>Спортивное расписание</h1>
+<div class="subtitle">События по Алматы (UTC+5). В архиве сохраняются все известные каналы, в экспорте выбирается один.</div>
+<div class="actions">
+<button id="collect" class="primary">⟳ Собрать расписание</button>
+<button id="export">↓ Выгрузить Excel</button>
+<button id="request" disabled title="Почтовое подключение ещё не настроено">✉ Запросить расписание</button>
+<button id="logout">Выйти</button>
+</div>
+<div id="message" class="hide notice"></div>
+<div id="sources" class="muted-small"></div>
+<div class="grid">
+<section class="card">
+<div class="calendar-tools"><h2 style="margin:0;flex:1">Календарь</h2><button id="prevMonth" aria-label="Предыдущий месяц">‹</button><button id="nextMonth" aria-label="Следующий месяц">›</button></div>
+<div id="month" style="font-weight:700;margin-top:7px"></div>
+<div id="days" class="days"></div>
+<button id="allDates">Показать весь архив</button>
+<p class="muted-small">Список справа фильтруется по выбранной дате. Зелёная точка означает, что есть сохранённые LIVE-события.</p>
+</section>
+<section class="card">
+<h2>События и архив</h2>
+<div class="filters toolbar">
+<input id="search" placeholder="Поиск матча, турнира" aria-label="Поиск">
+<select id="channel"><option value="">Все каналы</option></select>
+</div>
+<div id="count" class="muted-small" style="margin:10px 0"></div>
+<div id="events" class="events"></div>
+</section>
+</div>
+<footer>Данные поступают только из подтверждённых источников. При отсутствии почтовых файлов частичный сбор требует подтверждения. Веб-сервис не запускает Telegram-бота.</footer>
+</section>
+</main>
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+const state={all:[],date:"",month:new Date(),logged:false};
+const kzToday=()=>new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Almaty",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+const iso=(y,m,d)=>[y,String(m).padStart(2,"0"),String(d).padStart(2,"0")].join("-");
+function msg(text,kind=""){const n=$("message");n.textContent=text;n.className="notice "+kind}
+async function api(url,method="GET",body){
+  const options={method,credentials:"same-origin",headers:{}};
+  if(body!==undefined){options.headers["Content-Type"]="application/json";options.body=JSON.stringify(body)}
+  const res=await fetch(url,options);const data=await res.json().catch(()=>({}));
+  if(!res.ok)throw Object.assign(new Error(typeof data.detail==="string"?data.detail:(data.detail?.message||"Ошибка сервера "+res.status)),{status:res.status,detail:data.detail});
+  return data;
+}
+function showLogin(){ $("login").classList.remove("hide");$("workspace").classList.add("hide");state.logged=false}
+function showApp(user){
+  $("login").classList.add("hide");$("workspace").classList.remove("hide");
+  $("who").textContent=(user.avatar||"")+" "+user.username+" · UTC+5";state.logged=true;load();
+}
+async function load(){
+ try{
+  const data=await api("/api/events");
+  state.all=data.events||[];
+  renderCalendar();renderEvents();
+  const status=await api("/api/sources");
+  $("sources").textContent="Источники: "+status.available_now.join(", ")+". Ожидают подключения: "+status.not_connected.join(", ")+".";
+ }catch(e){msg(e.message,"error")}
+}
+function renderCalendar(){
+ const d=state.month,y=d.getFullYear(),m=d.getMonth(),start=(new Date(y,m,1).getDay()+6)%7;
+ const days=new Date(y,m+1,0).getDate(),counts=new Set(state.all.map(x=>x.date));
+ $("month").textContent=new Intl.DateTimeFormat("ru-RU",{month:"long",year:"numeric"}).format(d);
+ const root=$("days");root.replaceChildren();
+ for(const label of ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"]){const n=document.createElement("div");n.className="week";n.textContent=label;root.append(n)}
+ for(let i=0;i<start;i++){const n=document.createElement("div");n.className="day blank";root.append(n)}
+ for(let day=1;day<=days;day++){
+  const key=iso(y,m+1,day),btn=document.createElement("button");btn.className="day"+(counts.has(key)?" has":"")+(state.date===key?" selected":"");
+  btn.textContent=day;btn.addEventListener("click",()=>{state.date=key;renderCalendar();renderEvents()});root.append(btn);
+ }
+}
+function makeEvent(ev){
+ const outer=document.createElement("article");outer.className="event";
+ const top=document.createElement("div");top.className="item-top";
+ const time=document.createElement("strong");time.textContent=ev.date.split("-").reverse().join(".")+", "+ev.time;
+ const flag=document.createElement("span");flag.className="badge "+ev.status;flag.textContent=ev.status==="past"?"Прошло":ev.status==="live"?"Сейчас LIVE":"Скоро";
+ top.append(time,flag);
+ const title=document.createElement("div");title.className="name";title.textContent=ev.title;
+ const label=document.createElement("div");label.className="muted-small";label.textContent=[ev.sport,ev.tournament].filter(Boolean).join(" · ");
+ const ch=document.createElement("div");ch.className="channel";ch.textContent=ev.channels.join(" / ");
+ outer.append(top,title,label,ch);
+ return outer;
+}
+function filtered(){
+ const needle=$("search").value.trim().toLocaleLowerCase("ru-RU"),channel=$("channel").value;
+ return state.all.filter(x=>(!state.date||x.date===state.date)&&(!channel||x.channels.includes(channel))&&
+   (!needle||(x.title+" "+x.tournament+" "+x.sport).toLocaleLowerCase("ru-RU").includes(needle)));
+}
+function renderEvents(){
+ const root=$("events");root.replaceChildren();
+ const channels=[...new Set(state.all.flatMap(e=>e.channels))].sort(),saved=$("channel").value;
+ const selector=$("channel");selector.replaceChildren(new Option("Все каналы",""));
+ channels.forEach(c=>selector.add(new Option(c,c)));selector.value=saved;
+ const data=filtered();$("count").textContent=(state.date?state.date.split("-").reverse().join("."):"Весь архив")+" · Событий: "+data.length;
+ for(const event of data)root.append(makeEvent(event));
+ if(!data.length){const n=document.createElement("p");n.className="muted";n.textContent="Событий пока нет. Соберите расписание или выберите другую дату.";root.append(n)}
+}
+$("loginForm").addEventListener("submit",async event=>{
+ event.preventDefault();
+ try{const data=await api("/api/login","POST",{username:$("loginName").value,password:$("loginPassword").value});
+   $("loginMessage").textContent="";$("loginPassword").value="";showApp(data.user);
+ }catch(e){$("loginMessage").textContent=e.message}
+});
+$("collect").addEventListener("click",async()=>{
+ msg("Собираю источники, это может занять несколько минут...");
+ $("collect").disabled=true;
+ try{
+  let result;
+  try{result=await api("/api/collect","POST",{allow_partial:false})}
+  catch(e){
+   if(e.status!==409)throw e;
+   if(!confirm("Нет актуальных файлов QSport и Setanta. Собрать расписание по доступным сайтам?")){msg("Сбор отменён");return}
+   result=await api("/api/collect","POST",{allow_partial:true});
+  }
+  msg("Сбор завершён. Записей источников: "+result.event_count+
+      (result.durable_storage?". Архив сохранён.":". ВНИМАНИЕ: архив временный, постоянное хранилище не подключено."),"success");
+  await load();
+ }catch(e){msg(e.message,"error")}finally{$("collect").disabled=false}
+});
+$("export").addEventListener("click",async()=>{
+ const url="/api/export"+(state.date?"?start="+encodeURIComponent(state.date)+"&end="+encodeURIComponent(state.date):"");
+ try{
+  const res=await fetch(url,{credentials:"same-origin"});
+  if(!res.ok){const o=await res.json().catch(()=>({}));throw new Error(o.detail||"Ошибка выгрузки")}
+  const blob=await res.blob(),href=URL.createObjectURL(blob),a=document.createElement("a");
+  a.href=href;a.download="sport_epg_schedule.xlsx";a.click();setTimeout(()=>URL.revokeObjectURL(href),1000);
+ }catch(e){msg(e.message,"error")}
+});
+$("prevMonth").onclick=()=>{state.month=new Date(state.month.getFullYear(),state.month.getMonth()-1,1);renderCalendar()};
+$("nextMonth").onclick=()=>{state.month=new Date(state.month.getFullYear(),state.month.getMonth()+1,1);renderCalendar()};
+$("allDates").onclick=()=>{state.date="";renderCalendar();renderEvents()};
+$("search").oninput=renderEvents;$("channel").onchange=renderEvents;
+$("logout").onclick=async()=>{try{await api("/api/logout","POST",{})}catch(e){}showLogin()};
+state.month=new Date(kzToday().slice(0,4)*1,kzToday().slice(5,7)*1-1,1);
+api("/api/me").then(r=>showApp(r.user)).catch(showLogin);
+</script>
+</body></html>
