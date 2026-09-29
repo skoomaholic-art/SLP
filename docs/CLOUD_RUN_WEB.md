@@ -19,10 +19,27 @@ python main.py. The Cloud Run image starts uvicorn cloudrun_web:app.
 - Optional durable storage: SQLite online backup goes to a GCS object with
   generation preconditions and is restored at startup.
 
-STILL NOT CONNECTED: Gmail ingestion, sending request emails, QSport/Setanta
-Excel ingestion, review notifications, full source-change history and automatic
-background scheduling. The request button is disabled, not simulated.
-The existing site/ is informational, not the web application.
+Manual Setanta/QSport .xlsx uploads ARE connected to the web app:
+a bounded authenticated POST /api/import-epg parses only explicit LIVE sport
+rows, stores per-channel snapshots, tracks SHA-256 to prevent reimport and
+records covered days. GET /api/sources reports imported filenames, actual
+coverage and parser-run status. A missing-file warning is based on recorded
+coverage, not on a hardcoded missing-channel list. Different channels have
+different user-supplied logos, including each of the three Setanta variants.
+
+GET /api/archive includes inactive saved source snapshots, and
+GET /api/export-archive exports separate confirmed channel broadcasts.
+This is NOT a complete record of every historical change: existing database
+upsert can overwrite the payload for an identical storage ID.
+The 25-column export now preserves existing editorial rows, translations
+and IDs rather than erasing the workbook's prefilled events. Unknown Kazakh
+translations remain blank for review. The exact owner's template still must
+be provisioned at SPORT_TEMPLATE_OBJECT and checked against its headers.
+
+STILL NOT CONNECTED: automatic Gmail ingestion, sending request emails,
+automatic email/EPG change detection, full audit-history persistence and
+background scheduling. The mail-request button remains disabled rather than
+pretending to send. The existing site/ is informational, not this web app.
 
 ## On the Cloud Run build screen
 
@@ -72,8 +89,8 @@ SPORT_TEMPLATE_OBJECT. The repo does not contain the workbook or Gmail tokens.
 
 When SPORT_GCS_BUCKET is absent, the app can start and warn, but Cloud Run's
 local SQLite database is ephemeral and may disappear on restart. Do not treat
-that mode as a permanent archive. GCS snapshots are saved after manual
-refresh only. A complete production archival/retention policy needs backups
+that mode as a permanent archive. GCS snapshots are saved after manual refresh or a successful Excel import
+only. A complete production archival/retention policy needs backups
 and transactional storage if more instances are required. Storage and Cloud
 Run can incur costs; this PR creates no billable infrastructure.
 
@@ -83,12 +100,14 @@ First configure the approved Cloud Run edge access, then sign in with the
 application account. Rotating an account hash invalidates existing sessions.
 Login returns 503 until the secrets are configured.
 
-Gmail is not configured or used by this change. No email will be sent,
-and inbox updates cannot be imported from this web UI yet.
+Gmail OAuth is not configured or used by this web app. No email will be sent.
+Authorized editors can temporarily import actual downloaded supplier XLSX files
+with the manual upload control. Gmail attachments are not auto-ingested yet.
 
 Existing SLP parsers and current-snapshot semantics are inherited.
-No new channel/source is silently invented. The first archive view reads
-current accepted source snapshots; the full history editor is separate work.
+No new channel/source is silently invented. The standard event view reads current accepted source snapshots; archive
+mode also reads inactive source rows. This is not a field-level changelog and
+should not be described as one.
 Kazakh fields for events without verified translations require editorial
 review rather than automatically trusting the Russian fallback.
 
