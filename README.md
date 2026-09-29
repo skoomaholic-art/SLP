@@ -196,3 +196,10 @@ The official source may not have published it yet. Optional unpublished future d
 
 **One channel is down**  
 The other channel continues refreshing. If a last-good snapshot exists for the failed source/date, SLP keeps serving it instead of replacing it with broken data.
+
+### Separate Cloud Run web candidate
+
+The isolated sports schedule web entrypoint is documented in
+[docs/CLOUD_RUN_WEB.md](docs/CLOUD_RUN_WEB.md). It uses the root Dockerfile
+and cloudrun_web.py; it does not start the Telegram bot. The web integration
+is staged in PR #39, not a replacement for the existing Railway release.
