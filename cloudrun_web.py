@@ -23,13 +23,14 @@ import tempfile
 import time
 
 from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse, PlainTextResponse
 from openpyxl import load_workbook
 from pydantic import BaseModel
 
 from agents.runtime_orchestrator import RuntimeParserOrchestrator
 from services.live_evidence import event_is_live_broadcast, event_is_schedule_candidate
 from services.editorial_export import InvalidTemplate, build_working_xlsx
+from services import gmail_integration as gmail
 from services.epg_excel import (MAX_WORKBOOK_BYTES, InvalidEPG, import_parsed_epg,
                                imported_epg_status, initialize_epg_imports,
                                parse_epg_xlsx)
@@ -342,6 +343,7 @@ async def lifespan(application: FastAPI):
     application.state.backup = BucketSnapshot(GCS_BUCKET) if GCS_BUCKET else None
     database = SLPDatabase(DB_PATH)
     initialize_epg_imports(database)
+    gmail.init_gmail_schema(database)
     application.state.database = database
     application.state.schedule = ScheduleService(
         RuntimeParserOrchestrator(database=database)
@@ -478,13 +480,14 @@ def _source_status(request: Request) -> dict:
         })
     return {
         "websites": websites, "excel": files,
-        "mail_request": {"enabled": False, "test_to": MAIL_TEST_TO,
-                         "future_cc": MAIL_FUTURE_CC},
+        "mail_request": {"enabled": bool(gmail.status(database)["send_enabled"] and gmail.status(database)["connected"]),
+                         "test_to": MAIL_TEST_TO, "future_cc": MAIL_FUTURE_CC},
         "missing_channels": [
             x["channel"] for x in files
             if x["status"] in ("missing", "outdated")
-        ], "gmail_connected": False,
-        "note": "Excel сейчас загружаются вручную. Gmail OAuth ещё не подключён.",
+        ], "gmail_connected": gmail.status(database)["connected"],
+        "note": "Новые Gmail-вложения попадают в очередь на подтверждение." if gmail.status(database)["connected"] else
+                "Для автоматической обработки нужно подключить OAuth владельца.",
     }
 
 
@@ -518,6 +521,151 @@ async def import_epg(request: Request, upload: UploadFile = File(...)):
                 raise HTTPException(503, "Импорт выполнен, но резервная копия "
                                     "в GCS не сохранена: " + type(exc).__name__) from exc
     result["durable_storage"] = bool(request.app.state.backup)
+    return result
+
+
+
+class MailRequest(BaseModel):
+    category: str
+
+
+def require_editor(request: Request) -> dict:
+    user = current_user(request)
+    if user["role"] not in ("editor", "admin"):
+        raise HTTPException(403, "Недостаточно прав")
+    return user
+
+
+def require_admin(request: Request) -> dict:
+    user = current_user(request)
+    if user["role"] != "admin":
+        raise HTTPException(403, "Подключить Gmail может только администратор")
+    return user
+
+
+def _gmail_failure(exc: Exception) -> HTTPException:
+    if isinstance(exc, gmail.GmailNotConfigured):
+        return HTTPException(503, str(exc))
+    if isinstance(exc, gmail.GmailTransportError):
+        return HTTPException(422, str(exc))
+    return HTTPException(503, "Ошибка подключения Gmail: " + type(exc).__name__)
+
+
+async def _save_state(request: Request) -> None:
+    if request.app.state.backup:
+        try:
+            await asyncio.to_thread(request.app.state.backup.save)
+        except Exception as exc:
+            raise HTTPException(503, "Данные изменены, но резервное "
+                                "копирование не удалось: " + type(exc).__name__) from exc
+
+
+@app.get("/api/gmail/status")
+def gmail_status(request: Request):
+    current_user(request)
+    return gmail.status(request.app.state.database)
+
+
+@app.get("/api/gmail/connect")
+async def gmail_connect(request: Request):
+    user = require_admin(request)
+    if not request.app.state.backup:
+        raise HTTPException(503, "Сначала подключите постоянное хранилище GCS")
+    async with request.app.state.collect_lock:
+        try:
+            url = gmail.start_oauth(request.app.state.database,
+                                    username=user["username"])
+        except (gmail.GmailTransportError, gmail.GmailNotConfigured) as exc:
+            raise _gmail_failure(exc) from exc
+        await _save_state(request)
+    return RedirectResponse(url=url, status_code=303)
+
+
+@app.get("/api/gmail/callback")
+async def gmail_callback(request: Request, state: str = "", code: str = "",
+                         error: str = ""):
+    user = require_admin(request)
+    if error or not code:
+        return PlainTextResponse("Подключение Gmail отменено", status_code=422)
+    async with request.app.state.collect_lock:
+        try:
+            gmail.complete_oauth(request.app.state.database,
+                                 username=user["username"], state=state, code=code)
+        except (gmail.GmailTransportError, gmail.GmailNotConfigured) as exc:
+            raise _gmail_failure(exc) from exc
+        await _save_state(request)
+    return RedirectResponse(url="/?gmail=connected", status_code=303)
+
+
+@app.post("/api/gmail/sync")
+async def gmail_sync(request: Request):
+    require_editor(request)
+    origin_guard(request)
+    async with request.app.state.collect_lock:
+        try:
+            result = await asyncio.to_thread(
+                gmail.sync_inbox, request.app.state.database
+            )
+        except (gmail.GmailTransportError, gmail.GmailNotConfigured) as exc:
+            raise _gmail_failure(exc) from exc
+        if result["new_attachments"]:
+            await _save_state(request)
+    return result
+
+
+@app.get("/api/gmail/notices")
+def gmail_notices(request: Request):
+    current_user(request)
+    return {"notices": gmail.list_notices(request.app.state.database)}
+
+
+@app.post("/api/gmail/notices/{notice_id}/approve")
+async def approve_mail(request: Request, notice_id: int):
+    user = require_editor(request)
+    origin_guard(request)
+    async with request.app.state.collect_lock:
+        try:
+            result = gmail.approve_notice(
+                request.app.state.database, notice_id, username=user["username"]
+            )
+        except (gmail.GmailTransportError, gmail.GmailNotConfigured,
+                InvalidEPG) as exc:
+            raise _gmail_failure(exc) from exc
+        await _save_state(request)
+    return result
+
+
+@app.post("/api/gmail/notices/{notice_id}/dismiss")
+async def dismiss_mail(request: Request, notice_id: int):
+    user = require_editor(request)
+    origin_guard(request)
+    async with request.app.state.collect_lock:
+        try:
+            gmail.dismiss_notice(
+                request.app.state.database, notice_id, username=user["username"]
+            )
+        except (gmail.GmailTransportError, gmail.GmailNotConfigured) as exc:
+            raise _gmail_failure(exc) from exc
+        await _save_state(request)
+    return {"dismissed": True}
+
+
+@app.post("/api/gmail/request")
+async def send_test_request(request: Request, options: MailRequest):
+    user = require_editor(request)
+    origin_guard(request)
+    if not request.app.state.backup:
+        raise HTTPException(503, "Отправка требует постоянного хранилища журнала")
+    async with request.app.state.collect_lock:
+        try:
+            result = await asyncio.to_thread(
+                gmail.test_request, request.app.state.database,
+                username=user["username"], category=options.category,
+                destination=MAIL_TEST_TO,
+            )
+        except (gmail.GmailTransportError, gmail.GmailNotConfigured) as exc:
+            raise _gmail_failure(exc) from exc
+        await _save_state(request)
     return result
 
 
