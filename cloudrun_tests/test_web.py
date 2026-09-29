@@ -7,10 +7,15 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi import HTTPException
+from openpyxl import Workbook
+from starlette.datastructures import UploadFile
+
+from services.editorial_export import HEADERS
 
 import cloudrun_web as web
 from storage.database import SLPDatabase
@@ -103,6 +108,44 @@ class WebTests(unittest.TestCase):
             self.assertIn("KHL HD", channels)
             self.assertIn("EUROSPORT 1", channels)
             self.assertIn("EUROSPORT 2", channels)
+
+    def test_local_template_upload_without_cloud_storage(self):
+        """An admin can configure a template before choosing the final host."""
+        workbook = Workbook()
+        for col, header in enumerate(HEADERS, 1):
+            workbook.active.cell(1, col, header)
+        output = BytesIO()
+        workbook.save(output)
+        workbook.close()
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "templates" / "approved.xlsx"
+            request = SimpleNamespace(
+                app=SimpleNamespace(state=SimpleNamespace(
+                    backup=None, collect_lock=asyncio.Lock(),
+                )),
+            )
+            upload = UploadFile(
+                filename="approved.xlsx", file=BytesIO(output.getvalue()),
+            )
+            with patch.dict(os.environ, {"SPORT_TEMPLATE_PATH": str(target)}), \
+                 patch.object(web, "require_admin", return_value={"role": "admin"}), \
+                 patch.object(web, "origin_guard"):
+                result = asyncio.run(web.upload_template(request, upload))
+                self.assertTrue(result["uploaded"])
+                self.assertEqual(result["destination"], "local")
+                self.assertIn("постоянного тома", result["warning"])
+                self.assertTrue(target.is_file())
+                sheet = web.load_template()
+                try:
+                    self.assertEqual(sheet.active.cell(1, 25).value, HEADERS[24])
+                finally:
+                    sheet.close()
+
+    def test_local_template_requires_absolute_xlsx_path(self):
+        with patch.dict(os.environ, {"SPORT_TEMPLATE_PATH": "templates/sport.xlsx"}):
+            with self.assertRaises(HTTPException) as failure:
+                web._local_template_path()
+        self.assertEqual(failure.exception.status_code, 503)
 
     def test_scheduler_job_requires_persistence_and_private_oidc(self):
         request = SimpleNamespace(
