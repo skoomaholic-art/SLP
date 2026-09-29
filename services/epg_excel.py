@@ -309,7 +309,7 @@ def parse_epg_xlsx(data: bytes, filename: str, *, today: date | None = None) -> 
         for e in events
     }
     return ParsedEPG(channel=channel, filename=filename,
-                     content_hash=hashlib.sha256(data).hexdigest(),
+                     content_hash=hashlib.sha256(channel.encode() + b"\0" + data).hexdigest(),
                      scope_dates=tuple(sorted(days | {e["date"] for e in unique.values()})),
                      all_programmes=count,
                      events=tuple(unique.values()))
