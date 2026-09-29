@@ -542,7 +542,7 @@ def _search_queries(database) -> tuple[str, ...]:
     )
     return (
         boundary + " (filename:xlsx OR filename:xls)",
-        boundary + " (setanta OR сетанта OR qsport OR SPORTPLUS OR SPORT+)",
+        boundary + " (setanta OR сетанта OR qsport OR qazsport OR SPORTPLUS OR SPORT+)",
     )
 
 
