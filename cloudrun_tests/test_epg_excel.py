@@ -1,15 +1,17 @@
 """Focused regression for the two actual supplier XLSX layouts. No Gmail or network."""
+import hashlib
 from datetime import date
 from io import BytesIO
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from openpyxl import Workbook
 
 from services.epg_excel import (
     InvalidEPG, import_parsed_epg, imported_epg_status, parse_epg_xlsx,
-    preview_parsed_epg,
+    parse_epg_xlsx_channels, preview_parsed_epg,
 )
 from storage.database import SLPDatabase
 from cloudrun_web import event_rows
@@ -254,6 +256,35 @@ class EPGExcelTests(unittest.TestCase):
     def test_unknown_channel_rejected(self):
         with self.assertRaises(InvalidEPG):
             parse_epg_xlsx(b"not a spreadsheet", "mystery.xlsx")
+
+    def test_legacy_xls_routes_by_actual_workbook_and_retains_original_hash(self):
+        # A converted workbook is injected here; the real BIFF decoder is
+        # exercised by the dependency at integration time with supplier files.
+        xlsx = workbook_bytes([
+            (3, 1, "Q ARENA"), (3, 3, "30 сентября"),
+            (2, 4, "AST"), (2, 5, 0.5),
+            (3, 5, "LIVE. Футбол. КПЛ, 27 тур, Команда А - Команда Б"),
+        ])
+        legacy = b"sample-legacy-biff-bytes"
+        with patch("services.epg_excel._legacy_xls_to_xlsx", return_value=xlsx):
+            result = parse_epg_xlsx_channels(
+                legacy, "сетка Канала.xls", today=date(2026, 9, 29),
+                context="Письмо Q LEAGUE и Q ARENA",
+            )
+            direct = parse_epg_xlsx(
+                legacy, "сетка Канала.xls", today=date(2026, 9, 29),
+            )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].channel, "Q ARENA")
+        self.assertEqual(result[0].filename, "сетка Канала.xls")
+        original_hash = hashlib.sha256(b"Q ARENA\0" + legacy).hexdigest()
+        self.assertEqual(result[0].content_hash, original_hash)
+        self.assertEqual(direct.content_hash, original_hash)
+        self.assertEqual(result[0].events[0]["time"], "12:00")
+
+    def test_unreadable_legacy_xls_does_not_create_live(self):
+        with self.assertRaises(InvalidEPG):
+            parse_epg_xlsx_channels(b"not-a-real-biff-workbook", "schedule.xls")
 
     def test_simulcast_only_different_channels_matching_event(self):
         with tempfile.TemporaryDirectory() as folder:
