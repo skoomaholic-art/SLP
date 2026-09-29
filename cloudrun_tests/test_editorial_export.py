@@ -137,7 +137,7 @@ class EditorialExportTests(unittest.TestCase):
         }
         self.assertEqual(
             values["UFC 332: Силва - Ван - Main Card"],
-            ("UFC 332", "", "ММА. UFC 332: Силва - Ван - Main Card"),
+            ("UFC 332", "", "ММА. Силва - Ван. Основной кард"),
         )
         self.assertEqual(
             values["ATP 250 Ханчжоу: Полуфинал 1"],
