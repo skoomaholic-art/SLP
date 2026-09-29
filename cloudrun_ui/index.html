@@ -31,7 +31,21 @@ h1{font-size:30px;margin:0 0 7px}h2{font-size:19px;margin:0 0 12px}.subtitle,.mu
 .badge.live{background:#14564d;color:#a8ffec}.badge.past{background:#303a48;color:#c1ccda}
 .events{display:grid;gap:8px;max-height:620px;overflow:auto}
 .event{background:#101722;border:1px solid #29384b;border-radius:11px;padding:13px}
-.item-top{justify-content:space-between;gap:8px}.name{font-weight:700;margin:8px 0 2px}.channel{color:var(--accent);font-size:12px}
+.item-top{justify-content:space-between;gap:8px}.name{font-weight:700;margin:8px 0 2px}.channel{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:7px;color:var(--accent);font-size:12px}
+.channel-pill{display:inline-flex;align-items:center;gap:6px;border:1px solid #3a495e;border-radius:7px;padding:4px 8px;min-height:30px;max-width:100%}
+.channel-logo{width:54px;height:22px;object-fit:contain;flex:0 0 54px}
+.channel-label{overflow-wrap:anywhere;word-break:normal}
+.source-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px;margin:12px 0}
+.source-item{display:flex;gap:9px;align-items:center;border:1px solid var(--line);border-radius:10px;padding:9px;min-width:0}
+.source-item .channel-logo{width:62px;flex-basis:62px}
+.source-text{min-width:0;overflow-wrap:anywhere}
+.source-state{color:var(--muted);font-size:12px}
+.source-state.ok{color:var(--accent)}
+details.sources{margin:16px 0}
+details.sources summary{cursor:pointer;font-weight:700;font-size:16px}
+.import-row{display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin-top:15px}
+.import-row input{max-width:340px}
+
 footer{margin:25px 0;color:var(--muted);font-size:12px}
 </style>
 </head>
@@ -55,7 +69,14 @@ footer{margin:25px 0;color:var(--muted);font-size:12px}
 <button id="logout">Выйти</button>
 </div>
 <div id="message" class="hide notice"></div>
-<div id="sources" class="muted-small"></div>
+<details class="card sources" id="sourcesPanel"><summary>Источники и импорт Excel</summary>
+<div id="sources" aria-live="polite"><p class="muted">Статусы загружаются...</p></div>
+<form id="epgForm" class="import-row">
+<input id="epgFiles" type="file" accept=".xlsx" multiple aria-label="Выберите EPG-файлы QSport или Setanta">
+<button type="submit" id="epgUpload">Загрузить Excel</button>
+</form>
+<p class="muted-small">Временный импорт поставщиков до подключения Gmail. Используйте исходные XLSX; будут учтены только строки с подтверждённым LIVE. Повторный файл не создаёт дубликаты.</p>
+</details>
 <div class="grid">
 <section class="card">
 <div class="calendar-tools"><h2 style="margin:0;flex:1">Календарь</h2><button id="prevMonth" aria-label="Предыдущий месяц">‹</button><button id="nextMonth" aria-label="Следующий месяц">›</button></div>
@@ -77,6 +98,7 @@ footer{margin:25px 0;color:var(--muted);font-size:12px}
 <footer>Данные поступают только из подтверждённых источников. При отсутствии почтовых файлов частичный сбор требует подтверждения. Веб-сервис не запускает Telegram-бота.</footer>
 </section>
 </main>
+<script src="/assets/logos.js"></script>
 <script>
 "use strict";
 const $=id=>document.getElementById(id);
@@ -102,9 +124,52 @@ async function load(){
   state.all=data.events||[];
   renderCalendar();renderEvents();
   const status=await api("/api/sources");
-  $("sources").textContent="Источники: "+status.available_now.join(", ")+". Ожидают подключения: "+status.not_connected.join(", ")+".";
+  renderSources(status);
  }catch(e){msg(e.message,"error")}
 }
+
+function channelPill(channel){
+ const chip=document.createElement("span");chip.className="channel-pill";
+ const uri=typeof CHANNEL_LOGOS==="object"&&CHANNEL_LOGOS[channel];
+ if(uri){
+  const img=document.createElement("img");img.className="channel-logo";img.src=uri;
+  img.alt="";img.setAttribute("aria-hidden","true");chip.append(img);
+ }
+ const name=document.createElement("span");name.className="channel-label";name.textContent=channel;
+ chip.append(name);return chip;
+}
+function renderSources(data){
+ const node=$("sources");node.replaceChildren();
+ const grid=document.createElement("div");grid.className="source-grid";
+ for(const item of [...(data.websites||[]),...(data.excel||[])]){
+  const row=document.createElement("div");row.className="source-item";
+  const icon=typeof CHANNEL_LOGOS==="object"&&CHANNEL_LOGOS[item.channel];
+  if(icon){const img=document.createElement("img");img.className="channel-logo";img.src=icon;img.alt="";row.append(img)}
+  const info=document.createElement("div");info.className="source-text";
+  const name=document.createElement("strong");name.textContent=item.channel;
+  const state=document.createElement("div");
+  const labels={
+   ready:"Актуальный Excel",partial:"Excel покрывает часть недели",
+   outdated:"Excel устарел",missing:"Excel не получен",
+   ok:"Источник обработан",warning:"Обработан с предупреждением",
+   error:"Ошибка источника",not_checked:"Источник ещё не проверялся"
+  };
+  state.textContent=labels[item.status]||item.status;
+  state.className="source-state"+(["ok","ready"].includes(item.status)?" ok":"");
+  info.append(name,state);
+  if(item.coverage?.length){
+   const note=document.createElement("div");note.className="muted-small";
+   note.textContent=item.coverage[0]+" - "+item.coverage.at(-1)+
+     ", LIVE: "+(item.live_events??0);info.append(note);
+  }
+  row.append(info);grid.append(row);
+ }
+ node.append(grid);
+ const mail=document.createElement("p");mail.className="muted-small";
+ mail.textContent=data.gmail_connected?"Gmail подключён":
+   "Gmail пока не подключён. Файлы загружаются вручную.";node.append(mail);
+}
+
 function renderCalendar(){
  const d=state.month,y=d.getFullYear(),m=d.getMonth(),start=(new Date(y,m,1).getDay()+6)%7;
  const days=new Date(y,m+1,0).getDate(),counts=new Set(state.all.map(x=>x.date));
@@ -125,7 +190,8 @@ function makeEvent(ev){
  top.append(time,flag);
  const title=document.createElement("div");title.className="name";title.textContent=ev.title;
  const label=document.createElement("div");label.className="muted-small";label.textContent=[ev.sport,ev.tournament].filter(Boolean).join(" · ");
- const ch=document.createElement("div");ch.className="channel";ch.textContent=ev.channels.join(" / ");
+ const ch=document.createElement("div");ch.className="channel";
+ for(const channel of ev.channels)ch.append(channelPill(channel));
  outer.append(top,title,label,ch);
  return outer;
 }
@@ -157,7 +223,8 @@ $("collect").addEventListener("click",async()=>{
   try{result=await api("/api/collect","POST",{allow_partial:false})}
   catch(e){
    if(e.status!==409)throw e;
-   if(!confirm("Нет актуальных файлов QSport и Setanta. Собрать расписание по доступным сайтам?")){msg("Сбор отменён");return}
+   const missing=(e.detail?.missing_channels||[]).join(", ");
+   if(!confirm("Нет актуальных Excel: "+missing+". Собрать по доступным источникам?")){msg("Сбор отменён");return}
    result=await api("/api/collect","POST",{allow_partial:true});
   }
   msg("Сбор завершён. Записей источников: "+result.event_count+
@@ -174,6 +241,33 @@ $("export").addEventListener("click",async()=>{
   a.href=href;a.download="sport_epg_schedule.xlsx";a.click();setTimeout(()=>URL.revokeObjectURL(href),1000);
  }catch(e){msg(e.message,"error")}
 });
+
+$("epgForm").addEventListener("submit",async event=>{
+ event.preventDefault();
+ const files=[...$("epgFiles").files||[]];
+ if(!files.length){msg("Выберите Excel-файлы Setanta или QSport.","error");return}
+ $("epgUpload").disabled=true;
+ const outcomes=[];
+ try{
+  for(const file of files){
+   const form=new FormData();form.append("upload",file,file.name);
+   const response=await fetch("/api/import-epg",{method:"POST",body:form,credentials:"same-origin"});
+   const data=await response.json().catch(()=>({}));
+   if(!response.ok){
+    outcomes.push(file.name+": "+(data.detail||"Ошибка "+response.status));
+    continue;
+   }
+   outcomes.push(data.channel+": "+(data.status==="already_imported"?"уже загружен":
+       "загружен, LIVE "+data.live_events));
+  }
+  msg(outcomes.join(". ")+"."+(outcomes.length?" Список событий обновлён.":""),
+      outcomes.length===files.length?"success":"error");
+  $("epgFiles").value="";
+  await load();
+ }catch(error){msg(error.message,"error")}
+ finally{$("epgUpload").disabled=false}
+});
+
 $("prevMonth").onclick=()=>{state.month=new Date(state.month.getFullYear(),state.month.getMonth()-1,1);renderCalendar()};
 $("nextMonth").onclick=()=>{state.month=new Date(state.month.getFullYear(),state.month.getMonth()+1,1);renderCalendar()};
 $("allDates").onclick=()=>{state.date="";renderCalendar();renderEvents()};
