@@ -35,6 +35,7 @@ from services import assistant_bridge
 from services import ai_pipeline
 from services import editorial_store as editorial
 from services.channel_registry import CHANNELS
+from services.fight_club_sources import refresh_fight_club_source
 from services.vsetv_sources import WEB_CHANNEL_IDS, refresh_vsetv_web_sources
 from services.browser_schedule import browser_fallback_enabled, install_browser_for_python_runtime
 from services.epg_excel import (MAX_WORKBOOK_BYTES, InvalidEPG, import_parsed_epg,
@@ -570,6 +571,8 @@ def _source_status(request: Request) -> dict:
             sources.append("web_vsetv_" + str(channel.vsetv_id))
         if channel.tvplus_id or channel.name == "FIGHT CLUB":
             sources.append("tvguide")
+        if channel.name == "FIGHT CLUB":
+            sources.append("web_fightclub")
         runs = [source_runs[name] for name in sources if name in source_runs]
         newest = max(
             runs, key=lambda item: str(item.get("created_at") or ""),
@@ -1022,6 +1025,12 @@ async def scheduled_refresh(request: Request):
             )
         except Exception as exc:
             results["errors"].append("vsetv: " + type(exc).__name__)
+        try:
+            results["fight_club"] = await refresh_fight_club_source(
+                request.app.state.database
+            )
+        except Exception as exc:
+            results["errors"].append("fightclub: " + type(exc).__name__)
         if gmail.status(request.app.state.database)["connected"]:
             try:
                 results["gmail"] = await asyncio.to_thread(
@@ -1146,6 +1155,7 @@ async def collect(request: Request, options: CollectOptions):
         try:
             await request.app.state.schedule.refresh()
             vsetv = await refresh_vsetv_web_sources(request.app.state.database)
+            fight_club = await refresh_fight_club_source(request.app.state.database)
             if request.app.state.backup:
                 await asyncio.to_thread(request.app.state.backup.save)
         except Exception as exc:
@@ -1155,7 +1165,7 @@ async def collect(request: Request, options: CollectOptions):
     return {"ok": True, "event_count": db.active_event_count(),
             "durable_storage": bool(request.app.state.backup),
             "last_run": db.latest_agent_run(),
-            "vsetv": vsetv}
+            "vsetv": vsetv, "fight_club": fight_club}
 
 
 
