@@ -91,7 +91,7 @@ def detect_channel(filename: str) -> str:
         ("league", "qleague"), ("arena", "qarena"),
         ("football", "qfootball"),
     ):
-        if re.search(r"\bq[\\s_-]*" + label + r"\b", name):
+        if re.search(r"\bq[\s_-]*" + label + r"\b", name):
             return CHANNELS[key]
     if re.search(r"\bq\s*sport\b|\bqsport\b", name):
         for marker, key in (
