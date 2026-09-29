@@ -57,9 +57,19 @@ CHANNELS = (
     Channel("FIGHT CLUB", secondary_guide="https://programma-peredach.com/kanal_fight-club/"),
 )
 
-VSETV_CHANNELS = {
+_VSETV_IDS = {
     channel.vsetv_name: channel.vsetv_id
     for channel in CHANNELS if channel.vsetv_id is not None
+}
+# Keep legacy import order stable; existing source snapshots and regression
+# diagnostics expect the original six before the two new Setanta imports.
+VSETV_CHANNELS = {
+    name: _VSETV_IDS[name]
+    for name in (
+        "KHL PRIME", "KHL HD", "EUROSPORT 1", "EUROSPORT 2",
+        "МАТЧ! ПЛАНЕТА", "viju+ Sport",
+        "Setanta Sports 1", "Setanta Sports 2",
+    )
 }
 TVPLUS_CHANNELS = {
     channel.tvplus_name: channel.tvplus_id
