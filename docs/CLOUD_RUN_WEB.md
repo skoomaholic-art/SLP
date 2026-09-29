@@ -27,6 +27,18 @@ coverage and parser-run status. A missing-file warning is based on recorded
 coverage, not on a hardcoded missing-channel list. Different channels have
 different user-supplied logos, including each of the three Setanta variants.
 
+The owner's supplied brand icon and avatar images are in
+cloudrun_ui/assets/ (Skoomaholic, Дания, Вадим). The source and event UI
+uses a full contain-fit logo frame: KHL PRIME and KHL HD have separate
+identity labels, as do all three Setanta stations. The favicon is the
+approved puppet-and-football icon, not a generated replacement.
+
+Mail request preview config: SPORT_MAIL_TEST_TO defaults to the owner's
+work mailbox (alexandr.petrossov@fmedia.kz), while
+SPORT_MAIL_FUTURE_CC reserves the same address for a future CC field.
+The previously supplied Anton addresses are NOT an active recipient in
+the web code. This does not enable sending or Gmail OAuth.
+
 GET /api/archive includes inactive saved source snapshots, and
 GET /api/export-archive exports separate confirmed channel broadcasts.
 This is NOT a complete record of every historical change: existing database
