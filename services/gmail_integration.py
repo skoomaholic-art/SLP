@@ -317,13 +317,21 @@ def sync_inbox(database) -> dict:
     """Read-only Gmail sync; never imports programmes before user approval."""
     init_gmail_schema(database)
     token = _access_token(database)
-    response = _json_api("/users/me/messages?" + urlencode({
-        "q": "newer_than:21d (filename:xlsx OR filename:xls)",
-        "maxResults": str(MAX_LIST_MESSAGES),
-    }), token)
+    searches = (
+        "newer_than:21d (filename:xlsx OR filename:xls)",
+        "newer_than:21d (setanta OR сетанта OR qsport OR SPORTPLUS OR SPORT+)",
+    )
+    message_ids: dict[str, dict] = {}
+    for query in searches:
+        response = _json_api("/users/me/messages?" + urlencode({
+            "q": query, "maxResults": str(MAX_LIST_MESSAGES),
+        }), token)
+        for item in response.get("messages", [])[:MAX_LIST_MESSAGES]:
+            if item.get("id"):
+                message_ids[str(item["id"])] = item
     created = 0
     reviewed = 0
-    for item in response.get("messages", [])[:MAX_LIST_MESSAGES]:
+    for item in message_ids.values():
         msg_id = str(item.get("id") or "")
         if not re.fullmatch(r"[a-f0-9]{10,32}", msg_id):
             continue
@@ -337,12 +345,28 @@ def sync_inbox(database) -> dict:
             received = datetime.fromtimestamp(int(millis) / 1000, KZ_TIMEZONE).isoformat()
         except (ValueError, OverflowError):
             received = datetime.now(KZ_TIMEZONE).isoformat()
-        if not REVIEW_TOKENS.search(subject + " " + snippet) and not any(
-            _candidate(p.get("filename", ""), subject)
-            for p in _walk_parts(message.get("payload", {}))
+        parts = list(_walk_parts(message.get("payload", {})))
+        relevant = bool(REVIEW_TOKENS.search(subject + " " + snippet))
+        if not relevant and not any(
+            _candidate(p.get("filename", ""), subject) for p in parts
         ):
             continue
-        for part in _walk_parts(message.get("payload", {})):
+        # A text-only announcement is a review notification. Neither a
+        # subject nor a snippet proves that a fixture has been cancelled.
+        if not parts and relevant and CHANGE_TOKENS.search(subject + " " + snippet):
+            with database._connect() as conn:
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO gmail_notices("
+                    "message_id,attachment_id,filename,subject,sender,snippet,"
+                    "detected_channel,status,reason,received_at,created_at"
+                    ") VALUES(?,'__message__','',?,?,?,'','review',?,?,?)",
+                    (msg_id, subject, sender, snippet,
+                     "Письмо об изменениях без распознанного XLSX",
+                     received, datetime.now(KZ_TIMEZONE).isoformat()),
+                )
+                if cur.rowcount:
+                    reviewed += 1
+        for part in parts:
             filename = str(part.get("filename") or "")[:200]
             attachment_id = str(part["body"].get("attachmentId") or "")
             if not filename or not attachment_id or not _candidate(filename, subject):
@@ -385,7 +409,7 @@ def sync_inbox(database) -> dict:
             created += 1
     return {"new_attachments": created, "requires_review": reviewed,
             "pending": status(database)["pending"],
-            "scanned_messages": len(response.get("messages", []))}
+            "scanned_messages": len(message_ids)}
 
 
 def approve_notice(database, notice_id: int, *, username: str) -> dict:
@@ -433,7 +457,7 @@ def test_request(database, *, username: str, category: str, destination: str) ->
     """
     if _env("SPORT_GMAIL_ENABLE_TEST_SEND").lower() != "true":
         raise GmailNotConfigured("Тестовая отправка выключена в настройках")
-    expected = _env("SPORT_MAIL_TEST_TO")
+    expected = _env("SPORT_MAIL_TEST_TO") or "alexandr.petrossov@fmedia.kz"
     if not expected or expected.casefold() != "alexandr.petrossov@fmedia.kz":
         raise GmailNotConfigured("Разрешён только подтверждённый тестовый получатель")
     if destination != expected:
