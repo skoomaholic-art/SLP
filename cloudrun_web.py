@@ -858,6 +858,62 @@ async def scheduled_gmail_sync(request: Request):
     return result
 
 
+@app.post("/api/jobs/refresh")
+async def scheduled_refresh(request: Request):
+    """Optional authenticated one-shot refresh for Cloud Scheduler.
+
+    No task is created automatically and no cloud service is provisioned.
+    This endpoint must never be reachable without an OIDC identity from
+    the configured dedicated service account.
+    """
+    if not request.app.state.backup:
+        raise HTTPException(503, "Для фонового обновления нужен постоянный GCS")
+    allowed = os.getenv("SPORT_SCHEDULER_SERVICE_ACCOUNT", "").strip()
+    if not allowed or not PUBLIC_URL:
+        raise HTTPException(503, "Cloud Scheduler ещё не настроен")
+    authorization = request.headers.get("authorization", "")
+    if not authorization.startswith("Bearer ") or len(authorization) > 8192:
+        raise HTTPException(401, "Требуется OIDC-токен Cloud Scheduler")
+    try:
+        from google.oauth2 import id_token
+        from google.auth.transport.requests import Request as GoogleRequest
+        claims = await asyncio.to_thread(
+            id_token.verify_oauth2_token, authorization[7:],
+            GoogleRequest(), PUBLIC_URL + "/api/jobs/refresh",
+        )
+    except Exception:
+        raise HTTPException(401, "OIDC-токен не прошёл проверку") from None
+    if not claims.get("email_verified") or (
+        str(claims.get("email") or "").casefold() != allowed.casefold()
+    ):
+        raise HTTPException(403, "Неизвестный сервисный аккаунт")
+    async with request.app.state.collect_lock:
+        results = {"gmail": None, "websites": None, "errors": []}
+        try:
+            await request.app.state.schedule.refresh()
+        except Exception as exc:
+            results["errors"].append(
+                "official_sources: " + type(exc).__name__
+            )
+        try:
+            results["websites"] = await refresh_vsetv_web_sources(
+                request.app.state.database
+            )
+        except Exception as exc:
+            results["errors"].append("vsetv: " + type(exc).__name__)
+        if gmail.status(request.app.state.database)["connected"]:
+            try:
+                results["gmail"] = await asyncio.to_thread(
+                    gmail.sync_inbox, request.app.state.database,
+                    allow_auto_import=True,
+                )
+            except (gmail.GmailTransportError, gmail.GmailNotConfigured) as exc:
+                results["errors"].append("gmail: " + type(exc).__name__)
+        await _save_state(request)
+    results["ok"] = not bool(results["errors"])
+    return results
+
+
 @app.get("/api/gmail/notices")
 def gmail_notices(request: Request):
     current_user(request)
