@@ -248,7 +248,7 @@ def _year(filename: str, today: date) -> int:
 
 
 _FILENAME_DATE_RE = re.compile(
-    r"(?<!\\d)(\\d{1,2})[.](\\d{1,2})[.](20\\d{2}|\\d{2})(?!\\d)"
+    r"(?<!\d)(\d{1,2})[.](\d{1,2})[.](20\d{2}|\d{2})(?!\d)"
 )
 
 
