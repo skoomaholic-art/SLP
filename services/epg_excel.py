@@ -87,6 +87,12 @@ def detect_channel(filename: str) -> str:
             return CHANNELS["setanta2"]
         if re.search(r"\b(qazaqstan|kazakhstan\s*kz|setanta\s*kz)\b", name):
             return CHANNELS["setantakz"]
+    for label, key in (
+        ("league", "qleague"), ("arena", "qarena"),
+        ("football", "qfootball"),
+    ):
+        if re.search(r"\bq[\\s_-]*" + label + r"\b", name):
+            return CHANNELS[key]
     if re.search(r"\bq\s*sport\b|\bqsport\b", name):
         for marker, key in (
             ("league", "qleague"), ("arena", "qarena"),
