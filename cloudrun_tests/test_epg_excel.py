@@ -96,6 +96,25 @@ class EPGExcelTests(unittest.TestCase):
             self.assertEqual(kz["live_events"], 0)
             self.assertEqual(db.active_event_count(), 0)
 
+    def test_midnight_event_not_lost_when_next_day_header_absent(self):
+        data = workbook_bytes([
+            (3, 3, "29 сентября"), (2, 4, "AST"),
+            (2, 5, 1.05), (3, 5, "LIVE. Футбол. Лига, 5 тур, Команда А - Команда Б"),
+            (2, 6, 1.13), (3, 6, "Обзор футбола"),
+        ])
+        parsed = parse_epg_xlsx(
+            data, "EPG QSport Arena 28.09.26 - 04.10.26_MEDIA.xlsx",
+            today=date(2026, 9, 29),
+        )
+        self.assertEqual(parsed.events[0]["date"], "2026-09-30")
+        self.assertIn("2026-09-30", parsed.scope_dates)
+        with tempfile.TemporaryDirectory() as folder:
+            db = SLPDatabase(Path(folder) / "db.sqlite")
+            import_parsed_epg(db, parsed)
+            self.assertEqual(len(db.load_active_source_snapshot(
+                "email_epg_qarena", "2026-09-30"
+            )), 1)
+
     def test_unknown_channel_rejected(self):
         with self.assertRaises(InvalidEPG):
             parse_epg_xlsx(b"not a spreadsheet", "mystery.xlsx")
