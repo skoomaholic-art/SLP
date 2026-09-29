@@ -19,7 +19,6 @@ class FakeDatabase:
         return {
             "qazsport": [{"channel": "Qazsport"}],
             "sportplus": [],
-            "web_fightclub": [],
             "tvguide": [
                 {"channel": "KHL HD"},
                 {"channel": "KHL HD"},
@@ -46,12 +45,12 @@ class FakeDatabase:
 
 
 class HealthTests(unittest.TestCase):
-    def test_health_lists_all_16_channels_separately(self):
+    def test_health_lists_all_14_channels_separately(self):
         text = build_health_text(FakeDatabase())
         channel_names = [name for name, _ in CHANNEL_SOURCES]
 
-        self.assertEqual(len(channel_names), 16)
-        self.assertEqual(len(set(channel_names)), 16)
+        self.assertEqual(len(channel_names), 14)
+        self.assertEqual(len(set(channel_names)), 14)
         for name in channel_names:
             with self.subTest(channel=name):
                 self.assertIn(f"🟢 {name}\n", text)
