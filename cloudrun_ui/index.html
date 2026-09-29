@@ -74,6 +74,14 @@ details.sources summary{cursor:pointer;font-weight:700;font-size:16px}
 .mail-notice-count{border-radius:9px;padding:3px 7px;background:#4e3628;color:#ffddb4}
 .mail-request-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0}
 .mail-request-controls select{max-width:240px}
+.edit-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:9px;margin:12px 0}
+.edit-fields label{display:flex;flex-direction:column;font-size:12px;color:var(--muted);gap:4px}
+.edit-fields input{width:100%;padding:7px}
+.edit-panel{padding:9px;border:1px solid var(--line);border-radius:10px;margin-top:8px}
+.history-list{font-size:12px;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
+.status-line{font-size:12px;color:var(--muted)}
+.template-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:9px 0}
+.template-bar input{width:min(100%,400px)}
 
 footer{margin:25px 0;color:var(--muted);font-size:12px}
 </style>
@@ -129,7 +137,15 @@ footer{margin:25px 0;color:var(--muted);font-size:12px}
 <input id="epgFiles" type="file" accept=".xlsx" multiple aria-label="Выберите EPG-файлы QSport или Setanta">
 <button type="submit" id="epgUpload">Загрузить Excel</button>
 </form>
-<p class="muted-small">Временный импорт поставщиков до подключения Gmail. Используйте исходные XLSX; будут учтены только строки с подтверждённым LIVE. Повторный файл не создаёт дубликаты.</p>
+<p class="muted-small">Можно загрузить исходные XLSX вручную. После OAuth новые файлы появятся в почтовой очереди. В расписание попадут только подтверждённые LIVE.</p>
+<div id="templateArea" class="hide">
+<h3>Утверждённый Excel-шаблон</h3><p id="templateStatus" class="status-line">Проверяю шаблон...</p>
+<form id="templateForm" class="template-bar">
+<input id="templateFile" type="file" accept=".xlsx" required aria-label="Выберите утверждённый шаблон">
+<button id="templateUpload" type="submit">Загрузить шаблон в GCS</button>
+</form>
+<p class="muted-small">Только администратор. Заменяет шаблон экспорта, не изменяя исторические записи.</p>
+</div>
 </details>
 <div class="grid">
 <section class="card">
@@ -192,7 +208,9 @@ function showApp(user){
   const url=approved[user.username];
   if(url&&user.avatar_url===url){portrait.src=url;portrait.classList.remove("hide")}
   else if(user.avatar){fallback.textContent=user.avatar;fallback.classList.remove("hide")}
-  state.logged=true;state.gmailAdmin=user.role==="admin";load();
+  state.logged=true;state.gmailAdmin=user.role==="admin";
+  $("templateArea").classList.toggle("hide",!state.gmailAdmin);
+  load();
 }
 async function load(){
  try{
@@ -202,6 +220,7 @@ async function load(){
   const status=await api("/api/sources");
   renderSources(status);
   await loadMailStatus();
+  await loadTemplateStatus();
  }catch(e){msg(e.message,"error")}
 }
 
@@ -264,6 +283,17 @@ function renderSources(data){
  }
 }
 
+
+
+async function loadTemplateStatus(){
+ if(!state.gmailAdmin)return;
+ try{
+  const result=await api("/api/template/status");
+  $("templateStatus").textContent=result.available?
+    "Шаблон найден: "+result.name:
+    "Шаблон пока не загружен. "+(result.message||"Для выгрузки потребуется утверждённый XLSX.");
+ }catch(e){$("templateStatus").textContent=e.message}
+}
 
 async function loadMailStatus(){
  const status=await api("/api/gmail/status");
@@ -384,8 +414,86 @@ function makeEvent(ev){
   }
   outer.append(details);
  }
+ if(ev.broadcasts?.length&&ev.broadcasts[0].source_record_id){
+  outer.append(editorPanel(ev, ev.broadcasts[0].source_record_id));
+ }
  return outer;
 }
+
+function editorPanel(ev,storageId){
+ const panel=document.createElement("details");panel.className="edit-panel";
+ const summary=document.createElement("summary");summary.className="muted-small";
+ summary.textContent="Редактировать событие · история";panel.append(summary);
+ const help=document.createElement("p");help.className="muted-small";
+ help.textContent="Исправления сохраняются поверх EPG, источник остаётся неизменным. "+
+  "Изменения этого канала не затрагивают другие эфиры.";
+ panel.append(help);
+ const form=document.createElement("form");
+ const grid=document.createElement("div");grid.className="edit-fields";
+ const spec=[
+  ["title","Событие",ev.title],["sport","Вид спорта",ev.sport],
+  ["tournament","Турнир",ev.tournament],["time","Начало (UTC+5)",ev.time],
+  ["end_time","Окончание (если известно)",ev.editorial?.end_time||""],
+  ["team1_ru","TEAM 1 RU",ev.team1_ru||""],
+  ["team1_kz","TEAM 1 KZ",ev.team1_kz||""],
+  ["team2_ru","TEAM 2 RU",ev.team2_ru||""],
+  ["team2_kz","TEAM 2 KZ",ev.team2_kz||""],
+  ["subtitle_ru","SUBTITLE RU",ev.subtitle_ru||""],
+  ["subtitle_kz","SUBTITLE KZ",ev.subtitle_kz||""],
+ ];
+ for(const [field,label,value] of spec){
+  const labelEl=document.createElement("label");labelEl.textContent=label;
+  const input=document.createElement("input");input.name=field;input.value=value;
+  input.maxLength=250;input.autocomplete="off";
+  if(["time","end_time"].includes(field))input.placeholder="ЧЧ:ММ";
+  labelEl.append(input);grid.append(labelEl);
+ }
+ form.append(grid);
+ const button=document.createElement("button");button.textContent="Сохранить правки";
+ button.type="submit";
+ form.append(button);
+ form.addEventListener("submit",async e=>{
+  e.preventDefault();
+  const values={};
+  for(const [field,,oldValue] of spec){
+   const value=form.elements.namedItem(field).value.trim();
+   if(value!==oldValue)values[field]=value;
+  }
+  if(!Object.keys(values).length){msg("Изменений нет.");return}
+  button.disabled=true;
+  try{
+   await api("/api/editorial/"+storageId,"PATCH",{values});
+   msg("Изменения сохранены. Исходная программа не перезаписана.","success");
+   await load();
+  }catch(error){msg(error.message,"error")}
+  finally{button.disabled=false}
+ });
+ panel.append(form);
+ const historyButton=document.createElement("button");
+ historyButton.type="button";historyButton.textContent="История изменений";
+ historyButton.style.marginLeft="8px";
+ const history=document.createElement("div");history.className="history-list";
+ historyButton.addEventListener("click",async()=>{
+  try{
+   const [source,editor]=await Promise.all([
+    api("/api/archive/revisions?storage_id="+storageId),
+    api("/api/editorial/"+storageId+"/history")
+   ]);
+   const lines=[];
+   for(const entry of (source.revisions||[]).slice(0,20)){
+    lines.push(entry.created_at.slice(0,16).replace("T"," ")+
+     " · EPG: "+entry.change_kind);
+   }
+   for(const entry of (editor.history||[]).slice(0,20)){
+    lines.push(entry.changed_at.slice(0,16).replace("T"," ")+
+     " · Редактор "+entry.editor+": "+Object.keys(JSON.parse(entry.after_json||"{}")).join(", "));
+   }
+   history.textContent=lines.join("\n")||"Изменений пока нет.";
+  }catch(e){history.textContent=e.message}
+ });
+ panel.append(historyButton,history);return panel;
+}
+
 function filtered(){
  const needle=$("search").value.trim().toLocaleLowerCase("ru-RU"),channel=$("channel").value;
  return state.all.filter(x=>(!state.date||x.date===state.date)&&(!channel||x.channels.includes(channel))&&
@@ -460,6 +568,25 @@ $("epgForm").addEventListener("submit",async event=>{
 });
 
 
+
+
+$("templateForm").addEventListener("submit",async event=>{
+ event.preventDefault();
+ const file=$("templateFile").files[0];
+ if(!file){msg("Выберите XLSX-шаблон.","error");return}
+ $("templateUpload").disabled=true;
+ try{
+  const form=new FormData();form.append("upload",file,file.name);
+  const response=await fetch("/api/template",{
+   method:"POST",body:form,credentials:"same-origin"
+  });
+  const result=await response.json().catch(()=>({}));
+  if(!response.ok)throw new Error(result.detail||"Ошибка загрузки шаблона");
+  msg("Утверждённый шаблон загружен: "+result.name,"success");
+  $("templateFile").value="";await loadTemplateStatus();
+ }catch(e){msg(e.message,"error")}
+ finally{$("templateUpload").disabled=false}
+});
 
 $("mailCheck").addEventListener("click",()=>checkGmail(false));
 $("request").addEventListener("click",()=>{
