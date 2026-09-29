@@ -159,14 +159,32 @@ def clean(value: str) -> str:
 
 
 def channel_name(name: str) -> str:
-    name = str(name or "").strip()
-    return {
-        "QAZSPORT": "QAZSPORT HD",
-        "Qazsport": "QAZSPORT HD",
-        "SETANTA 1": "SETANTA SPORTS 1",
-        "SETANTA 2": "SETANTA SPORTS 2",
-        "SETANTA KZ": "SETANTA SPORTS KZ",
-    }.get(name, name)
+    raw = " ".join(str(name or "").split()).strip()
+    key = raw.casefold()
+    aliases = {
+        "qazsport": "QAZSPORT HD",
+        "qazsport hd": "QAZSPORT HD",
+        "setanta 1": "SETANTA SPORTS 1",
+        "setanta sports 1": "SETANTA SPORTS 1",
+        "setanta 2": "SETANTA SPORTS 2",
+        "setanta sports 2": "SETANTA SPORTS 2",
+        "setanta kz": "SETANTA SPORTS KZ",
+        "setanta sports kz": "SETANTA SPORTS KZ",
+        "setanta sports kazakhstan": "SETANTA SPORTS KZ",
+        "eurosport 1": "EUROSPORT 1",
+        "eurosport 2": "EUROSPORT 2",
+        "khl prime": "KHL PRIME",
+        "khl hd": "KHL HD",
+        "матч! планета": "МАТЧ! ПЛАНЕТА",
+        "матч планета": "МАТЧ! ПЛАНЕТА",
+        "sport+ qazaqstan": "SPORT+ Qazaqstan",
+        "sport+ kazakhstan": "SPORT+ Qazaqstan",
+        "q league": "Q LEAGUE",
+        "q arena": "Q ARENA",
+        "q football": "Q FOOTBALL",
+        "viju+ sport": "viju+ Sport",
+    }
+    return aliases.get(key, raw)
 
 
 def event_rows(
