@@ -341,9 +341,33 @@ async function loadMailNotices(){
   item.append(title,subject,detail);
   const controls=document.createElement("div");controls.className="mail-controls";
   if(notice.status==="pending"){
+   const preview=document.createElement("button");
+   preview.textContent="Посмотреть изменения";
+   const diff=document.createElement("div");diff.className="history-list";
+   preview.addEventListener("click",async()=>{
+    preview.disabled=true;
+    try{
+     const result=await api("/api/gmail/notices/"+notice.id+"/preview");
+     const line=[
+      "Новые: "+result.counts.new,
+      "Изменилось время: "+result.counts.time_changed,
+      "Исчезли из EPG (не означает отмену): "+result.counts.missing_from_update,
+      "Неоднозначно: "+result.counts.ambiguous,
+      "Без изменений: "+result.counts.unchanged,
+     ];
+     for(const change of result.changes){
+      line.push(change.date+" · "+change.title+" · "+
+       (change.before_times.join(", ")||"нет")+
+       " → "+(change.after_times.join(", ")||"нет")+" · "+change.note);
+     }
+     diff.textContent=line.join("\n");
+    }catch(e){diff.textContent=e.message}
+    finally{preview.disabled=false}
+   });
    const approve=document.createElement("button");approve.textContent="Загрузить в расписание";
    approve.addEventListener("click",()=>manageNotice(notice.id,"approve"));
-   controls.append(approve);
+   controls.append(preview,approve);
+   item.append(diff);
   }
   const dismiss=document.createElement("button");dismiss.textContent=
    notice.status==="review"?"Закрыть после проверки":"Позже / отклонить";
