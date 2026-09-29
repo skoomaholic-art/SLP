@@ -44,9 +44,9 @@ class TVGuideTests(unittest.TestCase):
             "end_confidence": "high",
         }
 
-    def test_inventory_contains_all_14_epg_channels(self):
+    def test_inventory_contains_all_17_epg_channels(self):
         names = {item.name for item in TARGET_CHANNELS + EUROSPORT_CHANNELS}
-        self.assertEqual(len(names), 14)
+        self.assertEqual(len(names), 17)
         self.assertIn("Eurosport", names)
         self.assertIn("Eurosport 2", names)
         self.assertIn("KHL HD", names)
