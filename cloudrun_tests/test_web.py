@@ -72,7 +72,8 @@ class WebTests(unittest.TestCase):
                     "cloudrun_ui" / "logos.js").read_text()
         self.assertIn('href="/assets/app-icon.png"', index)
         self.assertIn('function channelLogo(channel)', index)
-        self.assertIn('channel==="KHL PRIME"?"PRIME":"HD"', index)
+        self.assertNotIn('className="logo-variant"', index)
+        self.assertNotIn('channel==="KHL PRIME"?"PRIME":"HD"', index)
         logo_map = re.search(
             r'Object.freeze\((\{.*\})\);', logos_js, re.DOTALL)
         self.assertIsNotNone(logo_map)
