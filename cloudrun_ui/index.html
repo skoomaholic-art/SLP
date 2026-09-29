@@ -87,6 +87,11 @@ footer{margin:25px 0;color:var(--muted);font-size:12px}
 </section>
 <section class="card">
 <h2>События и архив</h2>
+<div class="actions" style="margin:0 0 14px">
+<button id="archiveToggle" aria-pressed="false">Показать исторические версии</button>
+<button id="archiveExport" class="hide">↓ Выгрузить архив</button>
+</div>
+<p id="archiveNote" class="muted-small hide">Здесь показаны также снятые из текущих EPG записи. Полный журнал изменения каждого поля ещё не подключён.</p>
 <div class="filters toolbar">
 <input id="search" placeholder="Поиск матча, турнира" aria-label="Поиск">
 <select id="channel"><option value="">Все каналы</option></select>
@@ -102,7 +107,7 @@ footer{margin:25px 0;color:var(--muted);font-size:12px}
 <script>
 "use strict";
 const $=id=>document.getElementById(id);
-const state={all:[],date:"",month:new Date(),logged:false};
+const state={all:[],date:"",month:new Date(),logged:false,archive:false};
 const kzToday=()=>new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Almaty",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
 const iso=(y,m,d)=>[y,String(m).padStart(2,"0"),String(d).padStart(2,"0")].join("-");
 function msg(text,kind=""){const n=$("message");n.textContent=text;n.className="notice "+kind}
@@ -120,7 +125,7 @@ function showApp(user){
 }
 async function load(){
  try{
-  const data=await api("/api/events");
+  const data=await api(state.archive?"/api/archive":"/api/events");
   state.all=data.events||[];
   renderCalendar();renderEvents();
   const status=await api("/api/sources");
@@ -186,13 +191,27 @@ function makeEvent(ev){
  const outer=document.createElement("article");outer.className="event";
  const top=document.createElement("div");top.className="item-top";
  const time=document.createElement("strong");time.textContent=ev.date.split("-").reverse().join(".")+", "+ev.time;
- const flag=document.createElement("span");flag.className="badge "+ev.status;flag.textContent=ev.status==="past"?"Прошло":ev.status==="live"?"Сейчас LIVE":"Скоро";
+ const flag=document.createElement("span");flag.className="badge "+ev.status;flag.textContent=ev.archived?"Нет в актуальной сетке":ev.status==="past"?"Прошло":ev.status==="live"?"Сейчас LIVE":"Скоро";
  top.append(time,flag);
  const title=document.createElement("div");title.className="name";title.textContent=ev.title;
  const label=document.createElement("div");label.className="muted-small";label.textContent=[ev.sport,ev.tournament].filter(Boolean).join(" · ");
  const ch=document.createElement("div");ch.className="channel";
  for(const channel of ev.channels)ch.append(channelPill(channel));
  outer.append(top,title,label,ch);
+ if(state.archive && ev.broadcasts?.length){
+  const details=document.createElement("details");
+  const summary=document.createElement("summary");
+  summary.className="muted-small";summary.textContent="Эфиры и источники ("+ev.broadcasts.length+")";
+  details.append(summary);
+  for(const b of ev.broadcasts){
+   const line=document.createElement("div");line.className="muted-small";
+   line.textContent=b.channel+" · "+b.start_at.replace("T"," ").slice(0,16)+
+      " · "+(b.active?"В текущем EPG":"Историческая запись")+
+      (b.source?" · "+b.source:"");
+   details.append(line);
+  }
+  outer.append(details);
+ }
  return outer;
 }
 function filtered(){
@@ -266,6 +285,29 @@ $("epgForm").addEventListener("submit",async event=>{
   await load();
  }catch(error){msg(error.message,"error")}
  finally{$("epgUpload").disabled=false}
+});
+
+
+$("archiveToggle").addEventListener("click",async()=>{
+ state.archive=!state.archive;
+ $("archiveToggle").textContent=state.archive?"Показать текущее расписание":
+   "Показать исторические версии";
+ $("archiveToggle").setAttribute("aria-pressed",String(state.archive));
+ $("archiveExport").classList.toggle("hide",!state.archive);
+ $("archiveNote").classList.toggle("hide",!state.archive);
+ await load();
+});
+$("archiveExport").addEventListener("click",async()=>{
+ const p=new URLSearchParams();
+ if(state.date){p.set("start",state.date);p.set("end",state.date)}
+ if($("channel").value)p.set("channel",$("channel").value);
+ try{
+  const res=await fetch("/api/export-archive?"+p.toString(),{credentials:"same-origin"});
+  if(!res.ok){const err=await res.json().catch(()=>({}));throw new Error(err.detail||"Ошибка архива")}
+  const blob=await res.blob(),href=URL.createObjectURL(blob),a=document.createElement("a");
+  a.href=href;a.download="sport_epg_archive.xlsx";a.click();
+  setTimeout(()=>URL.revokeObjectURL(href),1000);
+ }catch(e){msg(e.message,"error")}
 });
 
 $("prevMonth").onclick=()=>{state.month=new Date(state.month.getFullYear(),state.month.getMonth()-1,1);renderCalendar()};
