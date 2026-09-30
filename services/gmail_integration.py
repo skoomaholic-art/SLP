@@ -458,7 +458,7 @@ def _sender_key(value: str) -> str:
 def _original_sender(body: str, outer_sender: str) -> str:
     """Extract the first forwarded From/От address without guessing identity."""
     for match in re.finditer(
-        r"(?:^|[\s>|])(?:from|от)\s*:\s*([^\n\r]{1,300})",
+        r"(?:^|[\s>|])(?:from|от(?:правитель)?)\s*:\s*([^\n\r]{1,300})",
         str(body or ""), re.I,
     ):
         address = _sender_key(match.group(1))
