@@ -367,11 +367,16 @@ async function loadNotifications(){
 async function loadMailStatus(){
  const status=await api("/api/gmail/status");
  state.gmailConnected=status.connected;
+ state.gmailBridge=!!status.bridge_mode;
  state.gmailSend=status.send_enabled&&status.connected;
  state.gmailTestTo=status.connected?"" : "";
  state.gmailMode=status.mail_mode||"test";
  $("mailStatus").textContent= status.bridge_mode?
-  "Почта подключена через бесплатный Google Apps Script. Новые EPG сохраняются в личный Drive каждый час; SLP загружает их при открытии страницы и каждые 15 минут, пока страница открыта.":
+  (!status.connected?
+   "Бесплатный Apps Script указан, но его работа ещё не подтверждена. Запусти setup в Apps Script и нажми Проверить почту.":
+   !status.archiver_active?
+   "Связь с Google Drive подтверждена, но ежечасный сбор Gmail не подтверждён. Проверь запуск setup и журнал Apps Script.":
+   "Gmail и ежечасный сбор Apps Script подтверждены. Новые EPG хранятся в Drive; SLP загружает их при открытии страницы и каждые 15 минут, пока она открыта."):
   !status.configured?
   "Gmail OAuth пока не настроен. Нужны секреты клиента и постоянное хранилище.":
   status.connected?(status.auto_import?
@@ -379,7 +384,7 @@ async function loadMailStatus(){
    "Gmail подключён ("+status.email+"). Автоматический импорт ожидает постоянное GCS-хранилище."):
   "OAuth настроен, но владелец ещё не авторизовал Gmail.";
  $("gmailConnect").classList.toggle("hide",status.bridge_mode||!status.configured||!state.gmailAdmin);
- $("mailCheck").classList.toggle("hide",!status.connected);
+ $("mailCheck").classList.toggle("hide",!status.connected&&!status.bridge_mode);
  $("request").disabled=!state.gmailSend;
  $("request").title=state.gmailSend?
   (state.gmailMode==="production"?"Отправка подтверждённому поставщику":"Отправка на тестовый адрес"):
@@ -469,7 +474,7 @@ async function manageNotice(id,action){
  }catch(e){msg(e.message,"error")}
 }
 async function checkGmail(silent=false){
- if(!state.gmailConnected)return;
+ if(!state.gmailConnected&&!state.gmailBridge)return;
  $("mailCheck").disabled=true;
  try{
   const result=await api("/api/gmail/sync","POST",{});
@@ -478,6 +483,7 @@ async function checkGmail(silent=false){
      ". Требуют проверки: "+result.requires_review+".","success");
   if(result.auto_imported){await load();}
   else await loadMailNotices();
+  if(state.gmailBridge&&!state.gmailConnected)await loadMailStatus();
  }catch(e){if(!silent)msg(e.message,"error")}
  finally{$("mailCheck").disabled=false}
 }
