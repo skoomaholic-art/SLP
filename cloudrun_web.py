@@ -31,6 +31,7 @@ from agents.runtime_orchestrator import RuntimeParserOrchestrator
 from services.live_evidence import event_is_live_broadcast, event_is_schedule_candidate
 from services.editorial_export import InvalidTemplate, build_working_xlsx, validate_template
 from services import gmail_integration as gmail
+from services import free_apps_script as freebridge
 from services import assistant_bridge
 from services import ai_pipeline
 from services import editorial_store as editorial
@@ -386,7 +387,17 @@ class BucketSnapshot:
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    application.state.backup = BucketSnapshot(GCS_BUCKET) if GCS_BUCKET else None
+    if freebridge.enabled() and GCS_BUCKET:
+        raise RuntimeError(
+            "Бесплатный Drive и платный GCS одновременно не настраиваются"
+        )
+    # Restore encrypted SQLite from the owner's private Drive BEFORE schema
+    # initialization, never accept an empty DB after a failed restore.
+    application.state.backup = (
+        freebridge.FreeDriveSnapshot(DB_PATH) if freebridge.enabled()
+        else BucketSnapshot(GCS_BUCKET) if GCS_BUCKET else None
+    )
+    application.state.free_mail_bridge = freebridge.enabled()
     database = SLPDatabase(DB_PATH)
     initialize_epg_imports(database)
     gmail.init_gmail_schema(database)
@@ -608,11 +619,15 @@ def _source_status(request: Request) -> dict:
         "missing_channels": [
             x["channel"] for x in files
             if x["status"] in ("missing", "outdated", "partial")
-        ], "gmail_connected": gmail.status(database)["connected"],
+        ], "gmail_connected": (gmail.status(database)["connected"]
+                                      or request.app.state.free_mail_bridge),
         "ai": ai_pipeline.status(),
         "auto_import": bool(request.app.state.backup
                             and gmail._auto_import_enabled()),
-        "note": ("Подтверждённые Excel загружаются автоматически; "
+        "note": ("Бесплатный Apps Script собирает поставщиков в Drive; "
+                 "SLP забирает Excel при открытой странице и при ручном сборе."
+                 if request.app.state.free_mail_bridge else
+                 "Подтверждённые Excel загружаются автоматически; "
                  "на проверку попадают только спорные данные."
                  if request.app.state.backup and gmail._auto_import_enabled()
                  else "Автозагрузка отключена до настройки постоянного хранения."
