@@ -620,13 +620,13 @@ def _source_status(request: Request) -> dict:
             x["channel"] for x in files
             if x["status"] in ("missing", "outdated", "partial")
         ], "gmail_connected": (gmail.status(database)["connected"]
-                                      or request.app.state.free_mail_bridge),
+                                      or getattr(request.app.state, "free_mail_bridge", False)),
         "ai": ai_pipeline.status(),
         "auto_import": bool(request.app.state.backup
                             and gmail._auto_import_enabled()),
         "note": ("Бесплатный Apps Script собирает поставщиков в Drive; "
                  "SLP забирает Excel при открытой странице и при ручном сборе."
-                 if request.app.state.free_mail_bridge else
+                 if getattr(request.app.state, "free_mail_bridge", False) else
                  "Подтверждённые Excel загружаются автоматически; "
                  "на проверку попадают только спорные данные."
                  if request.app.state.backup and gmail._auto_import_enabled()
