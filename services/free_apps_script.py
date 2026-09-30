@@ -375,7 +375,7 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
                         continue
                     with database._connect() as conn:
                         conn.execute(
-                            "UPDATE gmail_notices SET status='review', reason=? WHERE id=?",
+                            "UPDATE gmail_notices SET status='pending', reason=? WHERE id=?",
                             ((why or "Нужна редакторская проверка")[:200], notice),
                         )
                 reviewed += 1
