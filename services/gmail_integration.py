@@ -48,6 +48,7 @@ CHANGE_TOKENS = re.compile(
     r"обновлен|update|change|revised|cancel|перенес)", re.I
 )
 MAX_LIST_MESSAGES = 100
+MAX_LIST_PAGES = 5
 MAX_ATTACHMENTS_PER_SYNC = 35
 MAX_BODY_BYTES = 6000
 SYNC_OVERLAP_SECONDS = 300
@@ -540,9 +541,11 @@ def _search_queries(database) -> tuple[str, ...]:
         "after:" + str(max(0, last_ms // 1000 - SYNC_OVERLAP_SECONDS))
         if last_ms else "newer_than:21d"
     )
+    # Process provider grids before generic XLSX forwards so the weekly
+    # attachment cap cannot starve the latest Setanta/QSport EPG.
     return (
-        boundary + " (filename:xlsx OR filename:xls)",
         boundary + " (setanta OR сетанта OR qsport OR qazsport OR SPORTPLUS OR SPORT+)",
+        boundary + " (filename:xlsx OR filename:xls)",
     )
 
 
@@ -555,6 +558,21 @@ def _save_sync_checkpoint(database, *, internal_date_ms: int,
             (max(0, int(internal_date_ms)),
              datetime.now(KZ_TIMEZONE).isoformat(), str(error)[:400]),
         )
+
+
+_EXCLUDED_SETANTA_ATTACHMENT = re.compile(
+    r"\bsetanta[\s_-]+(?:(?:sports)[\s_-]+)?(?:plus|kyrgyzstan)\b",
+    re.I,
+)
+
+
+def _excluded_supplier_attachment(filename: str) -> bool:
+    """Ignore the provider's two channels outside the owner's 14-channel list.
+
+    Exclusion is per attachment, not per message: a forwarded five-file email
+    still imports Setanta 1, Setanta 2 and Setanta Qazaqstan.
+    """
+    return bool(_EXCLUDED_SETANTA_ATTACHMENT.search(filename))
 
 
 def _candidate(filename: str, subject: str) -> bool:
@@ -706,21 +724,37 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
     scan_started_ms = int(datetime.now(KZ_TIMEZONE).timestamp() * 1000)
     token = _access_token(database)
     message_ids: dict[str, dict] = {}
+    incomplete_search = False
     for query in _search_queries(database):
-        response = _json_api("/users/me/messages?" + urlencode({
-            "q": query, "maxResults": str(MAX_LIST_MESSAGES),
-        }), token)
-        for item in response.get("messages", [])[:MAX_LIST_MESSAGES]:
-            if item.get("id"):
-                message_ids[str(item["id"])] = item
+        page_token = ""
+        for page in range(MAX_LIST_PAGES):
+            params = {"q": query, "maxResults": str(MAX_LIST_MESSAGES)}
+            if page_token:
+                params["pageToken"] = page_token
+            response = _json_api(
+                "/users/me/messages?" + urlencode(params), token
+            )
+            for item in response.get("messages", [])[:MAX_LIST_MESSAGES]:
+                if item.get("id"):
+                    message_ids[str(item["id"])] = item
+            page_token = str(response.get("nextPageToken") or "")
+            if not page_token:
+                break
+        if page_token:
+            # Do not advance the mail checkpoint after an incomplete listing.
+            incomplete_search = True
     created = 0
     reviewed = 0
     auto_imported = 0
     failed_messages = 0
     retryable_errors = 0
     quarantined_messages = 0
+    deferred_attachments = False
     max_internal_date_ms = 0
     for item in message_ids.values():
+        if created >= MAX_ATTACHMENTS_PER_SYNC:
+            deferred_attachments = True
+            break
         msg_id = str(item.get("id") or "")
         if not re.fullmatch(r"[a-f0-9]{10,32}", msg_id):
             continue
@@ -798,7 +832,9 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
         for part in parts:
             filename = str(part.get("filename") or "")[:200]
             attachment_id = str(part["body"].get("attachmentId") or "")
-            if not filename or not attachment_id or not _candidate(filename, context):
+            if (not filename or not attachment_id
+                    or _excluded_supplier_attachment(filename)
+                    or not _candidate(filename, context)):
                 continue
             with database._connect() as conn:
                 if conn.execute(
@@ -809,6 +845,7 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
                 ).fetchone():
                     continue
             if created >= MAX_ATTACHMENTS_PER_SYNC:
+                deferred_attachments = True
                 break
             size = int(part["body"].get("size") or 0)
             if size > MAX_WORKBOOK_BYTES:
@@ -932,12 +969,22 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
                 created += 1
         if not message_processing_error:
             _resolve_processing_error(database, msg_id)
-    checkpoint_advanced = retryable_errors == 0
+    checkpoint_advanced = (
+        retryable_errors == 0 and not deferred_attachments
+        and not incomplete_search
+    )
+    sync_issue = (
+        "Письма не все прочитаны: лимит вложений на один запуск"
+        if deferred_attachments else
+        "Письма не все прочитаны: больше пяти страниц Gmail"
+        if incomplete_search else
+        "Есть письма для повторной обработки" if retryable_errors else ""
+    )
     _save_sync_checkpoint(
         database,
         internal_date_ms=(max(max_internal_date_ms, scan_started_ms)
                           if checkpoint_advanced else 0),
-        error=("Есть письма для повторной обработки" if retryable_errors else ""),
+        error=sync_issue,
     )
     return {"new_attachments": created, "auto_imported": auto_imported,
             "requires_review": reviewed, "pending": status(database)["pending"],
@@ -947,7 +994,9 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
             "failed_messages": failed_messages,
             "retryable_errors": retryable_errors,
             "quarantined_messages": quarantined_messages,
-            "checkpoint_advanced": checkpoint_advanced}
+            "checkpoint_advanced": checkpoint_advanced,
+            "deferred_attachments": deferred_attachments,
+            "incomplete_search": incomplete_search}
 
 
 
