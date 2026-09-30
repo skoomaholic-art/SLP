@@ -181,7 +181,9 @@ function doGet(e) {
     if (op === "backup") {
       var id = slpProps_().getProperty("SLP_BACKUP_ID");
       return slpJson_(id ? {
-        ok:true,exists:true,ciphertext:DriveApp.getFileById(id).getBlob().getDataAsString("UTF-8")
+        ok:true,exists:true,
+        sha256:slpProps_().getProperty("SLP_BACKUP_SHA") || "",
+        ciphertext:DriveApp.getFileById(id).getBlob().getDataAsString("UTF-8")
       } : {ok:true,exists:false});
     }
     var manifest = slpManifest_();
@@ -234,11 +236,18 @@ function doPost(e) {
     if (!lock.tryLock(15000)) return slpJson_({ok:false,error:"busy"});
     try {
       var props = slpProps_(), previous = props.getProperty("SLP_BACKUP_ID");
+      var activeSha = props.getProperty("SLP_BACKUP_SHA") || "";
+      if (String(payload.previousSha || "") !== activeSha) {
+        return slpJson_({ok:false,error:"backup conflict: server must restore latest state"});
+      }
       var created = slpFolder_().createFile(
         "slp_backup_" + new Date().toISOString() + ".encrypted",
         payload.ciphertext, MimeType.PLAIN_TEXT
       );
-      props.setProperty("SLP_BACKUP_ID", created.getId());
+      props.setProperties({
+        "SLP_BACKUP_ID":created.getId(),
+        "SLP_BACKUP_SHA":slpHash_(Utilities.newBlob(payload.ciphertext).getBytes())
+      });
       var older = props.getProperty("SLP_PREVIOUS_BACKUP_ID");
       props.setProperty("SLP_PREVIOUS_BACKUP_ID", previous || "");
       if (older && older !== previous) {
