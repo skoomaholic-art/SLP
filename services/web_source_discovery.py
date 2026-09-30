@@ -145,7 +145,7 @@ def parse_matchtv_day(markup: str, day: date) -> list[dict]:
         )
         start_kz = start_msk.astimezone(KZ_TIMEZONE)
         out.append({
-            "source": "web_official_matchtv", "provider_source": "matchtv.ru",
+            "source": "web_official_matchtv_" + slug(active), "provider_source": "matchtv.ru",
             "source_url": MATCHTV_URL + "?" + urlencode({"date": day.strftime("%d-%m-%Y")}),
             "channel": active, "date": start_kz.date().isoformat(),
             "time": start_kz.strftime("%H:%M"),
@@ -247,10 +247,16 @@ async def refresh_open_web_sources(database, *, today: date | None = None,
         for d, rows in official_results.items():
             for row in rows:
                 by_channel[row["channel"]][d].append(row)
-        accepted, held = _save_non_destructive(
-            database, run_id=run_id, source="web_official_matchtv",
-            by_day=official_results,
-        )
+        accepted_by_channel = {}
+        held_by_channel = {}
+        for channel_name, day_rows in by_channel.items():
+            accepted, held = _save_non_destructive(
+                database, run_id=run_id,
+                source="web_official_matchtv_" + slug(channel_name),
+                by_day=day_rows,
+            )
+            accepted_by_channel[channel_name] = accepted
+            held_by_channel[channel_name] = held
         # Slow, bounded cross-source discovery. No API keys or paid AI needed.
         semaphore = asyncio.Semaphore(5)
         async def discover_one(channel: str) -> tuple[list[dict], str]:
@@ -291,8 +297,8 @@ async def refresh_open_web_sources(database, *, today: date | None = None,
                 "search_error": search_error,
                 "confirmed_live_slots": events,
                 "note": "Search hits are unverified research, never imported as live.",
-                "held_days": held if channel.name in MATCHTV_SECTIONS.values() else [],
-                "accepted_days": accepted if channel.name in MATCHTV_SECTIONS.values() else [],
+                "held_days": held_by_channel.get(channel.name, []),
+                "accepted_days": accepted_by_channel.get(channel.name, []),
             },
         )
         stats.append({
