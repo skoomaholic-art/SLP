@@ -277,6 +277,11 @@ def _record_notice(database, meta: dict, payload: bytes,
 def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
     """Incremental ingest of already-archived files, no Gmail OAuth or GCS."""
     gmail.init_gmail_schema(database)
+    with database._connect() as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS free_bridge_processed ("
+            "file_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, processed_at TEXT NOT NULL)"
+        )
     client = ScriptClient()
     offset = 0
     created = reviewed = auto_imported = 0
@@ -302,15 +307,14 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
                 continue
             if not message_id or not filename or len(filename) > 180:
                 continue
-            if (
-                _exists(database, message_id, "apps_script:" + identifier)
-                or _exists(database, message_id, "apps_script:" + identifier +
-                           "#SETANTA SPORTS 1")
-            ):
-                # Cross-channel split does not imply the entire file was
-                # processed; for multi-channel file we prefer SHA imports below.
-                if not meta.get("possibleMultichannel"):
-                    continue
+            with database._connect() as conn:
+                already_done = conn.execute(
+                    "SELECT 1 FROM free_bridge_processed "
+                    "WHERE file_id=? AND sha256=?",
+                    (identifier, str(meta.get("sha256") or "")),
+                ).fetchone()
+            if already_done:
+                continue
             payload = client.file(identifier)
             try:
                 data = base64.b64decode(payload["data"], validate=True)
@@ -336,6 +340,13 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
                 if notice:
                     created += 1
                     reviewed += 1
+                with database._connect() as conn:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO free_bridge_processed"
+                        "(file_id,sha256,processed_at) VALUES (?,?,?)",
+                        (identifier, str(meta["sha256"]),
+                         datetime.now(KZ_TIMEZONE).isoformat()),
+                    )
                 continue
             for parsed in parsed_items:
                 notice = _record_notice(database, meta, data, parsed, "", fingerprint)
@@ -356,6 +367,13 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
                             ((why or "Нужна редакторская проверка")[:200], notice),
                         )
                 reviewed += 1
+            with database._connect() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO free_bridge_processed"
+                    "(file_id,sha256,processed_at) VALUES (?,?,?)",
+                    (identifier, str(meta["sha256"]),
+                     datetime.now(KZ_TIMEZONE).isoformat()),
+                )
         next_offset = page.get("next")
         if next_offset is None:
             break
