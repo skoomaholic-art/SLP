@@ -174,9 +174,18 @@ function doGet(e) {
     var p = e.parameter || {}, op = String(p.op || ""), arg = "";
     if (op === "manifest") arg = String(p.offset || "0");
     else if (op === "file") arg = String(p.id || "");
-    else if (op !== "backup") return slpJson_({ok:false,error:"unknown operation"});
+    else if (op !== "backup" && op !== "template") {
+      return slpJson_({ok:false,error:"unknown operation"});
+    }
     if (!slpAuthorize_("GET", p.ts, op, arg, p.sig)) {
       return slpJson_({ok:false,error:"unauthorized"});
+    }
+    if (op === "template") {
+      var templateId = slpProps_().getProperty("SLP_TEMPLATE_ID");
+      if (!templateId) return slpJson_({ok:true,exists:false});
+      var tplBytes = DriveApp.getFileById(templateId).getBlob().getBytes();
+      return slpJson_({ok:true,exists:true,sha256:slpHash_(tplBytes),
+        data:Utilities.base64Encode(tplBytes)});
     }
     if (op === "backup") {
       var id = slpProps_().getProperty("SLP_BACKUP_ID");
@@ -219,7 +228,9 @@ function doGet(e) {
 function doPost(e) {
   try {
     var p = e.parameter || {}, op = String(p.op || "");
-    if (op !== "backup") return slpJson_({ok:false,error:"unknown operation"});
+    if (op !== "backup" && op !== "template") {
+      return slpJson_({ok:false,error:"unknown operation"});
+    }
     var body = e.postData ? e.postData.contents : "";
     if (!body || body.length > 14 * 1024 * 1024) return slpJson_({ok:false,error:"too large"});
     var digest = slpHash_(Utilities.newBlob(body).getBytes());
@@ -227,14 +238,45 @@ function doPost(e) {
       return slpJson_({ok:false,error:"unauthorized"});
     }
     var payload = JSON.parse(body);
-    // Only encrypted Fernet tokens pass through this bridge; no raw SQLite.
-    if (payload.version !== 1 || !/^[A-Za-z0-9_=-]+$/.test(payload.ciphertext || "") ||
-        payload.ciphertext.length > 12 * 1024 * 1024) {
-      return slpJson_({ok:false,error:"bad ciphertext"});
+    if (op === "backup") {
+      // Only encrypted Fernet tokens pass through this bridge; no raw SQLite.
+      if (payload.version !== 1 || !/^[A-Za-z0-9_=-]+$/.test(payload.ciphertext || "") ||
+          payload.ciphertext.length > 12 * 1024 * 1024) {
+        return slpJson_({ok:false,error:"bad ciphertext"});
+      }
+    } else {
+      if (payload.version !== 1 || !/^[A-Za-z0-9+/=]+$/.test(payload.data || "") ||
+          payload.data.length > 8 * 1024 * 1024) {
+        return slpJson_({ok:false,error:"bad template"});
+      }
+      var templateBytes = Utilities.base64Decode(payload.data);
+      if (templateBytes.length > 6 * 1024 * 1024 ||
+          slpHash_(templateBytes) !== payload.sha256) {
+        return slpJson_({ok:false,error:"template integrity check failed"});
+      }
     }
     var lock = LockService.getScriptLock();
     if (!lock.tryLock(15000)) return slpJson_({ok:false,error:"busy"});
     try {
+      if (op === "template") {
+        var templateProps = slpProps_();
+        var currentTplSha = templateProps.getProperty("SLP_TEMPLATE_SHA") || "";
+        if (currentTplSha !== String(payload.previousSha || "")) {
+          return slpJson_({ok:false,error:"template changed concurrently"});
+        }
+        var oldTpl = templateProps.getProperty("SLP_TEMPLATE_ID");
+        var newTpl = slpFolder_().createFile(Utilities.newBlob(
+          templateBytes,
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          "slp_approved_template.xlsx"
+        ));
+        templateProps.setProperties({
+          "SLP_TEMPLATE_ID":newTpl.getId(),
+          "SLP_TEMPLATE_SHA":payload.sha256
+        });
+        // Keep the previous uploaded template in Drive for audit/rollback.
+        return slpJson_({ok:true,saved:true});
+      }
       var props = slpProps_(), previous = props.getProperty("SLP_BACKUP_ID");
       var activeSha = props.getProperty("SLP_BACKUP_SHA") || "";
       if (String(payload.previousSha || "") !== activeSha) {
