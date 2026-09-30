@@ -29,7 +29,8 @@ else:
     print(d.get("status",{}).get("url") or d.get("uri") or "")
 ' "$service_file" "$1"
 }
-BUCKET="${SLP_GCS_BUCKET:-$(service_field bucket)}"
+CURRENT_BUCKET="$(service_field bucket)"
+BUCKET="${SLP_GCS_BUCKET:-$CURRENT_BUCKET}"
 SA="$(service_field sa)"
 APP_URL="$(service_field url)"
 [[ -n "$APP_URL" ]] || die "Cloud Run не вернул HTTPS адрес сервиса."
@@ -40,7 +41,7 @@ fi
 printf 'Проект: %s\nСервис: %s\nАдрес: %s\n' "$PROJECT" "$SERVICE" "$APP_URL"
 
 # A new revision replaces the current ephemeral /tmp SQLite instance.
-if [[ -z "$BUCKET" ]]; then
+if [[ -z "$CURRENT_BUCKET" ]]; then
   echo 'ВНИМАНИЕ: текущая тестовая SQLite база в Cloud Run временная.'
   echo 'Перед обновлением экспортируй архив из веб-интерфейса SLP.'
   read -r -p 'Экспорт сохранён? Введи АРХИВ (иначе остановка): ' confirm
