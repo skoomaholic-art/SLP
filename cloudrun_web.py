@@ -890,6 +890,14 @@ def gmail_status(request: Request):
     result["auto_import"] = bool(
         request.app.state.backup and gmail._auto_import_enabled()
     )
+    if request.app.state.free_mail_bridge:
+        # Apps Script is authorized by the owner, not Cloud Run Gmail OAuth.
+        # Gmail sending remains disabled in the free read-only bridge.
+        result.update({
+            "configured": True, "connected": True,
+            "email": gmail.OWNER_ACCOUNT, "send_enabled": False,
+            "bridge_mode": True, "mail_mode": "test",
+        })
     result["ai"] = ai_pipeline.status()
     return result
 
@@ -897,8 +905,12 @@ def gmail_status(request: Request):
 @app.get("/api/gmail/connect")
 async def gmail_connect(request: Request):
     user = require_admin(request)
+    if request.app.state.free_mail_bridge:
+        raise HTTPException(
+            409, "Gmail уже подключён через бесплатный Apps Script и Drive"
+        )
     if not request.app.state.backup:
-        raise HTTPException(503, "Сначала подключите постоянное хранилище GCS")
+        raise HTTPException(503, "Сначала подключите постоянное хранилище")
     async with request.app.state.collect_lock:
         try:
             url = gmail.start_oauth(request.app.state.database,
@@ -931,10 +943,18 @@ async def gmail_sync(request: Request):
     origin_guard(request)
     async with request.app.state.collect_lock:
         try:
-            result = await asyncio.to_thread(
-                gmail.sync_inbox, request.app.state.database,
-                allow_auto_import=bool(request.app.state.backup)
-            )
+            if request.app.state.free_mail_bridge:
+                result = await asyncio.to_thread(
+                    freebridge.sync_inbox, request.app.state.database,
+                    allow_auto_import=bool(request.app.state.backup)
+                )
+            else:
+                result = await asyncio.to_thread(
+                    gmail.sync_inbox, request.app.state.database,
+                    allow_auto_import=bool(request.app.state.backup)
+                )
+        except freebridge.FreeDriveError as exc:
+            raise HTTPException(502, str(exc)) from exc
         except (gmail.GmailTransportError, gmail.GmailNotConfigured) as exc:
             raise _gmail_failure(exc) from exc
         # Only existing SLP editorial notices are sent; never mail bodies or Excel.
@@ -1129,13 +1149,19 @@ async def collect(request: Request, options: CollectOptions):
     origin_guard(request)
     # One-button flow: first look for newly arrived mail, but never import
     # attachments before the editor approves the supplier file.
-    if gmail.status(request.app.state.database)["connected"]:
+    if (request.app.state.free_mail_bridge
+            or gmail.status(request.app.state.database)["connected"]):
         async with request.app.state.collect_lock:
             try:
+                importer = (freebridge.sync_inbox if request.app.state.free_mail_bridge
+                            else gmail.sync_inbox)
                 mail_sync = await asyncio.to_thread(
-                    gmail.sync_inbox, request.app.state.database,
-                allow_auto_import=bool(request.app.state.backup)
+                    importer, request.app.state.database,
+                    allow_auto_import=bool(request.app.state.backup)
                 )
+            except freebridge.FreeDriveError as exc:
+                # Do not hide missing schedules behind a successful collection.
+                raise HTTPException(502, "Gmail/Drive: " + str(exc)) from exc
             except (gmail.GmailTransportError, gmail.GmailNotConfigured):
                 mail_sync = {"new_attachments": 0, "requires_review": 0}
             if mail_sync.get("new_attachments") or mail_sync.get("requires_review"):
