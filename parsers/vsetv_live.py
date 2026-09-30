@@ -4,10 +4,10 @@ import asyncio
 import logging
 import re
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import aiohttp
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString, Tag
 
 from services.time_logic import KZ_TIMEZONE
 from services.browser_schedule import browser_fallback_enabled, render_schedule_html
@@ -35,6 +35,11 @@ CHANNEL_IDS = {
 _TIME_RE = re.compile(r"\b([0-2]?\d:[0-5]\d)\b")
 _LIVE_SRC_RE = re.compile(r"(?:^|/)ico_live[.]gif(?:$|[?#])", re.I)
 _DIRECT_TEXT_RE = re.compile(r"\bпрямая\s+трансляция\b", re.I)
+# Confirmed against a user-supplied 2026-09-28 weekly VseTV HTML page.
+# The site hides parts of programme times in image tags. Do not guess unknown
+# image names: the mapping can change without warning.
+_OBFUSCATED_DIGITS = {"n1.gif": "0", "sj.gif": "5"}
+
 _DATE_HEADING_RE = re.compile(
     r"(?:понедельник|вторник|среда|четверг|пятница|суббота|воскресенье)?"
     r"\s*,?\s*(\d{1,2})\s+"
@@ -106,17 +111,51 @@ def _parse_heading_date(text: str, *, anchor_date: date) -> date | None:
 
 
 def _programme_time(programme) -> str | None:
+    """Read text *and* digit images in an adjacent VseTV time div."""
     time_node = programme.find_previous_sibling("div", class_="time")
-    if time_node is None:
-        parent = programme.parent
-        time_node = parent.find("div", class_="time") if parent else None
     if time_node is None:
         return None
 
-    match = _TIME_RE.search(_clean(time_node.get_text(" ", strip=True)))
-    if not match:
+    parts: list[str] = []
+    for fragment in time_node.children:
+        if isinstance(fragment, NavigableString):
+            parts.append(str(fragment).strip())
+        elif isinstance(fragment, Tag) and fragment.name == "img":
+            name = str(fragment.get("src") or "").split("?", 1)[0].rsplit("/", 1)[-1].casefold()
+            digit = _OBFUSCATED_DIGITS.get(name)
+            if digit is None:
+                # Unknown encoding: do not silently publish a wrong time.
+                logger.warning("vsetv unknown obfuscated time digit image=%s", name)
+                return None
+            parts.append(digit)
+
+    value = "".join(parts).strip()
+    if not _TIME_RE.fullmatch(value):
         return None
-    return match.group(1).zfill(5)
+    hour, minute = map(int, value.split(":"))
+    if hour > 23:
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _page_timezone(soup: BeautifulSoup, *, require_explicit: bool) -> str | None:
+    """Never add MSK+2 to a public VseTV page already rendered in UTC+5."""
+    control = soup.select_one("select[name=timezone]")
+    if control is None:
+        # Minimal HTML fragments in the older evidence parser predate this
+        # metadata. A complete live weekly page must declare its timezone.
+        return None if require_explicit else "Europe/Moscow"
+    selected = control.select_one("option[selected]")
+    if selected is None:
+        return None
+    value = str(selected.get("value") or "").strip()
+    label = _clean(selected.get_text(" ", strip=True)).casefold()
+    if value in {"11", "12"} and "utc+5" in label:
+        return "Asia/Almaty"
+    if value == "14" and "msk" in label:
+        return "Europe/Moscow"
+    logger.warning("vsetv unsupported source timezone code=%s label=%s", value, label)
+    return None
 
 
 def _programme_is_live(programme) -> bool:
@@ -132,6 +171,7 @@ def _programme_row(
     channel: str,
     target_date: date,
     source_url: str,
+    source_timezone: str = "Europe/Moscow",
 ) -> dict | None:
     if not _programme_is_live(programme):
         return None
@@ -150,6 +190,7 @@ def _programme_row(
         "channel": channel,
         "date": target_date.isoformat(),
         "time": time_text,
+        "source_timezone": source_timezone,
         "title": title,
         "raw_title": title,
         "third_party_live_badge": True,
@@ -169,12 +210,16 @@ def parse_vsetv_live_html(
     rows: list[dict] = []
     seen: set[tuple[str, str]] = set()
 
+    source_timezone = _page_timezone(soup, require_explicit=False)
+    if source_timezone is None:
+        return []
     for programme in soup.select("div.prname2"):
         row = _programme_row(
             programme,
             channel=channel,
             target_date=target_date,
             source_url=source_url,
+            source_timezone=source_timezone,
         )
         if row is None:
             continue
@@ -205,23 +250,51 @@ def parse_vsetv_week_html(
     channel: str,
     anchor_date: date,
     source_url: str = "",
+    require_timezone: bool = False,
 ) -> list[dict]:
-    """Extract all VseTV LIVE markers from one weekly channel page."""
+    """Parse each daily heading and its LIVE rows, preserving source timezone."""
     soup = BeautifulSoup(str(html or ""), "html.parser")
+    source_timezone = _page_timezone(soup, require_explicit=require_timezone)
+    if source_timezone is None:
+        logger.warning("vsetv weekly page has no supported explicit timezone channel=%s", channel)
+        return []
+
+    # VseTV prints a channel day from 05:00 to the next 04:59. When the
+    # original page explicitly exposes its selected start hour, use it.
+    start_option = soup.select_one("select[name=selected_hours1] option[selected]")
+    try:
+        rollover_hour = int(start_option.get_text(strip=True)) if start_option else 5
+    except ValueError:
+        rollover_hour = 5
+
     rows: list[dict] = []
     seen: set[tuple[str, str, str]] = set()
+    heading_date: date | None = None
 
-    for programme in soup.select("div.prname2"):
-        if not _programme_is_live(programme):
+    # VseTV repeats the same id=schedule_container several times and hides
+    # time digits in image tags, so never parse a container as independent
+    # dated text or extract time with .get_text().
+    for node in soup.select(".weekdaytitle, div.prname2"):
+        if "weekdaytitle" in (node.get("class") or []):
+            heading_date = _parse_heading_date(
+                node.get_text(" ", strip=True), anchor_date=anchor_date,
+            )
             continue
-        programme_date = _nearest_programme_date(programme, anchor_date=anchor_date)
-        if programme_date is None:
+        if heading_date is None or not _programme_is_live(node):
             continue
+        scheduled = _programme_time(node)
+        if scheduled is None:
+            continue
+        hour = int(scheduled.split(":", 1)[0])
+        actual_date = heading_date + timedelta(
+            days=1 if rollover_hour and hour < rollover_hour else 0
+        )
         row = _programme_row(
-            programme,
+            node,
             channel=channel,
-            target_date=programme_date,
+            target_date=actual_date,
             source_url=source_url,
+            source_timezone=source_timezone,
         )
         if row is None:
             continue
@@ -282,6 +355,7 @@ async def _fetch_week_channel(
             channel=channel,
             anchor_date=anchor_date,
             source_url=final_url or url,
+            require_timezone=True,
         )
         logger.info(
             "vsetv weekly fetched channel=%s url=%s rows=%d dates=%s",
@@ -308,6 +382,7 @@ async def _fetch_week_channel(
             rows = parse_vsetv_week_html(
                 html, channel=channel, anchor_date=anchor_date,
                 source_url=final_url or url,
+                require_timezone=True,
             )
             if rows:
                 logger.info("vsetv browser fallback channel=%s rows=%d", channel, len(rows))
