@@ -893,10 +893,14 @@ def gmail_status(request: Request):
     if request.app.state.free_mail_bridge:
         # Apps Script is authorized by the owner, not Cloud Run Gmail OAuth.
         # Gmail sending remains disabled in the free read-only bridge.
+        verified = freebridge.health(request.app.state.database)
         result.update({
-            "configured": True, "connected": True,
+            "configured": True, "connected": verified["verified"],
             "email": gmail.OWNER_ACCOUNT, "send_enabled": False,
             "bridge_mode": True, "mail_mode": "test",
+            "last_sync_at": verified["last_pull_at"],
+            "script_last_scan_at": verified["script_last_scan_at"],
+            "archiver_active": verified["archiver_active"],
         })
     result["ai"] = ai_pipeline.status()
     return result
