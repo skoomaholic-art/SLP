@@ -18,10 +18,11 @@ function prepareSLPConnection() {
   if (key.length < 48) {
     throw new Error("The original SLP setup has not created its bridge key");
   }
+  // ScriptApp.getService().getUrl() can be empty in the editor, even after
+  // a successful deployment. Preserve the pairing key and report whether
+  // we actually obtained a usable URL; never invent a deployment URL.
   if (!/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(url)) {
-    throw new Error(
-      "This project has no published /exec web app. Check Manage deployments."
-    );
+    url = "";
   }
   // Reuse the exact folder and key from the same Script project.
   var folderId = props.getProperty("SLP_FOLDER_ID");
@@ -45,11 +46,13 @@ function prepareSLPConnection() {
     createdAt: new Date(now).toISOString(),
     expiresAt: new Date(now + 20 * 60000).toISOString(),
     scriptUrl: url,
+    scriptId: ScriptApp.getScriptId(),
+    urlAvailable: Boolean(url),
     secret: key
   };
   folder.createFile(name, JSON.stringify(payload), MimeType.PLAIN_TEXT);
   Logger.log(
-    "SLP pairing is ready in your private Google Drive folder. " +
-    "Do not copy or share any links or secret values."
+    "SLP pairing key stored privately in Drive. Automatic deployment URL: " +
+    (url ? "available" : "unavailable") + ". Do not share any secrets."
   );
 }
