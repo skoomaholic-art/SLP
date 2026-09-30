@@ -287,6 +287,21 @@ function renderSources(data){
      "нет покрытия выбранной недели");
    info.append(note);
   }
+  if(item.web_research){
+   const research=document.createElement("div");research.className="muted-small";
+   const leads=item.web_research.discovered_pages||[];
+   research.textContent="Интернет: "+leads.length+" ссылок для проверки; "+
+     (item.web_research.confirmed_live_slots||0)+" подтверждённых LIVE от доп. источника";
+   info.append(research);
+   // Discovery snippets are research leads and never pass as accepted LIVE.
+   for(const lead of leads.slice(0,2)){
+    const link=document.createElement("a");link.href=lead.url;
+    link.target="_blank";link.rel="noopener noreferrer";
+    link.textContent=lead.title||"Проверить источник";
+    link.className="muted-small";link.style.display="block";
+    info.append(link);
+   }
+  }
   row.append(info);grid.append(row);
  }
  node.append(grid);
@@ -633,8 +648,11 @@ $("collect").addEventListener("click",async()=>{
    if(!confirm("Нет актуальных Excel: "+missing+". Собрать по доступным источникам?")){msg("Сбор отменён");return}
    result=await api("/api/collect","POST",{allow_partial:true});
   }
-  msg("Сбор завершён. Записей источников: "+result.event_count+
-      (result.durable_storage?". Архив сохранён.":". ВНИМАНИЕ: архив временный, постоянное хранилище не подключено."),"success");
+  const gap=result.missing_live_channels||[];
+  msg("Сбор завершён. Подтверждённых LIVE: "+result.confirmed_live_events+
+      "; каналов с LIVE: "+result.confirmed_channels+"/14"+
+      (gap.length?". Нет подтверждённых LIVE: "+gap.join(", "):"")+
+      (result.durable_storage?". Архив сохранён.":". Архив временный: подключите GCS."),"success");
   await load();
  }catch(e){msg(e.message,"error")}finally{$("collect").disabled=false}
 });
