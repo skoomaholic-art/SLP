@@ -94,6 +94,13 @@ function slpCandidate_(filename, subject, forwardedBody) {
     );
 }
 function setup() {
+  // Create the single shared bridge key automatically on first run.
+  // Store it only in private Script Properties; do not expose it in logs.
+  if (!slpProps_().getProperty("SLP_BRIDGE_KEY")) {
+    slpProps_().setProperty(
+      "SLP_BRIDGE_KEY", Utilities.getUuid() + Utilities.getUuid()
+    );
+  }
   slpKey_();
   slpFolder_();
   slpManifest_();
