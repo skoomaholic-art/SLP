@@ -461,7 +461,13 @@ def _original_sender(body: str, outer_sender: str) -> str:
         r"(?:^|[\s>|])(?:from|от(?:правитель)?)\s*:\s*([^\n\r]{1,300})",
         str(body or ""), re.I,
     ):
-        address = _sender_key(match.group(1))
+        # parseaddr() can join a bare sender address with a following
+        # "EXTERNAL EMAIL" banner, producing a fake domain. Extract the
+        # bounded email token from the forwarded header before normalizing.
+        token = re.search(
+            r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", match.group(1), re.I,
+        )
+        address = token.group(0).casefold() if token else _sender_key(match.group(1))
         if address and address != _sender_key(outer_sender):
             return address
     return ""
