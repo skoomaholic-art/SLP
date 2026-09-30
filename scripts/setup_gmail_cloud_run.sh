@@ -55,15 +55,19 @@ gcloud services enable gmail.googleapis.com secretmanager.googleapis.com storage
   --project="$PROJECT" --quiet
 
 if [[ -z "$BUCKET" ]]; then
-  echo 'Для надёжного хранения почтового OAuth-токена SLP нужен Cloud Storage.'
-  echo 'Cloud Storage может повлечь расходы за хранение и операции.'
-  read -r -p 'Разрешаешь создать хранилище? Напиши СОЗДАТЬ: ' consent
-  [[ "$consent" == 'СОЗДАТЬ' ]] || die "Ничего не развернуто без разрешения."
   NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
   BUCKET="slp-epg-${NUMBER}"
-  gcloud storage buckets create "gs://$BUCKET" --project="$PROJECT" \
-      --location="$REGION" --default-storage-class=STANDARD \
-      --uniform-bucket-level-access --public-access-prevention
+  if gcloud storage buckets describe "gs://$BUCKET" --project="$PROJECT" >/dev/null 2>&1; then
+    echo "Используем уже созданное приватное хранилище $BUCKET."
+  else
+    echo 'Для надёжного хранения почтового OAuth-токена SLP нужен Cloud Storage.'
+    echo 'Cloud Storage может повлечь расходы за хранение и операции.'
+    read -r -p 'Разрешаешь создать хранилище? Напиши СОЗДАТЬ: ' consent
+    [[ "$consent" == 'СОЗДАТЬ' ]] || die "Ничего не развернуто без разрешения."
+    gcloud storage buckets create "gs://$BUCKET" --project="$PROJECT" \
+        --location="$REGION" --default-storage-class=STANDARD \
+        --uniform-bucket-level-access --public-access-prevention
+  fi
 fi
 gcloud storage buckets describe "gs://$BUCKET" --project="$PROJECT" >/dev/null \
     || die "Хранилище недоступно."
