@@ -1215,9 +1215,21 @@ def template_status(request: Request):
     if local and local.is_file():
         return {"available": True, "location": "local", "name": local.name,
                 "message": "Постоянство локального файла зависит от диска хостинга"}
+    if request.app.state.free_mail_bridge:
+        try:
+            result = freebridge.ScriptClient().template()
+            return {
+                "available": bool(result.get("exists")),
+                "location": "private_drive",
+                "name": "slp_approved_template.xlsx" if result.get("exists") else "",
+                "message": "Шаблон хранится в личном Google Drive",
+            }
+        except freebridge.FreeDriveError as exc:
+            return {"available": False, "location": "error",
+                    "message": str(exc)[:180]}
     if not GCS_BUCKET:
         return {"available": False, "location": "not_configured",
-                "message": ("Настройте SPORT_TEMPLATE_PATH или GCS"
+                "message": ("Настройте SPORT_TEMPLATE_PATH или постоянное хранилище"
                             if not local else "По SPORT_TEMPLATE_PATH файл пока не найден")}
     try:
         from google.cloud import storage
@@ -1234,8 +1246,9 @@ async def upload_template(request: Request, upload: UploadFile = File(...)):
     require_admin(request)
     origin_guard(request)
     local_target = _local_template_path()
-    if not local_target and (not GCS_BUCKET or not request.app.state.backup):
-        raise HTTPException(503, "Настройте SPORT_TEMPLATE_PATH или постоянный GCS")
+    if (not local_target and not request.app.state.free_mail_bridge
+            and (not GCS_BUCKET or not request.app.state.backup)):
+        raise HTTPException(503, "Настройте постоянное хранилище или локальный путь")
     if not str(upload.filename or "").casefold().endswith(".xlsx"):
         raise HTTPException(422, "Требуется XLSX-шаблон")
     try:
@@ -1287,6 +1300,22 @@ async def upload_template(request: Request, upload: UploadFile = File(...)):
             "bytes": len(raw), "destination": "local",
             "warning": "Без постоянного тома шаблон исчезнет при перезапуске сервера",
         }
+    if request.app.state.free_mail_bridge:
+        try:
+            async with request.app.state.collect_lock:
+                client = freebridge.ScriptClient()
+                current = await asyncio.to_thread(client.template)
+                if hashlib.sha256(raw).hexdigest() != current.get("sha256"):
+                    await asyncio.to_thread(
+                        client.save_template, raw,
+                        str(current.get("sha256") or ""),
+                    )
+            return {
+                "uploaded": True, "name": str(upload.filename),
+                "bytes": len(raw), "destination": "private_drive",
+            }
+        except freebridge.FreeDriveError as exc:
+            raise HTTPException(503, str(exc)) from exc
     # GCS uses a generation precondition against concurrent replacements.
     try:
         from google.cloud import storage
@@ -1314,6 +1343,18 @@ def load_template():
     local = _local_template_path()
     if local and local.is_file():
         return load_workbook(local)
+    if freebridge.enabled():
+        try:
+            result = freebridge.ScriptClient().template()
+            if not result.get("exists"):
+                raise HTTPException(503, "Сначала загрузи утверждённый XLSX-шаблон")
+            raw = base64.b64decode(result["data"], validate=True)
+            if (not raw or len(raw) > 6 * 1024 * 1024
+                    or hashlib.sha256(raw).hexdigest() != result.get("sha256")):
+                raise HTTPException(503, "XLSX-шаблон в Drive повреждён")
+            return load_workbook(BytesIO(raw))
+        except freebridge.FreeDriveError as exc:
+            raise HTTPException(503, "Drive: " + str(exc)) from exc
     if GCS_BUCKET:
         try:
             from google.cloud import storage
