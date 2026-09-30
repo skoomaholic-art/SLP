@@ -31,8 +31,8 @@ def example_sportplus():
 
 class GmailForwardedSupplierTests(unittest.TestCase):
     def test_plain_russian_forwarded_sender(self):
-        body = ("Пересланное письмо\\nОтправитель: kozhayeva@sportpluskz.tv"
-                " EXTERNAL EMAIL\\nТема: SPORT PLUS")
+        body = ("Пересланное письмо\nОтправитель: kozhayeva@sportpluskz.tv"
+                " EXTERNAL EMAIL\nТема: SPORT PLUS")
         self.assertEqual(
             gmail._original_sender(body, "alexandr.petrossov@fmedia.kz"),
             "kozhayeva@sportpluskz.tv",
