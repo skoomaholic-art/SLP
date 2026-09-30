@@ -1026,11 +1026,14 @@ async def scheduled_refresh(request: Request):
             results["websites"] = await refresh_vsetv_web_sources(
                 request.app.state.database
             )
+        except Exception as exc:
+            results["errors"].append("vsetv: " + type(exc).__name__)
+        try:
             results["open_web"] = await asyncio.wait_for(
                 refresh_open_web_sources(request.app.state.database), timeout=40
             )
         except Exception as exc:
-            results["errors"].append("vsetv: " + type(exc).__name__)
+            results["errors"].append("open_web: " + type(exc).__name__)
         if gmail.status(request.app.state.database)["connected"]:
             try:
                 results["gmail"] = await asyncio.to_thread(
