@@ -36,6 +36,7 @@ from services import ai_pipeline
 from services import editorial_store as editorial
 from services.channel_registry import CHANNELS
 from services.vsetv_sources import WEB_CHANNEL_IDS, refresh_vsetv_web_sources
+from services.web_source_discovery import refresh_open_web_sources, slug as web_slug
 from services.browser_schedule import browser_fallback_enabled, install_browser_for_python_runtime
 from services.epg_excel import (MAX_WORKBOOK_BYTES, InvalidEPG, import_parsed_epg,
                                imported_epg_status, imported_official_epg_status,
@@ -573,6 +574,7 @@ def _source_status(request: Request) -> dict:
             default=None,
         )
         count = by_channel.get(channel.name, 0)
+        web_research = source_runs.get("web_discovery_" + web_slug(channel.name))
         status = (
             "ok" if count else
             "warning" if newest and newest.get("status") in ("ok", "warning") else
@@ -589,6 +591,13 @@ def _source_status(request: Request) -> dict:
             "secondary_guide": channel.secondary_guide,
             "provider_channel_id": channel.tvplus_id or None,
             "source_verified": bool(count),
+            "web_research": {
+                "status": web_research.get("status"),
+                "checked_at": web_research.get("created_at"),
+                "confirmed_live_slots": web_research.get("details", {}).get("confirmed_live_slots", 0),
+                "discovered_pages": web_research.get("details", {}).get("discovered_pages", []),
+                "error": web_research.get("error"),
+            } if web_research else None,
         })
     return {
         "websites": websites, "excel": files,
@@ -1017,6 +1026,9 @@ async def scheduled_refresh(request: Request):
             results["websites"] = await refresh_vsetv_web_sources(
                 request.app.state.database
             )
+            results["open_web"] = await asyncio.wait_for(
+                refresh_open_web_sources(request.app.state.database), timeout=40
+            )
         except Exception as exc:
             results["errors"].append("vsetv: " + type(exc).__name__)
         if gmail.status(request.app.state.database)["connected"]:
@@ -1143,6 +1155,12 @@ async def collect(request: Request, options: CollectOptions):
         try:
             await request.app.state.schedule.refresh()
             vsetv = await refresh_vsetv_web_sources(request.app.state.database)
+            try:
+                open_web = await asyncio.wait_for(
+                    refresh_open_web_sources(request.app.state.database), timeout=40
+                )
+            except Exception as discovery_error:
+                open_web = {"error": type(discovery_error).__name__, "sources": []}
             if request.app.state.backup:
                 await asyncio.to_thread(request.app.state.backup.save)
         except Exception as exc:
@@ -1152,7 +1170,7 @@ async def collect(request: Request, options: CollectOptions):
     return {"ok": True, "event_count": db.active_event_count(),
             "durable_storage": bool(request.app.state.backup),
             "last_run": db.latest_agent_run(),
-            "vsetv": vsetv}
+            "vsetv": vsetv, "open_web": open_web}
 
 
 
