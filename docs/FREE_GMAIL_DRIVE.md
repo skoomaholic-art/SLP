@@ -37,17 +37,16 @@ Do not assume the new Drive backup can recover old unpublished Cloud Run
 1. In your personal Google account, create a project at
    https://script.google.com/home/projects/create .
 2. Paste *integrations/google_apps_script/SLP_Free_Gmail_Drive.gs* as Code.gs.
-3. Create a unique >=48-character random shared key LOCALLY, e.g.
-   `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
-   Keep it secret and do NOT commit it or paste it into ChatGPT.
-4. Apps Script > Project settings > Script properties > Add script property:
-   name `SLP_BRIDGE_KEY`, value your random key. Save.
-5. Select function **setup** at the top of the editor and click Run.
-   Approve the Gmail and Drive permissions for YOUR Google account.
-   This grants Apps Script access to your mailbox and private Drive. The
-   script implementation limits its routine to approved EPG attachments.
-   Review the code before consent.
-6. Deploy > New deployment > Type: Web app; Execute as: **Me**;
+3. In Apps Script select **setup** at the top and click Run. The script
+   generates its own 72-character `SLP_BRIDGE_KEY` if none exists, without
+   logging the key. Approve Gmail/Drive permissions for YOUR Google account.
+   Review the script code before consent.
+4. After the run, open Apps Script > Project settings > Script properties.
+   Find `SLP_BRIDGE_KEY`. Do not paste it into ChatGPT or GitHub.
+   You will copy it once into your PRIVATE local SLP setup, which
+   uses it to authenticate with your Apps Script endpoint. No new Google
+   OAuth client/Google API key is needed for this free bridge.
+5. Deploy > New deployment > Type: Web app; Execute as: **Me**;
    Who has access: **Anyone**. Save its HTTPS `.../exec` URL privately.
    Because the web endpoint is public, its code denies all non-HMAC requests,
    validates a 90-second timestamp, checks SHA-256, never reveals unencrypted
