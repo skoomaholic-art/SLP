@@ -29,11 +29,15 @@ from services.epg_excel import (
 from services import ai_pipeline
 from services.time_logic import KZ_TIMEZONE
 
-OAUTH_SCOPES = (
-    "openid email "
-    "https://www.googleapis.com/auth/gmail.readonly "
-    "https://www.googleapis.com/auth/gmail.send"
-)
+def _oauth_scopes() -> str:
+    """Request read-only access for mail ingest; sending needs a deliberate opt-in."""
+    scopes = "openid email https://www.googleapis.com/auth/gmail.readonly"
+    if (
+        _env("SPORT_GMAIL_ENABLE_TEST_SEND").casefold() == "true"
+        or _env("SPORT_GMAIL_MAIL_MODE").casefold() == "production"
+    ):
+        scopes += " https://www.googleapis.com/auth/gmail.send"
+    return scopes
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GMAIL_URL = "https://gmail.googleapis.com/gmail/v1"
@@ -270,7 +274,7 @@ def start_oauth(database, *, username: str) -> str:
         )
     return AUTHORIZE_URL + "?" + urlencode({
         "client_id": client_id, "redirect_uri": _url("/api/gmail/callback"),
-        "response_type": "code", "scope": OAUTH_SCOPES, "state": state,
+        "response_type": "code", "scope": _oauth_scopes(), "state": state,
         "access_type": "offline", "prompt": "consent", "login_hint": OWNER_ACCOUNT,
         "include_granted_scopes": "false",
     })
