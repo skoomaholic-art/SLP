@@ -253,7 +253,8 @@ def _exists(database, message_id: str, attachment_id: str) -> bool:
 
 
 def _record_notice(database, meta: dict, payload: bytes,
-                   parsed, reason: str, fingerprint: str) -> int | None:
+                   parsed, reason: str, fingerprint: str,
+                   confirmed_channel: str = "") -> int | None:
     identity = str(meta["messageId"])
     attachment = "apps_script:" + str(meta["id"])
     if parsed is not None:
@@ -281,7 +282,8 @@ def _record_notice(database, meta: dict, payload: bytes,
              meta.get("sender", ""), "", "supplier",
              scope[0] if scope else "", scope[-1] if scope else "",
              1.0 if parsed else 0.0, "[]", fingerprint,
-             "workbook_content" if parsed else "", meta["sha256"]),
+             ("confirmed_format" if parsed and confirmed_channel == parsed.channel
+              else "workbook_content" if parsed else ""), meta["sha256"]),
         )
         return int(cur.lastrowid) if cur.rowcount else None
 
@@ -340,11 +342,19 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
                 fingerprint = workbook_fingerprint(data, filename)
             except InvalidEPG:
                 fingerprint = ""
+            # Reuse a supplier + workbook mapping only after a human has
+            # approved it. The generic SPORT+ "сетка Канала.xlsx" must not
+            # require approval every week when its format is unchanged.
+            confirmed_channel = gmail._confirmed_format_channel(
+                database, fingerprint,
+                gmail._sender_key(str(meta.get("sender") or "")),
+            )
             try:
                 parsed_items = parse_supported_epg_channels(
                     data, filename,
                     today=date.fromisoformat(str(meta["received"])[:10]),
                     context=" ".join((meta.get("subject", ""), meta.get("sender", ""))),
+                    confirmed_channel=confirmed_channel,
                 )
             except (InvalidEPG, ValueError) as exc:
                 notice = _record_notice(database, meta, data, None,
@@ -361,14 +371,21 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
                     )
                 continue
             for parsed in parsed_items:
-                notice = _record_notice(database, meta, data, parsed, "", fingerprint)
+                notice = _record_notice(
+                    database, meta, data, parsed, "", fingerprint,
+                    confirmed_channel=confirmed_channel,
+                )
                 if not notice:
                     continue
                 created += 1
                 # The first QAZSPORT/SPORT+ layout requires editorial approval.
                 # All channel/schedule conflicts still pass _safe_auto_apply.
+                trusted_official = (
+                    parsed.channel not in OFFICIAL_SOURCE_KEY
+                    or confirmed_channel == parsed.channel
+                )
                 if (allow_auto_import and gmail._auto_import_enabled()
-                        and parsed.channel not in OFFICIAL_SOURCE_KEY):
+                        and trusted_official):
                     accepted, why = gmail._safe_auto_apply(database, notice, parsed)
                     if accepted:
                         auto_imported += 1
