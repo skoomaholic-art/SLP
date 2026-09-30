@@ -962,7 +962,8 @@ async def gmail_sync(request: Request):
             assistant_bridge.deliver_pending, request.app.state.database
         ) if request.app.state.backup else
             {"enabled": False, "delivered": 0, "failed": 0})
-        if result["new_attachments"] or result["requires_review"] or bridge["delivered"]:
+        if (result["new_attachments"] or result["requires_review"]
+                or result.get("cursor_advanced") or bridge["delivered"]):
             await _save_state(request)
         result["assistant_notifications"] = bridge
     return result
@@ -1005,7 +1006,8 @@ async def scheduled_gmail_sync(request: Request):
             assistant_bridge.deliver_pending, request.app.state.database
         ) if request.app.state.backup else
             {"enabled": False, "delivered": 0, "failed": 0})
-        if result["new_attachments"] or result["requires_review"] or bridge["delivered"]:
+        if (result["new_attachments"] or result["requires_review"]
+                or result.get("cursor_advanced") or bridge["delivered"]):
             await _save_state(request)
         result["assistant_notifications"] = bridge
     return result
