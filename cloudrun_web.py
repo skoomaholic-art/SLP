@@ -1167,7 +1167,13 @@ async def collect(request: Request, options: CollectOptions):
             raise HTTPException(502, "Ошибка обновления или сохранения: "
                                 + type(exc).__name__) from exc
     db = request.app.state.database
+    validated = event_rows(db, "", "")
+    channel_set = {channel for item in validated for channel in item.get("channels", [])}
+    missing_channels = [channel.name for channel in CHANNELS if channel.name not in channel_set]
     return {"ok": True, "event_count": db.active_event_count(),
+            "confirmed_live_events": len(validated),
+            "confirmed_channels": len(channel_set),
+            "missing_live_channels": missing_channels,
             "durable_storage": bool(request.app.state.backup),
             "last_run": db.latest_agent_run(),
             "vsetv": vsetv, "open_web": open_web}
