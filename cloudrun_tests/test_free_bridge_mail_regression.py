@@ -20,6 +20,7 @@ def example_sportplus():
     sheet = workbook.active
     sheet["C1"] = '"SPORT PLUS QAZAQSTAN" АРНАСЫНЫҢ ТЕЛЕБАҒДАРЛАМАСЫ'
     sheet["C2"] = "СӘРСЕНБІ, 30 ҚЫРКҮЙЕК"
+    sheet["B2"] = "Уақыт"
     sheet["B3"] = .5
     sheet["C3"] = "ММА. ALASH PRIDE 131. ПРЯМАЯ ТРАНСЛЯЦИЯ"
     sheet["D3"] = .125
