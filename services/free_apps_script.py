@@ -131,6 +131,18 @@ class ScriptClient:
     def backup(self) -> dict:
         return self._call("backup")
 
+    def template(self) -> dict:
+        return self._call("template")
+
+    def save_template(self, data: bytes, previous_sha: str) -> dict:
+        if not data or len(data) > 6 * 1024 * 1024:
+            raise FreeDriveError("Бесплатное хранилище принимает XLSX до 6 МБ")
+        return self._call("template", content={
+            "version": 1, "data": base64.b64encode(data).decode(),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "previousSha": previous_sha,
+        })
+
     def save_backup(self, ciphertext: str, previous_sha: str) -> dict:
         return self._call("backup", content={
             "version": 1, "ciphertext": ciphertext,
