@@ -561,6 +561,11 @@ def _candidate(filename: str, subject: str) -> bool:
     # Unknown attachment names can still carry a valid channel inside XLSX.
     # Never classify unrelated documents as sport on the filename alone.
     name = filename.casefold()
+    # The approved SLP inventory excludes the separately distributed
+    # Setanta Sports PLUS and Setanta Kyrgyzstan feeds. Filter by attachment
+    # filename only: mixed supplier emails still import Sports 1/2/Qazaqstan.
+    if re.search(r"\bsetanta[\s_-]*(?:sports[\s_-]*)?plus\b|\bsetanta[\s_-]*kyrgyzstan\b", name, re.I):
+        return False
     return name.endswith((".xlsx", ".xls")) and (
         bool(REVIEW_TOKENS.search(subject + " " + filename))
         or bool(re.search(r"сетка|программ|epg|schedule", name, re.I))
