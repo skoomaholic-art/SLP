@@ -58,7 +58,8 @@ class GmailForwardedSupplierTests(unittest.TestCase):
                 self_offset = offset
                 self_files = files[self_offset:self_offset + 25]
                 return {"ok": True, "files": self_files,
-                        "next": None, "lastScan": "2026-09-30T10:01:00Z"}
+                        "next": None, "total": len(files),
+                        "lastScan": "2026-09-30T10:01:00Z"}
             def file(self, identifier):
                 return {"ok": True, "data": base64.b64encode(raw).decode(),
                         "sha256": digest}
