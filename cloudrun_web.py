@@ -412,9 +412,45 @@ async def lifespan(application: FastAPI):
         browser_install_task = asyncio.create_task(
             asyncio.to_thread(install_browser_for_python_runtime)
         )
+
+    async def initial_drive_pull():
+        # Apps Script archives while Render sleeps. Resume the archive
+        # automatically when the free instance wakes, even without an open UI.
+        async with application.state.collect_lock:
+            try:
+                result = await asyncio.to_thread(
+                    freebridge.sync_inbox, database, allow_auto_import=True,
+                )
+                if result["new_attachments"] or result["requires_review"]:
+                    await asyncio.to_thread(application.state.backup.save)
+                import logging
+                logging.getLogger("uvicorn.error").info(
+                    "SLP free Drive pull: new=%d, auto=%d, review=%d",
+                    result["new_attachments"],
+                    result["auto_imported"],
+                    result["requires_review"],
+                )
+            except Exception:
+                # Stay accessible so the owner can repair the connection,
+                # retry using the UI, and inspect logs. Never delete the
+                # existing sqlite DB on a failed fetch.
+                import logging
+                logging.getLogger("uvicorn.error").exception(
+                    "SLP free Drive initial pull failed"
+                )
+
+    free_mail_task = (
+        asyncio.create_task(initial_drive_pull())
+        if application.state.free_mail_bridge else None
+    )
     yield
     if browser_install_task is not None:
         await browser_install_task
+    if free_mail_task is not None and free_mail_task.done():
+        try:
+            free_mail_task.result()
+        except Exception:
+            pass
 
 
 app = FastAPI(title="SLP Sport EPG Web", docs_url=None, redoc_url=None, lifespan=lifespan)
