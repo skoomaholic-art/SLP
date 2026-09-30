@@ -21,7 +21,7 @@ import json,sys
 d=json.load(open(sys.argv[1]))
 t=d.get("spec",{}).get("template",{})
 if sys.argv[2]=="bucket":
-    env=t.get("spec",{}).get("containers",[{}])[0].get("env",[])
+    env=t.get("spec",t).get("containers",[{}])[0].get("env",[])
     print(next((str(x.get("value","")) for x in env if x.get("name")=="SPORT_GCS_BUCKET"),""))
 elif sys.argv[2]=="sa":
     print(t.get("spec",{}).get("serviceAccountName") or t.get("serviceAccount") or "")
@@ -29,7 +29,7 @@ else:
     print(d.get("status",{}).get("url") or d.get("uri") or "")
 ' "$service_file" "$1"
 }
-BUCKET="$(service_field bucket)"
+BUCKET="${SLP_GCS_BUCKET:-$(service_field bucket)}"
 SA="$(service_field sa)"
 APP_URL="$(service_field url)"
 [[ -n "$APP_URL" ]] || die "Cloud Run не вернул HTTPS адрес сервиса."
@@ -59,7 +59,7 @@ if [[ -z "$BUCKET" ]]; then
   BUCKET="slp-epg-${NUMBER}"
   gcloud storage buckets create "gs://$BUCKET" --project="$PROJECT" \
       --location="$REGION" --default-storage-class=STANDARD \
-      --uniform-bucket-level-access --public-access-prevention=enforced
+      --uniform-bucket-level-access --public-access-prevention
 fi
 gcloud storage buckets describe "gs://$BUCKET" --project="$PROJECT" >/dev/null \
     || die "Хранилище недоступно."
