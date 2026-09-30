@@ -125,6 +125,14 @@ unrecognized layouts go to editor review; they do not guess a channel.
 - SLP ingests new archived mail on opening its browser UI, every 15 minutes
   while open, or on explicit Collect/Check mail. It cannot wake a sleeping
   Cloud Run service for free without separate scheduler infrastructure.
+- The Apps Script manifest exposes the entire archived EPG history in stable
+  append order, not just the last 21 days. SLP saves its import cursor and
+  processes up to 100 archived attachments per sync; click Check mail again
+  while there is a backlog. Repeated imports remain idempotent.
+- The SLP interface reports the bridge as connected only after a successful
+  signed pull. It separately warns if the Apps Script hourly scan is not
+  observed within three hours. A Google OAuth consent email by itself does
+  not establish that this free archive script has been deployed.
 - The Drive bridge supports encrypted SQLite backups whose compressed
   contents are <=6 MiB; larger backups fail instead of silently falling
   back to a paid service. The approved XLSX template limit is 6 MiB.
