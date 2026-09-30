@@ -296,13 +296,38 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
             "CREATE TABLE IF NOT EXISTS free_bridge_processed ("
             "file_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, processed_at TEXT NOT NULL)"
         )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS free_bridge_cursor ("
+            "id INTEGER PRIMARY KEY CHECK(id=1), next_offset INTEGER NOT NULL)"
+        )
+        saved = conn.execute(
+            "SELECT next_offset FROM free_bridge_cursor WHERE id=1"
+        ).fetchone()
     client = ScriptClient()
-    offset = 0
+    offset = int(saved["next_offset"]) if saved else 0
     created = reviewed = auto_imported = 0
     visited = set()
     last_scan = ""
-    while offset < 100:
+    deferred = False
+    cursor_advanced = False
+    for page_number in range(4):
         page = client.manifest(offset)
+        total = page.get("total")
+        # Older scripts returned only the most recent 21 days and sorted
+        # newest first. Resuming their shifting offsets could lose mail.
+        if not isinstance(total, int) or total < 0 or total > 10000:
+            raise FreeDriveError(
+                "Обнови опубликованный Apps Script: нужна стабильная " 
+                "пагинация полного архива (поле total)"
+            )
+        if offset > total:
+            # Owner reset the Drive archive. The processed-id table still
+            # prevents re-import of any files that survived the reset.
+            offset = 0
+            page = client.manifest(offset)
+            total = page.get("total")
+            if not isinstance(total, int) or total < 0 or total > 10000:
+                raise FreeDriveError("Некорректный размер манифеста")
         last_scan = str(page.get("lastScan") or "")
         files = page.get("files")
         if not isinstance(files, list) or len(files) > 25:
@@ -416,12 +441,27 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
                 )
         next_offset = page.get("next")
         if next_offset is None:
-            break
-        if not isinstance(next_offset, int) or next_offset <= offset:
-            raise FreeDriveError("Некорректная пагинация манифеста")
+            next_offset = offset + len(files)
+            if next_offset > total:
+                raise FreeDriveError("Манифест изменился во время чтения")
+            finished = True
+        else:
+            if (not isinstance(next_offset, int) or next_offset <= offset
+                    or next_offset > total):
+                raise FreeDriveError("Некорректная пагинация манифеста")
+            finished = False
+        with database._connect() as conn:
+            conn.execute(
+                "INSERT INTO free_bridge_cursor(id,next_offset) VALUES(1,?) "
+                "ON CONFLICT(id) DO UPDATE SET next_offset=excluded.next_offset",
+                (next_offset,),
+            )
+        cursor_advanced = cursor_advanced or next_offset != offset
         offset = next_offset
-    if offset >= 100:
-        raise FreeDriveError("Найдено более 100 файлов. Уменьши диапазон Apps Script")
+        if finished:
+            break
+        if page_number == 3:
+            deferred = True
     with database._connect() as conn:
         conn.execute(
             "UPDATE gmail_sync_state SET last_success_at=?, last_error='' WHERE id=1",
@@ -432,4 +472,6 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
         "requires_review": reviewed, "pending": gmail.status(database)["pending"],
         "scanned_messages": len(visited), "mode": "free_apps_script_drive",
         "script_last_scan_at": last_scan,
+        "cursor_advanced": cursor_advanced,
+        "more_archived_files": deferred,
     }
