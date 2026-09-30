@@ -374,8 +374,19 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
                         auto_imported += 1
                         continue
                     with database._connect() as conn:
+                        state = conn.execute(
+                            "SELECT status FROM gmail_notices WHERE id=?", (notice,)
+                        ).fetchone()
+                        if state and state["status"] == "imported":
+                            # A partial EPG import may have already saved some
+                            # approved days and cleared the raw attachment.
+                            # Never relabel that record pending without bytes.
+                            auto_imported += 1
+                            reviewed += 1
+                            continue
                         conn.execute(
-                            "UPDATE gmail_notices SET status='pending', reason=? WHERE id=?",
+                            "UPDATE gmail_notices SET status='pending', reason=? "
+                            "WHERE id=? AND status='pending'",
                             ((why or "Нужна редакторская проверка")[:200], notice),
                         )
                 reviewed += 1
