@@ -23,7 +23,7 @@ from services.channel_registry import CHANNELS
 from services.time_logic import KZ_TIMEZONE
 
 MSK = ZoneInfo("Europe/Moscow")
-REQUEST_TIMEOUT = 12
+REQUEST_TIMEOUT = 7
 SEARCH_HOST = "www.bing.com"
 MATCHTV_URL = "https://matchtv.ru/tvguide"
 # The provider's channel names, not vaguely similar sports brand names.
@@ -129,16 +129,16 @@ def parse_matchtv_day(markup: str, day: date) -> list[dict]:
         title = tokens[i + 1]
         # Some templates split a fixture description from a LIVE marker.
         # Never infer LIVE solely from an exciting sporting title.
-        if not (LIVE_RE.search(title) and not REPLAY_RE.search(title)):
-            continue
-        sport = _sport(title)
-        if not sport:
-            continue
         hour, minute = map(int, token.split(":"))
         minutes = hour * 60 + minute
         if last_minutes is not None and minutes < last_minutes and last_minutes > 20 * 60 and minutes < 6 * 60:
             guide_day += timedelta(days=1)
         last_minutes = minutes
+        if not (LIVE_RE.search(title) and not REPLAY_RE.search(title)):
+            continue
+        sport = _sport(title)
+        if not sport:
+            continue
         start_msk = datetime.combine(guide_day, datetime.min.time()).replace(
             hour=hour, minute=minute, tzinfo=MSK,
         )
@@ -224,7 +224,7 @@ async def refresh_open_web_sources(database, *, today: date | None = None,
     official_errors = []
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
         # First-party live guide for KHL / Match Planet, independent of TV+.
-        for offset in range(0, 4):
+        async def fetch_match_day(offset: int):
             target = today + timedelta(days=offset)
             try:
                 raw, _ = await asyncio.wait_for(
@@ -232,11 +232,15 @@ async def refresh_open_web_sources(database, *, today: date | None = None,
                         "date": target.strftime("%d-%m-%Y")
                     })), timeout=REQUEST_TIMEOUT + 1
                 )
-                rows = parse_matchtv_day(raw, target)
-                for row in rows:
-                    official_results[row["date"]].append(row)
+                return target, parse_matchtv_day(raw, target), ""
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                official_errors.append(f"{target}: {type(exc).__name__}")
+                return target, [], type(exc).__name__
+        match_days = await asyncio.gather(*(fetch_match_day(offset) for offset in range(3)))
+        for target, rows, err in match_days:
+            if err:
+                official_errors.append(f"{target}: {err}")
+            for row in rows:
+                official_results[row["date"]].append(row)
 
         by_channel = defaultdict(lambda: defaultdict(list))
         for d, rows in official_results.items():
@@ -247,7 +251,7 @@ async def refresh_open_web_sources(database, *, today: date | None = None,
             by_day=official_results,
         )
         # Slow, bounded cross-source discovery. No API keys or paid AI needed.
-        semaphore = asyncio.Semaphore(3)
+        semaphore = asyncio.Semaphore(5)
         async def discover_one(channel: str) -> tuple[list[dict], str]:
             if not discover:
                 return [], ""
