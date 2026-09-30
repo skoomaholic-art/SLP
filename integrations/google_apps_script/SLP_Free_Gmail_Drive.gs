@@ -132,8 +132,11 @@ function syncMailbox() {
             seenMessages[mid] = true;
             var subject = msg.getSubject() || "";
             var body = msg.getPlainBody() || "";
-            var original = body.match(/(?:Отправитель|from)\s*:\s*[^\n]*?<([\w.+-]+@[\w.-]+)>/i);
-            var sender = original ? original[1] : msg.getFrom();
+            // Work-mail forwarding may use a plain "Отправитель: user@domain"
+            // rather than angle brackets. Keep the true supplier identity.
+            var original = body.match(/(?:^|\n)\s*(?:Отправитель|From|От)\s*:\s*([^\n\r]{1,300})/i);
+            var originalAddress = original && original[1].match(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/);
+            var sender = originalAddress ? originalAddress[0] : msg.getFrom();
             var attachments = msg.getAttachments({includeInlineImages:false,includeAttachments:true});
             for (var ai = 0; ai < attachments.length; ai++) {
               var part = attachments[ai], filename = part.getName();
@@ -201,15 +204,17 @@ function doGet(e) {
       if (!Number.isInteger(offset) || offset < 0 || offset > 10000) {
         return slpJson_({ok:false,error:"invalid offset"});
       }
-      var recent = manifest.files.filter(function(f) {
-        return Date.now() - Date.parse(f.received) <= 21 * 86400000;
-      }).sort(function(a,b){return b.received.localeCompare(a.received);});
-      return slpJson_({ok:true,files:recent.slice(offset,offset + SLP_MANIFEST_PAGE_SIZE)
+      // Stable append order lets SLP resume a large archive without shifting
+      // page boundaries whenever new mail arrives. Never hide archived EPG
+      // files older than 21 days from an SLP instance that was offline.
+      var archived = manifest.files;
+      return slpJson_({ok:true,files:archived.slice(offset,offset + SLP_MANIFEST_PAGE_SIZE)
         .map(function(f) {
           return {id:f.id,filename:f.filename,messageId:f.messageId,subject:f.subject,
             sender:f.sender,received:f.received,sha256:f.sha256,size:f.size};
-        }),next:offset+SLP_MANIFEST_PAGE_SIZE < recent.length
+        }),next:offset+SLP_MANIFEST_PAGE_SIZE < archived.length
           ? offset + SLP_MANIFEST_PAGE_SIZE : null,
+        total:archived.length,
         lastScan:slpProps_().getProperty("SLP_LAST_SCAN_AT") || ""});
     }
     if (!/^[a-f0-9]{32}$/.test(arg)) return slpJson_({ok:false,error:"bad id"});
