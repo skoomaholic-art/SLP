@@ -288,6 +288,40 @@ def _record_notice(database, meta: dict, payload: bytes,
         return int(cur.lastrowid) if cur.rowcount else None
 
 
+
+def health(database) -> dict:
+    """Only report the free bridge as connected after an actual successful pull.
+
+    A reachable Apps Script does not imply its hourly Gmail trigger is running.
+    Expose that as a separate observed status, without probing on every UI load.
+    """
+    with database._connect() as conn:
+        if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='free_bridge_health'"
+        ).fetchone():
+            return {"verified": False, "archiver_active": False,
+                    "last_pull_at": "", "script_last_scan_at": ""}
+        row = conn.execute(
+            "SELECT last_pull_at,script_last_scan_at "
+            "FROM free_bridge_health WHERE id=1"
+        ).fetchone()
+    if not row:
+        return {"verified": False, "archiver_active": False,
+                "last_pull_at": "", "script_last_scan_at": ""}
+    scan = str(row["script_last_scan_at"] or "")
+    active = False
+    try:
+        elapsed = (datetime.now(KZ_TIMEZONE) -
+                   datetime.fromisoformat(scan.replace("Z", "+00:00"))).total_seconds()
+        active = -300 <= elapsed <= 3 * 3600
+    except (ValueError, TypeError):
+        pass
+    return {"verified": True, "archiver_active": active,
+            "last_pull_at": str(row["last_pull_at"] or ""),
+            "script_last_scan_at": scan}
+
+
 def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
     """Incremental ingest of already-archived files, no Gmail OAuth or GCS."""
     gmail.init_gmail_schema(database)
@@ -299,6 +333,11 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS free_bridge_cursor ("
             "id INTEGER PRIMARY KEY CHECK(id=1), next_offset INTEGER NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS free_bridge_health ("
+            "id INTEGER PRIMARY KEY CHECK(id=1), "
+            "last_pull_at TEXT NOT NULL, script_last_scan_at TEXT NOT NULL)"
         )
         saved = conn.execute(
             "SELECT next_offset FROM free_bridge_cursor WHERE id=1"
@@ -462,10 +501,18 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
             break
         if page_number == 3:
             deferred = True
+    pulled_at = datetime.now(KZ_TIMEZONE).isoformat()
     with database._connect() as conn:
         conn.execute(
             "UPDATE gmail_sync_state SET last_success_at=?, last_error='' WHERE id=1",
-            (datetime.now(KZ_TIMEZONE).isoformat(),),
+            (pulled_at,),
+        )
+        conn.execute(
+            "INSERT INTO free_bridge_health(id,last_pull_at,script_last_scan_at) "
+            "VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET "
+            "last_pull_at=excluded.last_pull_at, "
+            "script_last_scan_at=excluded.script_last_scan_at",
+            (pulled_at, last_scan),
         )
     return {
         "new_attachments": created, "auto_imported": auto_imported,
