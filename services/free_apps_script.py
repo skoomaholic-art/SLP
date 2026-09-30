@@ -42,7 +42,7 @@ MAX_HTTP_BYTES = 12 * 1024 * 1024
 MAX_COMPRESSED_DB_BYTES = 6 * 1024 * 1024
 MAX_UNPACKED_DB_BYTES = 64 * 1024 * 1024
 _EXCLUDED = re.compile(
-    r"\bsetanta[\s_-]+(?:(?:sports)[\s_-]+)?(?:plus|kyrgyzstan)\b", re.I
+    r"(?:^|[^a-z0-9])setanta[\s_-]+(?:(?:sports)[\s_-]+)?(?:plus|kyrgyzstan|kyrgystan)\b", re.I
 )
 
 
