@@ -39,6 +39,10 @@ SPORT_RE = (
     (re.compile(r"хокке|кхл|мхл", re.I), "Хоккей"),
     (re.compile(r"футбол|чемпионат мира по футболу", re.I), "Футбол"),
     (re.compile(r"волейбол", re.I), "Волейбол"),
+    (re.compile(r"гандбол", re.I), "Гандбол"),
+    (re.compile(r"бильярд", re.I), "Бильярд"),
+    (re.compile(r"регби", re.I), "Регби"),
+    (re.compile(r"футзал", re.I), "Футзал"),
     (re.compile(r"баскетбол", re.I), "Баскетбол"),
     (re.compile(r"теннис", re.I), "Теннис"),
     (re.compile(r"велоспорт", re.I), "Велоспорт"),
@@ -95,10 +99,14 @@ def normalize_live_record(row: dict, *, channel: str) -> dict | None:
     if not event_title or len(event_title) < 3:
         return None
     try:
+        source_zone = str(row.get("source_timezone") or "Europe/Moscow")
+        if source_zone not in {"Europe/Moscow", "Asia/Almaty"}:
+            return None
+        tz = MSK if source_zone == "Europe/Moscow" else KZ_TIMEZONE
         scheduled = datetime.strptime(
             str(row["date"]) + " " + str(row["time"]),
             "%Y-%m-%d %H:%M"
-        ).replace(tzinfo=MSK)
+        ).replace(tzinfo=tz)
         start = scheduled.astimezone(KZ_TIMEZONE)
     except (ValueError, KeyError):
         return None
@@ -107,9 +115,10 @@ def normalize_live_record(row: dict, *, channel: str) -> dict | None:
         "source": source, "source_url": row.get("source_url") or "",
         "provider_source": "vsetv", "channel": channel,
         "date": start.date().isoformat(), "time": start.strftime("%H:%M"),
-        "source_timezone": "Europe/Moscow",
+        "source_timezone": source_zone,
         "source_start_at": scheduled.isoformat(),
-        "timezone": "Asia/Almaty", "time_normalization": "msk_to_kz",
+        "timezone": "Asia/Almaty", "time_normalization":
+        "msk_to_kz" if source_zone == "Europe/Moscow" else "already_kz_utc5",
         "title": event_title, "raw_title": title, "sport": sport,
         "tournament": tournament,
         "is_sport_event": True, "is_live": True, "is_live_broadcast": True,
@@ -185,7 +194,7 @@ async def refresh_vsetv_web_sources(database, *, today: date | None = None) -> d
                 ),
                 error=error, details={
                     "channel": channel, "days": sorted(by_day),
-                    "timezone": "Europe/Moscow -> Asia/Almaty",
+                    "timezone": "Source selected timezone -> Asia/Almaty",
                     "stale_data_kept": not bool(events) or bool(held_days),
                     "held_days": held_days,
                     "accepted_days": accepted_days,
