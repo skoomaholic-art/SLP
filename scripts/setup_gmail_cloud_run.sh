@@ -122,6 +122,6 @@ gcloud run services update "$SERVICE" --project="$PROJECT" --region="$REGION" \
   --update-secrets="SPORT_GMAIL_CLIENT_ID=$ID_SECRET:latest,SPORT_GMAIL_CLIENT_SECRET=$CLIENT_SECRET:latest,SPORT_GMAIL_TOKEN_KEY=$TOKEN_SECRET:latest" \
   --update-env-vars="SPORT_GCS_BUCKET=$BUCKET,SPORT_PUBLIC_URL=$APP_URL,SPORT_GMAIL_AUTO_IMPORT=true,SPORT_GMAIL_ENABLE_TEST_SEND=false,SPORT_GMAIL_MAIL_MODE=test" \
   --quiet
-echo "Cloud Run готов к Gmail OAuth. Теперь войди в SLP -> Gmail -> Подключить Gmail владельца."
-echo "Обязательно авторизуй именно аккаунт, на который поступают пересланные EPG."
-echo "Потом нажми Проверить новые письма. Фоновый Scheduler на этом шаге не создавался."
+echo "GCS и Gmail OAuth-секреты настроены. Сообщи в чат: НАСТРОЕНО."
+echo "Перед нажатием Подключить Gmail сначала выпустим обновлённый безопасный код PR #40."
+echo "Потом подключишь свою Gmail в интерфейсе SLP. Фоновый Scheduler пока не создавался."
