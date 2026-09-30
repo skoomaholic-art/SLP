@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 import aiohttp
 
-from services.channel_registry import VSETV_CHANNELS
+from services.channel_registry import CHANNELS, VSETV_CHANNELS
 from parsers.vsetv_live import (
     REQUEST_TIMEOUT_SECONDS, _fetch_week_channel,
 )
@@ -24,6 +24,7 @@ from services.time_logic import KZ_TIMEZONE
 MSK = ZoneInfo("Europe/Moscow")
 
 WEB_CHANNEL_IDS = VSETV_CHANNELS
+_CANONICAL_CHANNELS = {item.vsetv_name: item.name for item in CHANNELS if item.vsetv_name}
 _SOURCE = {name: "web_vsetv_" + str(cid)
            for name, cid in WEB_CHANNEL_IDS.items()}
 BETTING_RE = re.compile(
@@ -113,7 +114,7 @@ def normalize_live_record(row: dict, *, channel: str) -> dict | None:
     source = _SOURCE[channel]
     return {
         "source": source, "source_url": row.get("source_url") or "",
-        "provider_source": "vsetv", "channel": channel,
+        "provider_source": "vsetv", "channel": _CANONICAL_CHANNELS.get(channel, channel),
         "date": start.date().isoformat(), "time": start.strftime("%H:%M"),
         "source_timezone": source_zone,
         "source_start_at": scheduled.isoformat(),
