@@ -80,7 +80,7 @@ function slpSaveManifest_(manifest) {
 function slpCandidate_(filename, subject, forwardedBody) {
   var name = String(filename || "");
   if (!/\.(xlsx|xls)$/i.test(name) || name.length > 180) return false;
-  if (/setanta[\s_-]+(?:(?:sports)[\s_-]+)?(?:plus|kyrgyzstan)\b/i.test(name)) return false;
+  if (/(?:^|[^a-z0-9])setanta[\s_-]+(?:(?:sports)[\s_-]+)?(?:plus|kyrgyzstan|kyrgystan)\b/i.test(name)) return false;
   // Explicit supplier identities only. Do not fetch unrelated personal XLSX.
   if (/(setanta\s+sports\s*[12](?:\s+kazakhstan)?|setanta\s+(?:qazaqstan|kz)|q[\s_-]*(?:league|arena|football)|qazsport|sport\s*\+\s*qazaqstan|viju\s*\+\s*sport)/i.test(name)) {
     return true;
