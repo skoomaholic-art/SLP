@@ -190,7 +190,7 @@ footer{margin:25px 0;color:var(--muted);font-size:12px}
 "use strict";
 const $=id=>document.getElementById(id);
 const state={all:[],date:"",month:new Date(),logged:false,archive:false,
- gmailConnected:false,gmailAdmin:false,gmailSend:false,gmailMode:"test",gmailTestTo:"",mailPoll:null};
+ gmailConnected:false,gmailAdmin:false,gmailSend:false,gmailMode:"test",gmailTestTo:"",mailPoll:null,bridgeInitialSyncDone:false};
 const kzToday=()=>new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Almaty",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
 const iso=(y,m,d)=>[y,String(m).padStart(2,"0"),String(d).padStart(2,"0")].join("-");
 function msg(text,kind=""){const n=$("message");n.textContent=text;n.className="notice "+kind}
@@ -370,13 +370,15 @@ async function loadMailStatus(){
  state.gmailSend=status.send_enabled&&status.connected;
  state.gmailTestTo=status.connected?"" : "";
  state.gmailMode=status.mail_mode||"test";
- $("mailStatus").textContent= !status.configured?
-  "Gmail OAuth пока не настроен. Необходимы секреты клиента, ключ шифрования и постоянное GCS-хранилище.":
+ $("mailStatus").textContent= status.bridge_mode?
+  "Почта подключена через бесплатный Google Apps Script. Новые EPG сохраняются в личный Drive каждый час; SLP загружает их при открытии страницы и каждые 15 минут, пока страница открыта.":
+  !status.configured?
+  "Gmail OAuth пока не настроен. Нужны секреты клиента и постоянное хранилище.":
   status.connected?(status.auto_import?
    "Gmail подключён ("+status.email+"). Подтверждённые Excel загружаются автоматически; противоречия отправляются на проверку.":
    "Gmail подключён ("+status.email+"). Автоматический импорт ожидает постоянное GCS-хранилище."):
   "OAuth настроен, но владелец ещё не авторизовал Gmail.";
- $("gmailConnect").classList.toggle("hide",!status.configured||!state.gmailAdmin);
+ $("gmailConnect").classList.toggle("hide",status.bridge_mode||!status.configured||!state.gmailAdmin);
  $("mailCheck").classList.toggle("hide",!status.connected);
  $("request").disabled=!state.gmailSend;
  $("request").title=state.gmailSend?
@@ -385,9 +387,13 @@ async function loadMailStatus(){
  $("requestTo").textContent=(state.gmailMode==="production"?"Режим PRODUCTION. Получатель берётся из конфигурации: ":"Тестовый получатель: ")+
   (state.gmailTestTo||"alexandr.petrossov@fmedia.kz");
  if(status.connected)await loadMailNotices();
+ if(status.bridge_mode&&!state.bridgeInitialSyncDone){
+   state.bridgeInitialSyncDone=true;
+   await checkGmail(true);
+ }
  if(status.connected&&!state.mailPoll){
-  // Check new inbox messages only while an authorized editor has the page open.
-  // A separate authenticated Cloud Scheduler trigger is needed for 24/7 checks.
+  // Apps Script archives Gmail each hour even while SLP is closed.
+  // Pull the archive into the web UI every 15 minutes while it is open.
   state.mailPoll=setInterval(async()=>{
    if(document.hidden||!state.logged)return;
    await checkGmail(true);
