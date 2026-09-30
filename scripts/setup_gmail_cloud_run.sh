@@ -48,6 +48,9 @@ if [[ -z "$CURRENT_BUCKET" ]]; then
   [[ "$confirm" == 'АРХИВ' ]] || die "Ничего не изменено. Сначала сохрани архив."
 fi
 
+echo 'GCS, Secret Manager и новый Cloud Run revision могут повлечь расходы.'
+read -r -p 'Разрешаешь эту настройку и возможные расходы? Введи РАЗРЕШАЮ: ' bill_ok
+[[ "$bill_ok" == 'РАЗРЕШАЮ' ]] || die "Без разрешения платные изменения не выполняются."
 gcloud services enable gmail.googleapis.com secretmanager.googleapis.com storage.googleapis.com \
   --project="$PROJECT" --quiet
 
