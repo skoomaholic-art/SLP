@@ -111,6 +111,7 @@ def parse_matchtv_day(markup: str, day: date) -> list[dict]:
     # Do not accept a generic article which merely mentions a channel name.
     if "Телепрограмма" not in tokens:
         return out
+    tokens = tokens[tokens.index("Телепрограмма") + 1:]
     # A programme can run over midnight. The guide's date belongs to its first
     # slot; an overnight rollover is a next-day event in Asia/Almaty.
     active = None
