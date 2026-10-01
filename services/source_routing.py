@@ -68,8 +68,8 @@ ROUTES = {
         primary_transport="official_qazsport_html",
         fallback_transports=_fallbacks(
             CHANNEL_BY_NAME["QAZSPORT HD"],
-            "supplier_xlsx",
             "agent_reach_official_page",
+            "supplier_xlsx",
         ),
         confirmation_transports=("official_live_badge", "championat_calendar"),
         agent_reach_role="official_page_fallback_and_championat_reader",
