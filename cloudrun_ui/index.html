@@ -498,9 +498,15 @@ async function manageNotice(id,action){
   const result=await api("/api/gmail/notices/"+id+"/"+action,"POST",{});
   if(action==="approve"&&result.status==="superseded"){
    msg(result.message||"Устаревшее письмо закрыто. Используется более новое расписание.","success");
+  }else if(action==="approve"&&result.status==="partial_review"){
+   const changes=result.changes||{};
+   msg("Почтовая сетка применена частично: "+result.channel+
+     ". Новых событий: "+(changes.new||0)+
+     ". Обновлено времени: "+(changes.time_changed||0)+
+     ". Не применены даты: "+((result.held_dates||[]).join(", ")||"нужна проверка")+".","warn");
   }else if(action==="approve"){
    const changes=result.changes||{};
-   msg("Почтовая сетка применена: "+result.channel+
+   msg("Успех. Почтовая сетка применена: "+result.channel+
      ". Новых событий: "+(changes.new||0)+
      ". Обновлено времени: "+(changes.time_changed||0)+
      ". Почта теперь имеет приоритет для совпавших событий.","success");
