@@ -61,6 +61,15 @@ class SourceRoutingTests(unittest.TestCase):
             if route.primary_transport == "supplier_xlsx":
                 self.assertIn(channel.name, supplier_channels)
 
+    def test_primary_transport_is_not_repeated_as_fallback(self):
+        for channel in CHANNELS:
+            route = route_for_channel(channel.name)
+            self.assertNotIn(
+                route.primary_transport,
+                route.fallback_transports,
+                channel.name,
+            )
+
     def test_qazsport_has_direct_agent_reach_page_fallback(self):
         route = route_for_channel("QAZSPORT HD")
         self.assertEqual(route.primary_transport, "official_qazsport_html")
