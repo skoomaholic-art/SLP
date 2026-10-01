@@ -124,6 +124,16 @@ class EventTextRussianTests(unittest.TestCase):
         self.assertEqual(second["title"], "Тобыл 2009 - Актобе 2009")
         self.assertEqual(second["tournament"], "КДЖ лига. 20-й тур")
 
+    def test_nations_league_prefix_is_split_from_fixture(self):
+        result = normalize_event_fields(
+            title="Лига наций УЕФА Дания - Португалия",
+            sport="Футбол",
+            tournament="Лига наций УЕФА Дания - Португалия",
+        )
+        self.assertEqual(result["sport"], "Футбол")
+        self.assertEqual(result["tournament"], "Лига наций УЕФА")
+        self.assertEqual(result["title"], "Дания - Португалия")
+
     def test_aca_brand_stays_uppercase_latin(self):
         result = normalize_event_fields(
             title="ACA 208",
