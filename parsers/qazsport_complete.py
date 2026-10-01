@@ -12,7 +12,7 @@ from parsers.qazsport import (
     get_qazsport_schedule,
     parse_qazsport_title,
 )
-from services.broadcast_evidence import add_broadcast_evidence
+from services.agent_reach_web import read_public_url\nfrom services.broadcast_evidence import add_broadcast_evidence
 
 
 logger = logging.getLogger(__name__)
@@ -166,14 +166,23 @@ def apply_page_live_markers(
 async def _fetch_page(target_date: date | datetime | str | None) -> tuple[str, str]:
     url = build_url(target_date)
     timeout = aiohttp.ClientTimeout(total=20)
-    async with aiohttp.ClientSession(
-        headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout
-    ) as session:
-        async with session.get(url) as response:
-            response.raise_for_status()
-            html = await response.text()
-    text = " ".join(BeautifulSoup(html, "html.parser").stripped_strings)
-    return html, text
+    try:
+        async with aiohttp.ClientSession(
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout
+        ) as session:
+            async with session.get(url) as response:
+                response.raise_for_status()
+                html = await response.text()
+        text = " ".join(BeautifulSoup(html, "html.parser").stripped_strings)
+        return html, text
+    except Exception as direct_error:
+        logger.warning(
+            "qazsport direct page fetch failed; trying Agent Reach date=%s error=%s",
+            target_date,
+            type(direct_error).__name__,
+        )
+        reader_text = await read_public_url(url, timeout_seconds=35)
+        return "", reader_text
 
 
 async def get_qazsport_schedule_complete(
