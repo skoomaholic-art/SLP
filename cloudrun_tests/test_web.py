@@ -99,6 +99,7 @@ class WebTests(unittest.TestCase):
         self.assertIn('},12000);', index)
         self.assertIn("collection-quote", index)
         self.assertIn('authorLine.textContent="(с) "+author', index)
+        self.assertIn('replace(/\\.+$/,"")', index)
         self.assertIn('api("/api/collect/status")', index)
         self.assertIn("Ещё собираю...", index)
         self.assertIn("const combined=new Map()", index)
