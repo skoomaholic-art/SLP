@@ -696,7 +696,7 @@ def _safe_auto_apply(database, notice_id: int, parsed) -> tuple[bool, str]:
         result = approve_notice(database, notice_id, username="SLP_AUTO")
     except (GmailTransportError, InvalidEPG) as exc:
         return False, str(exc)[:200]
-    return result["status"] in ("imported", "already_imported"), ""
+    return result["status"] in ("imported", "already_imported", "superseded"), ""
 
 
 def list_notices(database, *, limit: int = 100) -> list[dict]:
@@ -731,7 +731,6 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
     """Read Gmail read-only; auto-accept only verified unambiguous LIVE EPG."""
 
     init_gmail_schema(database)
-    scan_started_ms = int(datetime.now(KZ_TIMEZONE).timestamp() * 1000)
     token = _access_token(database)
     message_ids: dict[str, dict] = {}
     incomplete_search = False
@@ -992,8 +991,10 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
     )
     _save_sync_checkpoint(
         database,
-        internal_date_ms=(max(max_internal_date_ms, scan_started_ms)
-                          if checkpoint_advanced else 0),
+        # Never move the Gmail cursor beyond a timestamp we actually observed.
+        # Advancing to "now" can skip a delayed or temporarily unreadable
+        # message on the next overlap query.
+        internal_date_ms=(max_internal_date_ms if checkpoint_advanced else 0),
         error=sync_issue,
     )
     return {"new_attachments": created, "auto_imported": auto_imported,
@@ -1084,10 +1085,29 @@ def approve_notice(database, notice_id: int, *, username: str) -> dict:
             (parsed.channel, row["received_at"], *parsed.scope_dates),
         ).fetchone()
     if newer_mail:
-        raise GmailTransportError(
-            "Более новое расписание этого канала уже загружено. "
-            "Старый файл нельзя применять поверх него."
+        # This is a successful no-op, not a user error. The current schedule
+        # is already newer, so close the stale notice and keep the accepted
+        # snapshot untouched.
+        reviewed_at = datetime.now(KZ_TIMEZONE).isoformat()
+        reason = (
+            "Более новое расписание уже загружено. "
+            "Устаревшее письмо закрыто без изменения текущей сетки."
         )
+        with database._connect() as conn:
+            conn.execute(
+                "UPDATE gmail_notices SET status='superseded',"
+                "attachment_bytes=NULL,reason=?,reviewed_by=?,reviewed_at=? "
+                "WHERE id=? AND status='pending'",
+                (reason, username, reviewed_at, notice_id),
+            )
+        return {
+            "status": "superseded",
+            "channel": parsed.channel,
+            "live_events": 0,
+            "dates": list(parsed.scope_dates),
+            "applied": False,
+            "message": reason,
+        }
     outcome = import_parsed_epg(database, parsed)
     _remember_format_mapping(
         database, fingerprint=str(row["format_fingerprint"] or ""),
