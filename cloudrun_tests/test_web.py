@@ -95,7 +95,12 @@ class WebTests(unittest.TestCase):
         self.assertIn('date:""', index)
         self.assertIn('id="allDates">Все даты<', index)
         self.assertIn("COLLECTION_QUOTES", index)
-        self.assertIn("Ещё собираю: проверяю сайты, телегиды и почту", index)
+        self.assertIn('setInterval(()=>{', index)
+        self.assertIn('},10000);', index)
+        self.assertIn('api("/api/collect/status")', index)
+        self.assertIn("Ещё собираю...", index)
+        self.assertIn("const combined=new Map()", index)
+        self.assertNotIn('[...(data.websites||[]),...(data.excel||[])]', index)
         self.assertIn('approve.textContent="Добавить в расписание"', index)
 
     def test_source_inventory_covers_exact_14_channels_without_duplicate_web_cards(self):
@@ -119,6 +124,45 @@ class WebTests(unittest.TestCase):
             self.assertIn("KHL HD", channels)
             self.assertIn("EUROSPORT 1", channels)
             self.assertIn("EUROSPORT 2", channels)
+
+    def test_supplier_mail_does_not_fake_website_health_and_error_is_explained(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = SLPDatabase(Path(directory) / "sport.db")
+            database.upsert_source_snapshot(
+                run_id="mail-only",
+                source="email_epg_setanta1",
+                scope_date="2026-10-02",
+                events=[{
+                    "source": "email_epg_setanta1",
+                    "source_url": "",
+                    "date": "2026-10-02",
+                    "time": "20:00",
+                    "channel": "SETANTA SPORTS 1",
+                    "sport": "Футбол",
+                    "tournament": "Премьер-лига",
+                    "title": "Арсенал - Челси",
+                    "raw_title": "Арсенал - Челси",
+                    "is_live": True,
+                    "is_live_broadcast": True,
+                }],
+            )
+            request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+                database=database, backup=None, free_mail_bridge=False
+            )))
+            with patch.object(web, "tvplus_channel_diagnostics", return_value={
+                "Setanta Sports 1": {
+                    "loaded_events": 0,
+                    "errors": ["API провайдера не ответил: TimeoutError"],
+                },
+            }):
+                status = web._source_status(request)
+            item = next(
+                entry for entry in status["websites"]
+                if entry["channel"] == "SETANTA SPORTS 1"
+            )
+            self.assertEqual(item["event_count"], 0)
+            self.assertEqual(item["status"], "error")
+            self.assertIn("тайм-аут соединения", item["error_reason"])
 
     def test_collect_is_not_blocked_by_pending_gmail_notice(self):
         with tempfile.TemporaryDirectory() as directory:

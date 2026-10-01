@@ -28,6 +28,7 @@ from openpyxl import load_workbook
 from pydantic import BaseModel
 
 from agents.runtime_orchestrator import RuntimeParserOrchestrator
+from parsers.tvplus import tvplus_channel_diagnostics
 from services.live_evidence import event_is_live_broadcast, event_is_schedule_candidate
 from services.editorial_export import InvalidTemplate, build_working_xlsx, validate_template
 from services import gmail_integration as gmail
@@ -426,6 +427,13 @@ async def lifespan(application: FastAPI):
         RuntimeParserOrchestrator(database=database)
     )
     application.state.collect_lock = asyncio.Lock()
+    application.state.collect_progress = {
+        "running": False,
+        "phase": "idle",
+        "message": "Сбор ещё не запускался",
+        "detail": "",
+        "updated_at": datetime.now(KZ_TIMEZONE).isoformat(timespec="seconds"),
+    }
     browser_install_task = None
     if browser_fallback_enabled():
         browser_install_task = asyncio.create_task(
@@ -608,20 +616,33 @@ def _source_status(request: Request) -> dict:
               and item["status"] in ("missing", "outdated", "partial")):
             item["status"] = "awaiting_response"
     source_runs = database.latest_source_runs()
-    # A provider's single tvguide run contains multiple distinct channels.
-    # Count the actual persisted direct broadcasts per channel, not the
-    # provider-wide parser run total.
+    provider_diagnostics = tvplus_channel_diagnostics()
+    # Parsing and supplier mail are separate signals. A supplier XLSX must not
+    # make a failed website/API look healthy in the source panel.
     with database._connect() as conn:
         active_counts = conn.execute(
             "SELECT source,channel,COUNT(*) AS n FROM events "
-            "WHERE active=1 AND is_live=1 AND event_date>=? "
-            "AND event_date<=? GROUP BY source,channel",
+            "WHERE active=1 AND is_live=1 AND source NOT LIKE 'email_epg_%' "
+            "AND event_date>=? AND event_date<=? GROUP BY source,channel",
             (today.isoformat(), (today + timedelta(days=6)).isoformat()),
         ).fetchall()
     by_channel = {}
     for row in active_counts:
         label = channel_name(row["channel"])
         by_channel[label] = by_channel.get(label, 0) + int(row["n"])
+
+    def human_error(value: str) -> str:
+        text = " ".join(str(value or "").split())
+        replacements = {
+            "TimeoutError": "тайм-аут соединения",
+            "TV+/Mobikino EPG returned no events": "TV+/Mobikino не вернул события",
+            "scheduleId не найден": "провайдер не вернул идентификатор телепрограммы",
+            "отсутствует pagesWithEvents": "телепрограмма на эту дату ещё не опубликована",
+        }
+        for source, target in replacements.items():
+            text = text.replace(source, target)
+        return text[:260]
+
     websites = []
     for channel in CHANNELS:
         sources = list(runtime_source_names(channel))
@@ -632,22 +653,34 @@ def _source_status(request: Request) -> dict:
             default=None,
         )
         count = by_channel.get(channel.name, 0)
-        status = (
-            "ok" if count else
-            "warning" if newest and newest.get("status") in ("ok", "warning") else
-            newest.get("status", "not_checked") if newest else "not_checked"
-        )
+        diagnostic = provider_diagnostics.get(channel.tvplus_name, {})
+        errors = [human_error(value) for value in diagnostic.get("errors", []) if value]
+        if newest and newest.get("error"):
+            message = human_error(newest.get("error"))
+            if message and message not in errors:
+                errors.append(message)
+        newest_status = str((newest or {}).get("status") or "not_checked")
+        if count:
+            status = "warning" if errors or newest_status in {"warning", "blocked", "error"} else "ok"
+        elif errors or newest_status in {"blocked", "error", "unavailable"}:
+            status = "error"
+        elif newest_status == "warning":
+            status = "warning"
+        else:
+            status = newest_status
         websites.append({
             "channel": channel.name, "kind": "website",
             "status": status,
             "checked_at": (newest or {}).get("created_at"),
             "event_count": count,
+            "error_reason": "; ".join(errors[:3]),
             "official_excel": official_files.get(channel.name),
             "guide_sources": sources,
             "official_site": channel.official_site,
             "secondary_guide": channel.secondary_guide,
             "provider_channel_id": channel.tvplus_id or None,
             "source_verified": bool(count),
+            "supplier_expected": bool(channel.supplier_source),
             "primary_transport": route.primary_transport,
             "fallback_transports": list(route.fallback_transports),
             "confirmation_transports": list(route.confirmation_transports),
@@ -1196,36 +1229,86 @@ async def send_test_request(request: Request, options: MailRequest):
     return result
 
 
+def _set_collect_progress(
+    request: Request,
+    *,
+    phase: str,
+    message: str,
+    detail: str = "",
+    running: bool = True,
+) -> None:
+    request.app.state.collect_progress = {
+        "running": running,
+        "phase": phase,
+        "message": message,
+        "detail": detail,
+        "updated_at": datetime.now(KZ_TIMEZONE).isoformat(timespec="seconds"),
+    }
+
+
+@app.get("/api/collect/status")
+def collect_status(request: Request):
+    current_user(request)
+    return dict(getattr(request.app.state, "collect_progress", {
+        "running": False,
+        "phase": "idle",
+        "message": "Сбор ещё не запускался",
+        "detail": "",
+    }))
+
+
 @app.post("/api/collect")
 async def collect(request: Request, options: CollectOptions):
     current_user(request)
     origin_guard(request)
     database = request.app.state.database
-
-    # One button means one complete pass: external parsers first, then mail.
-    # Mail is deliberately scanned last so a newly arrived supplier file is
-    # immediately visible in Notifications, while only previously approved
-    # supplier snapshots can affect the published schedule.
     result = {
         "ok": True,
         "errors": [],
+        "source_warnings": [],
         "official_sources": None,
         "vsetv": None,
         "mail": None,
     }
 
+    _set_collect_progress(
+        request,
+        phase="start",
+        message="Запускаю полный сбор",
+        detail="Сайты, TV+/Mobikino, резервные телегиды и почта",
+    )
+
     async with request.app.state.collect_lock:
+        _set_collect_progress(
+            request,
+            phase="parsers",
+            message="Обрабатываю основные спортивные источники",
+            detail=(
+                "QAZSPORT HD, SPORT+ Qazaqstan, Setanta, Q channels, "
+                "Eurosport, viju+ Sport, KHL и МАТЧ! ПЛАНЕТА"
+            ),
+        )
         try:
             refreshed = await request.app.state.schedule.refresh()
             result["official_sources"] = {
                 "run_id": getattr(refreshed, "run_id", ""),
                 "event_count": database.active_event_count(),
             }
+            latest = database.latest_agent_run() or {}
+            summary = latest.get("summary") or {}
+            result["source_warnings"].extend(summary.get("source_errors") or [])
+            result["source_warnings"].extend(summary.get("source_warnings") or [])
         except Exception as exc:
             result["errors"].append(
                 "Основные сайты: " + type(exc).__name__
             )
 
+        _set_collect_progress(
+            request,
+            phase="fallbacks",
+            message="Проверяю резервные телегиды и LIVE-подтверждения",
+            detail="VseTV, Championat, Agent Reach и доступные подтверждающие страницы",
+        )
         try:
             result["vsetv"] = await refresh_vsetv_web_sources(database)
         except Exception as exc:
@@ -1233,6 +1316,12 @@ async def collect(request: Request, options: CollectOptions):
                 "Дополнительные телегиды: " + type(exc).__name__
             )
 
+        _set_collect_progress(
+            request,
+            phase="mail",
+            message="Проверяю новые письма и Excel поставщиков",
+            detail="Setanta, Q LEAGUE, Q ARENA, Q FOOTBALL, QAZSPORT и SPORT+",
+        )
         mail_available = (
             request.app.state.free_mail_bridge
             or gmail.status(database)["connected"]
@@ -1251,7 +1340,17 @@ async def collect(request: Request, options: CollectOptions):
                 result["errors"].append("Почта/Drive: " + str(exc)[:160])
             except (gmail.GmailTransportError, gmail.GmailNotConfigured) as exc:
                 result["errors"].append("Почта: " + str(exc)[:160])
+        else:
+            result["source_warnings"].append(
+                "Почта не подключена: новые Excel не проверялись"
+            )
 
+        _set_collect_progress(
+            request,
+            phase="merge",
+            message="Собираю итоговую сетку",
+            detail="Принятые почтовые данные имеют приоритет, остальные события дополняются парсингом",
+        )
         if request.app.state.backup:
             try:
                 await asyncio.to_thread(request.app.state.backup.save)
@@ -1265,6 +1364,20 @@ async def collect(request: Request, options: CollectOptions):
     result["durable_storage"] = bool(request.app.state.backup)
     result["last_run"] = database.latest_agent_run()
     result["pending_mail_channels"] = _source_status(request)["pending_channels"]
+
+    _set_collect_progress(
+        request,
+        phase="done" if result["ok"] else "done_with_errors",
+        message=(
+            "Сбор завершён успешно"
+            if result["ok"]
+            else "Сбор завершён с ошибками отдельных источников"
+        ),
+        detail=(
+            f"Итоговая сетка: {result['event_count']} событий"
+        ),
+        running=False,
+    )
     return result
 
 

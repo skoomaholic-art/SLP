@@ -92,7 +92,7 @@ details.sources summary{cursor:pointer;font-weight:700;font-size:16px}
 .template-bar input{width:min(100%,400px)}
 
 footer{margin:25px 0;color:var(--muted);font-size:12px}
-</style>
+#message{white-space:pre-line}\n</style>
 </head>
 <body>
 <header>
@@ -257,38 +257,67 @@ function channelPill(channel){
 function renderSources(data){
  const node=$("sources");node.replaceChildren();
  const grid=document.createElement("div");grid.className="source-grid";
- for(const item of [...(data.websites||[]),...(data.excel||[])]){
+ const combined=new Map();
+ for(const item of (data.websites||[])){
+  combined.set(item.channel,{channel:item.channel,web:item,excel:item.official_excel||null});
+ }
+ for(const item of (data.excel||[])){
+  const entry=combined.get(item.channel)||{channel:item.channel,web:null,excel:null};
+  entry.excel=item;combined.set(item.channel,entry);
+ }
+ const webLabels={
+  ok:"данные получены",
+  warning:"получено частично",
+  error:"ошибка источника",
+  unavailable:"источник временно недоступен",
+  blocked:"данные заблокированы проверкой",
+  not_checked:"ещё не проверялся"
+ };
+ const excelLabels={
+  ready:"актуальный Excel",
+  partial:"Excel покрывает часть недели",
+  awaiting_approval:"новый Excel ждёт подтверждения",
+  awaiting_response:"запрос отправлен, ждём ответ",
+  outdated:"Excel устарел",
+  missing:"Excel не найден"
+ };
+ for(const entry of combined.values()){
+  const item=entry.web||{},excel=entry.excel;
   const row=document.createElement("div");row.className="source-item";
-  const logo=channelLogo(item.channel);
-  if(logo)row.append(logo);
+  const logo=channelLogo(entry.channel);if(logo)row.append(logo);
   const info=document.createElement("div");info.className="source-text";
-  const name=document.createElement("strong");name.textContent=item.channel;
-  const state=document.createElement("div");
-  const labels={
-   ready:"Актуальный Excel",partial:"Excel покрывает часть недели",
-   awaiting_approval:"Получен по почте - ждёт подтверждения",
-   awaiting_response:"Запрос отправлен - ожидается ответ",
-   outdated:"Excel устарел",missing:"Excel не получен",
-   ok:"Источник обработан",warning:"Обработан с предупреждением",
-   error:"Ошибка источника",not_checked:"Источник ещё не проверялся"
-  };
-  state.textContent=labels[item.status]||item.status;
-  state.className="source-state"+(["ok","ready"].includes(item.status)?" ok":"");
-  if(["awaiting_approval","awaiting_response"].includes(item.status))state.style.color="#ffbf69";
-  info.append(name,state);
-  if(item.coverage?.length){
-   const note=document.createElement("div");note.className="muted-small";
-   note.textContent=item.coverage[0]+" - "+item.coverage.at(-1)+
-     ", LIVE: "+(item.live_events??0);info.append(note);
+  const name=document.createElement("strong");name.textContent=entry.channel;info.append(name);
+
+  if(entry.web){
+   const webState=document.createElement("div");
+   webState.className="source-state"+(["ok"].includes(item.status)?" ok":"");
+   webState.textContent="Парсинг: "+(webLabels[item.status]||item.status)+
+     (item.event_count?" · LIVE: "+item.event_count:"");
+   if(["warning","error","blocked","unavailable"].includes(item.status))webState.style.color="#ffbf69";
+   info.append(webState);
+   if(item.error_reason){
+    const reason=document.createElement("div");reason.className="muted-small";
+    reason.textContent="Причина: "+item.error_reason;info.append(reason);
+   }
   }
-  if(item.official_excel){
-   const note=document.createElement("div");note.className="muted-small";
-   const file=item.official_excel,dates=file.coverage||[];
-   note.textContent="Excel поставщика: "+(dates.length?
-     dates[0]+" - "+dates.at(-1)+", LIVE: "+file.live_events:
-     "нет покрытия выбранной недели");
-   info.append(note);
+
+  const expectsMail=!!item.supplier_expected||!!excel;
+  if(expectsMail){
+   const mailState=document.createElement("div");mailState.className="muted-small";
+   if(excel){
+    const dates=excel.coverage||[];
+    mailState.textContent="Почта/Excel: "+(excelLabels[excel.status]||excel.status)+
+      (dates.length?" · "+dates[0]+" - "+dates.at(-1)+", LIVE: "+(excel.live_events??0):"");
+    if(["awaiting_approval","awaiting_response","outdated","missing","partial"].includes(excel.status)){
+     mailState.style.color="#ffbf69";
+    }
+   }else{
+    mailState.textContent="Почта/Excel: файл не найден в подключённом Gmail/Drive";
+    mailState.style.color="#ffbf69";
+   }
+   info.append(mailState);
   }
+
   row.append(info);grid.append(row);
  }
  node.append(grid);
@@ -309,7 +338,6 @@ function renderSources(data){
   node.append(request);
  }
 }
-
 
 
 async function loadTemplateStatus(){
@@ -465,13 +493,20 @@ async function loadMailNotices(){
 }
 async function manageNotice(id,action){
  if(action==="dismiss"&&!confirm("Закрыть уведомление?"))return;
+ if(action==="approve")msg("Применяю данные из письма к текущему расписанию...");
  try{
   const result=await api("/api/gmail/notices/"+id+"/"+action,"POST",{});
   if(action==="approve"&&result.status==="superseded"){
    msg(result.message||"Устаревшее письмо закрыто. Используется более новое расписание.","success");
+  }else if(action==="approve"&&result.status==="partial_review"){
+   const changes=result.changes||{};
+   msg("Почтовая сетка применена частично: "+result.channel+
+     ". Новых событий: "+(changes.new||0)+
+     ". Обновлено времени: "+(changes.time_changed||0)+
+     ". Не применены даты: "+((result.held_dates||[]).join(", ")||"нужна проверка")+".","warn");
   }else if(action==="approve"){
    const changes=result.changes||{};
-   msg("Почтовая сетка применена: "+result.channel+
+   msg("Успех. Почтовая сетка применена: "+result.channel+
      ". Новых событий: "+(changes.new||0)+
      ". Обновлено времени: "+(changes.time_changed||0)+
      ". Почта теперь имеет приоритет для совпавших событий.","success");
@@ -479,7 +514,9 @@ async function manageNotice(id,action){
    msg("Уведомление закрыто.","success");
   }
   await load();
- }catch(e){msg(e.message,"error")}
+ }catch(e){
+  msg((action==="approve"?"Не удалось применить данные из письма: ":"")+e.message,"error");
+ }
 }
 async function checkGmail(silent=false){
  if(!state.gmailConnected&&!state.gmailBridge)return;
@@ -639,42 +676,68 @@ const COLLECTION_QUOTES=[
  ["Ненавидел каждую минуту тренировок, но говорил себе: не сдавайся.","Мухаммед Али"],
  ["Чемпионы продолжают играть, пока не сделают как надо.","Билли Джин Кинг"],
  ["Я тренировался четыре года, чтобы пробежать девять секунд.","Усэйн Болт"],
- ["Удача тут ни при чём. За результатом стоят годы работы.","Серена Уильямс"]
-];
+ ["Удача тут ни при чём. За результатом стоят годы работы.","Серена Уильямс"],
+ ["Талант без работы ничего не значит.","Криштиану Роналду"],
+ ["Чем больше мечтаешь, тем дальше заходишь.","Майкл Фелпс"],
+ ["Трудно победить человека, который никогда не сдаётся.","Бейб Рут"],
+ ["Нужно бороться, чтобы осуществить мечту.","Лионель Месси"],
+ ["Не считай дни. Сделай так, чтобы дни считались.","Мухаммед Али"],
+ ["Самое важное - пытаться вдохновлять людей становиться лучше.","Коби Брайант"],
+ ["Нет оправдания тому, чтобы кто-то работал больше тебя.","Дерек Джитер"],
+ ["Каким бы хорошим ты ни был, всегда можно стать лучше.","Тайгер Вудс"],
+ ["Я всегда верил, что если вложить работу, результат придёт.","Майкл Джордан"],
+ ["Давление - это привилегия.","Билли Джин Кинг"]
+]
 function startCollectTicker(){
- let index=0,showQuote=true;
+ let index=0,showQuote=true,current="Запускаю полный сбор...",detail="";
+ let stopped=false;
  const paint=()=>{
+  if(stopped)return;
+  const technical=detail?current+"\n"+detail:current;
   if(showQuote){
    const [quote,author]=COLLECTION_QUOTES[index%COLLECTION_QUOTES.length];
-   msg("«"+quote+"» - "+author);
-   index++;
+   msg(technical+"\n\n«"+quote+"» - "+author);
   }else{
-   msg("Ещё собираю: проверяю сайты, телегиды и почту...");
+   msg(technical+"\n\nЕщё собираю...");
   }
-  showQuote=!showQuote;
  };
+ const flip=setInterval(()=>{
+  if(showQuote)index++;
+  showQuote=!showQuote;paint();
+ },10000);
+ const poll=setInterval(async()=>{
+  try{
+   const status=await api("/api/collect/status");
+   current=status.message||current;detail=status.detail||"";
+   paint();
+  }catch(e){}
+ },1400);
  paint();
- return setInterval(paint,4200);
+ return ()=>{
+  stopped=true;clearInterval(flip);clearInterval(poll);
+ };
 }
 $("collect").addEventListener("click",async()=>{
  $("collect").disabled=true;
- const ticker=startCollectTicker();
+ const stopTicker=startCollectTicker();
  try{
   const result=await api("/api/collect","POST",{allow_partial:true});
   const mail=result.mail||{};
   const mailText=(mail.new_attachments||0)?
     " Новых писем в уведомлениях: "+mail.new_attachments+".":"";
+  const warningText=(result.source_warnings||[]).length?
+    " Предупреждения источников: "+result.source_warnings.slice(0,3).join("; ")+".":"";
   if(result.ok){
-   msg("Сбор завершён успешно. Событий в итоговой сетке: "+result.event_count+"."+mailText,"success");
+   msg("Сбор завершён успешно. Событий в итоговой сетке: "+result.event_count+"."+mailText+warningText,"success");
   }else{
    msg("Сбор завершён с ошибками: "+(result.errors||[]).join("; ")+
-      ". Итоговая сетка сохранена по доступным источникам."+mailText,"error");
+      ". Итоговая сетка сохранена по доступным источникам."+mailText+warningText,"error");
   }
   await load();
  }catch(e){
   msg("Сбор не завершён: "+e.message,"error");
  }finally{
-  clearInterval(ticker);
+  stopTicker();
   $("collect").disabled=false;
  }
 });

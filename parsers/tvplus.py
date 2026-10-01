@@ -21,6 +21,15 @@ MOBIKINO_API_BASE = "https://kcell.server-api.lfstrm.tv"
 MOBIKINO_WEB_BASE = "https://mobikino.kz/channels"
 MOBIKINO_SOURCE = "mobikino"
 
+_LAST_CHANNEL_DIAGNOSTICS: dict[str, dict] = {}
+
+
+def tvplus_channel_diagnostics() -> dict[str, dict]:
+    return {
+        channel: dict(value)
+        for channel, value in _LAST_CHANNEL_DIAGNOSTICS.items()
+    }
+
 
 @dataclass(frozen=True)
 class TVPlusChannel:
@@ -301,11 +310,16 @@ async def _load_channel_date(
 
 
 async def fetch_tvplus_schedules(target_dates: Iterable[date | datetime | str]) -> TVPlusSchedules:
+    global _LAST_CHANNEL_DIAGNOSTICS
     dates = sorted({_coerce_date(value) for value in target_dates})
     if not dates:
         return TVPlusSchedules(by_date={}, errors=[])
 
-    timeout = aiohttp.ClientTimeout(total=25)
+    diagnostics = {
+        channel.name: {"errors": [], "loaded_events": 0}
+        for channel in ALL_GUIDE_CHANNELS
+    }
+    timeout = aiohttp.ClientTimeout(total=32)
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "application/json",
@@ -319,12 +333,29 @@ async def fetch_tvplus_schedules(target_dates: Iterable[date | datetime | str]) 
         channels = ALL_GUIDE_CHANNELS
         schedule_ids_by_api: dict[str, dict[str, str]] = {}
         for api_base in sorted({channel.api_base for channel in channels}):
-            try:
-                schedule_ids_by_api[api_base] = await _schedule_ids(session, api_base)
-            except Exception as error:
+            last_error = None
+            for attempt in range(3):
+                try:
+                    schedule_ids_by_api[api_base] = await _schedule_ids(
+                        session, api_base
+                    )
+                    last_error = None
+                    break
+                except Exception as error:
+                    last_error = error
+                    if attempt < 2:
+                        await asyncio.sleep(0.7 * (attempt + 1))
+            if last_error is not None:
                 schedule_ids_by_api[api_base] = {}
-                errors.append(f"Provider API {api_base}: {type(error).__name__}")
-                print(f"Ошибка provider API {api_base}:", repr(error))
+                reason = (
+                    "API провайдера не ответил: "
+                    + type(last_error).__name__
+                )
+                errors.append(f"Provider API {api_base}: {type(last_error).__name__}")
+                for channel in channels:
+                    if channel.api_base == api_base:
+                        diagnostics[channel.name]["errors"].append(reason)
+                print(f"Ошибка provider API {api_base}:", repr(last_error))
 
         jobs = []
         metadata = []
@@ -332,6 +363,9 @@ async def fetch_tvplus_schedules(target_dates: Iterable[date | datetime | str]) 
             schedule_id = schedule_ids_by_api.get(channel.api_base, {}).get(channel.channel_id)
             if not schedule_id:
                 errors.append(f"{channel.name}: scheduleId не найден")
+                diagnostics[channel.name]["errors"].append(
+                    "Провайдер не вернул scheduleId для канала"
+                )
                 continue
             for target_date in dates:
                 jobs.append(_load_channel_date(session, channel, schedule_id, target_date))
@@ -341,10 +375,21 @@ async def fetch_tvplus_schedules(target_dates: Iterable[date | datetime | str]) 
         for (channel, target_date), result in zip(metadata, results):
             if isinstance(result, Exception):
                 errors.append(f"TV+ {channel.name} {target_date}: {type(result).__name__}")
+                diagnostics[channel.name]["errors"].append(
+                    str(result)[:220] or type(result).__name__
+                )
                 print(f"Ошибка источника TV+ {channel.name} {target_date}:", repr(result))
                 continue
             by_date[target_date].extend(result)
+            diagnostics[channel.name]["loaded_events"] += len(result)
 
+    _LAST_CHANNEL_DIAGNOSTICS = {
+        channel: {
+            "loaded_events": int(value["loaded_events"]),
+            "errors": list(dict.fromkeys(value["errors"]))[:4],
+        }
+        for channel, value in diagnostics.items()
+    }
     return TVPlusSchedules(by_date=by_date, errors=errors)
 
 

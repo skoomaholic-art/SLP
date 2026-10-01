@@ -47,7 +47,14 @@ _PHRASES = (
     (r"\bАзия\s+Ойындары\b", "Азиатские игры"),
     (r"\bАуыр\s+атлетика\b", "Тяжёлая атлетика"),
     (r"\bЖеңіл\s+атлетика\b", "Лёгкая атлетика"),
+    (r"\bК[өо]ркем\s+жүзу\b", "Артистическое плавание"),
+    (r"\bК[өо]ркем\s+гимнастика\b", "Художественная гимнастика"),
+    (r"\bСадақ\s+ату\b", "Стрельба из лука"),
+    (r"\bСуға\s+секіру\b", "Прыжки в воду"),
+    (r"\bКомандалық\s+жарыс\b", "Командные соревнования"),
+    (r"\bЖекелей\s+жарыс\b", "Личные соревнования"),
     (r"\bӘйелдер\b", "Женщины"),
+    (r"\b(?:Айелдер|Айелде|Әйелде)\b", "Женщины"),
     (r"\bЕрлер\b", "Мужчины"),
     (r"\bҚыздар\b", "Девушки"),
     (r"\bҰлдар\b", "Юноши"),
@@ -124,6 +131,7 @@ _ACRONYMS = {
 
 _SPORTS = {
     "футбол": "Футбол",
+    "футзал": "Футзал",
     "хоккей": "Хоккей",
     "баскетбол": "Баскетбол",
     "волейбол": "Волейбол",
@@ -139,6 +147,11 @@ _SPORTS = {
     "велоспорт": "Велоспорт",
     "гандбол": "Гандбол",
     "дзюдо": "Дзюдо",
+    "стрельба из лука": "Стрельба из лука",
+    "прыжки в воду": "Прыжки в воду",
+    "артистическое плавание": "Артистическое плавание",
+    "художественная гимнастика": "Художественная гимнастика",
+    "гимнастика": "Гимнастика",
     "формула-1": "Формула-1",
     "автоспорт": "Автоспорт",
     "мотоспорт": "Мотоспорт",
@@ -150,6 +163,26 @@ _TOURNAMENT_HINT = re.compile(
 )
 
 _LATIN_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'-]*")
+
+_PROTECTED_LATIN_PHRASES = (
+    (re.compile(r"(?iu)\bAlash\s+Pride\b"), "ALASH PRIDE"),
+)
+
+_PROPER_CASE_WORDS = {
+    "казахстан": "Казахстан",
+    "казахстана": "Казахстана",
+    "казахстане": "Казахстане",
+    "азия": "Азия",
+    "азии": "Азии",
+    "европа": "Европа",
+    "европы": "Европы",
+    "уефа": "УЕФА",
+    "фифа": "ФИФА",
+    "кхл": "КХЛ",
+    "нхл": "НХЛ",
+    "нба": "НБА",
+    "мма": "ММА",
+}
 
 
 def strip_bookmakers(value: str) -> str:
@@ -209,7 +242,60 @@ def _transliterate_word(word: str) -> str:
 
 
 def _transliterate_remaining_latin(text: str) -> str:
-    return _LATIN_WORD_RE.sub(lambda match: _transliterate_word(match.group(0)), text)
+    protected: list[str] = []
+
+    def hold(match: re.Match[str]) -> str:
+        protected.append(match.group(0))
+        return f"§{len(protected) - 1}§"
+
+    for pattern, _canonical in _PROTECTED_LATIN_PHRASES:
+        text = pattern.sub(hold, text)
+
+    text = _LATIN_WORD_RE.sub(
+        lambda match: _transliterate_word(match.group(0)),
+        text,
+    )
+
+    for index, original in enumerate(protected):
+        canonical = original
+        for pattern, replacement in _PROTECTED_LATIN_PHRASES:
+            if pattern.fullmatch(original):
+                canonical = replacement
+                break
+        text = text.replace(f"§{index}§", canonical)
+    return text
+
+
+def _normalize_all_caps(text: str) -> str:
+    if re.fullmatch(r"(?iu)\s*ALASH\s+PRIDE(?:\s+\d+)?\s*", text):
+        return re.sub(
+            r"(?iu)ALASH\s+PRIDE",
+            "ALASH PRIDE",
+            text,
+        )
+    letters = [char for char in text if char.isalpha()]
+    cased = [char for char in letters if char.lower() != char.upper()]
+    if len(cased) < 8 or not all(char.isupper() for char in cased):
+        return text
+
+    lowered = text.lower()
+
+    def sentence(match: re.Match[str]) -> str:
+        return match.group(1) + match.group(2).upper()
+
+    lowered = re.sub(
+        r"(^|[.!?]\s+|\s-\s)([а-яё])",
+        sentence,
+        lowered,
+        flags=re.I,
+    )
+    for source, replacement in _PROPER_CASE_WORDS.items():
+        lowered = re.sub(
+            r"(?iu)(?<![\w])" + re.escape(source) + r"(?![\w])",
+            replacement,
+            lowered,
+        )
+    return lowered
 
 
 @lru_cache(maxsize=8192)
@@ -231,6 +317,7 @@ def to_russian_text(value: str) -> str:
     )
     text = text.translate(_KZ_TRANSLIT)
     text = _transliterate_remaining_latin(text)
+    text = _normalize_all_caps(text)
     text = re.sub(r"\s{2,}", " ", text)
     text = re.sub(r"\s+([,.:;)])", r"\1", text)
     text = re.sub(r"([(])\s+", r"\1", text)
@@ -283,6 +370,11 @@ def normalize_event_fields(*, title: str, sport: str, tournament: str) -> dict[s
     result_title = re.sub(
         r"^\(([^)]+)\)\.\s*",
         r"\1. ",
+        result_title,
+    ).strip()
+    result_title = re.sub(
+        r"^\(([^)]+)\)$",
+        r"\1",
         result_title,
     ).strip()
 
