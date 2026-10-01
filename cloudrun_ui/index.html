@@ -722,7 +722,7 @@ function showCollectionQuote(technical,quote,author){
  const n=$("message");n.replaceChildren();n.className="notice";
  const tech=document.createElement("div");tech.textContent=technical;n.append(tech);
  const em=document.createElement("em");em.className="collection-quote";
- const quoteLine=document.createElement("span");quoteLine.textContent="«"+quote+"»";em.append(quoteLine);
+ const quoteLine=document.createElement("span");const cleanQuote=String(quote||"").replace(/\.+$/,"");quoteLine.textContent="«"+cleanQuote+"»";em.append(quoteLine);
  const authorLine=document.createElement("span");authorLine.className="quote-author";
  authorLine.textContent="(с) "+author;em.append(authorLine);n.append(em);
 }
