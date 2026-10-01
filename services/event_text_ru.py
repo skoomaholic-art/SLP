@@ -261,6 +261,12 @@ def _transliterate_remaining_latin(text: str) -> str:
 
 
 def _normalize_all_caps(text: str) -> str:
+    if re.fullmatch(r"(?iu)\s*ALASH\s+PRIDE(?:\s+\d+)?\s*", text):
+        return re.sub(
+            r"(?iu)ALASH\s+PRIDE",
+            "ALASH PRIDE",
+            text,
+        )
     letters = [char for char in text if char.isalpha()]
     cased = [char for char in letters if char.lower() != char.upper()]
     if len(cased) < 8 or not all(char.isupper() for char in cased):
