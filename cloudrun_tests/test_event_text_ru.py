@@ -124,6 +124,15 @@ class EventTextRussianTests(unittest.TestCase):
         self.assertEqual(second["title"], "Тобыл 2009 - Актобе 2009")
         self.assertEqual(second["tournament"], "КДЖ лига. 20-й тур")
 
+    def test_aca_brand_stays_uppercase_latin(self):
+        result = normalize_event_fields(
+            title="ACA 208",
+            sport="MMA",
+            tournament="",
+        )
+        self.assertEqual(result["title"], "ACA 208")
+        self.assertEqual(result["sport"], "ММА")
+
     def test_real_betis_is_not_mistaken_for_standalone_bet_word(self):
         self.assertEqual(
             strip_bookmakers("Real Betis - Barcelona"),
