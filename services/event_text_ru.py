@@ -134,7 +134,7 @@ _NAMES = {
 _ACRONYMS = {
     "uefa": "УЕФА", "fifa": "ФИФА", "khl": "КХЛ", "nhl": "НХЛ",
     "nba": "НБА", "afc": "АФК", "ucl": "ЛЧ", "uclw": "ЖЛЧ",
-    "wrc": "WRC", "ufc": "UFC", "atp": "ATP", "wta": "WTA",
+    "wrc": "WRC", "ufc": "UFC", "aca": "ACA", "atp": "ATP", "wta": "WTA",
     "f1": "F1", "mma": "ММА",
 }
 
