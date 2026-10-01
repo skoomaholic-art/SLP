@@ -171,6 +171,8 @@ def _replace_names(text: str) -> str:
 
 
 def _transliterate_word(word: str) -> str:
+    if word.isupper() and re.fullmatch(r"[IVXLCDM]+", word):
+        return word
     lower = word.casefold()
     if lower in _ACRONYMS:
         return _ACRONYMS[lower]
@@ -248,7 +250,7 @@ def _strip_prefix(text: str, prefix: str) -> str:
         return text
     escaped = re.escape(prefix)
     return re.sub(
-        r"(?iu)^" + escaped + r"\s*(?:[.:,]|\s+-\s+)\s*",
+        r"(?iu)^" + escaped + r"(?:\s*(?:[.:,]|\s+-\s+)\s*|\s+(?=\())",
         "",
         text,
         count=1,
@@ -278,6 +280,11 @@ def normalize_event_fields(*, title: str, sport: str, tournament: str) -> dict[s
 
     result_title = _strip_prefix(result_title, result_sport)
     result_title = _strip_prefix(result_title, result_tournament)
+    result_title = re.sub(
+        r"^\(([^)]+)\)\.\s*",
+        r"\1. ",
+        result_title,
+    ).strip()
 
     # A tournament can arrive as "УЕФА Лига наций" from one source and
     # "Лига наций УЕФА" from another. Use one stable order for matching.
