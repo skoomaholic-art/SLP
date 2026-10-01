@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from io import BytesIO
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 from openpyxl import Workbook
@@ -90,6 +90,10 @@ class WebTests(unittest.TestCase):
         self.assertNotEqual(logos["KHL PRIME"], logos["KHL HD"])
         self.assertNotEqual(logos["SETANTA SPORTS 1"], logos["SETANTA SPORTS 2"])
         self.assertNotEqual(logos["EUROSPORT 1"], logos["EUROSPORT 2"])
+        self.assertIn(".day.today", index)
+        self.assertIn('const today=kzToday();', index)
+        self.assertIn('date:""', index)
+        self.assertIn('id="allDates">Все даты<', index)
 
     def test_source_inventory_covers_exact_14_channels_without_duplicate_web_cards(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -112,6 +116,38 @@ class WebTests(unittest.TestCase):
             self.assertIn("KHL HD", channels)
             self.assertIn("EUROSPORT 1", channels)
             self.assertIn("EUROSPORT 2", channels)
+
+    def test_collect_is_not_blocked_by_pending_gmail_notice(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = SLPDatabase(Path(directory) / "sport.db")
+            refresh = AsyncMock(return_value=SimpleNamespace())
+            request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+                database=database,
+                backup=None,
+                collect_lock=asyncio.Lock(),
+                free_mail_bridge=False,
+                schedule=SimpleNamespace(refresh=refresh),
+            )))
+            with patch.object(web, "current_user", return_value={"role": "editor"}), \
+                 patch.object(web, "origin_guard"), \
+                 patch.object(web.gmail, "status", return_value={"connected": False}), \
+                 patch.object(web, "_source_status", return_value={
+                     "pending_channels": ["SPORT+ Qazaqstan"],
+                     "missing_channels": [],
+                 }), \
+                 patch.object(
+                     web, "refresh_vsetv_web_sources",
+                     new=AsyncMock(return_value={"stats": []}),
+                 ):
+                result = asyncio.run(
+                    web.collect(request, web.CollectOptions(allow_partial=False))
+                )
+            self.assertTrue(result["ok"])
+            self.assertEqual(
+                result["pending_mail_channels"],
+                ["SPORT+ Qazaqstan"],
+            )
+            refresh.assert_awaited_once()
 
     def test_supplier_preview_does_not_import_or_save(self):
         request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(

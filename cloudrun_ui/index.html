@@ -34,7 +34,9 @@ h1{font-size:30px;margin:0 0 7px}h2{font-size:19px;margin:0 0 12px}.subtitle,.mu
 .week{text-align:center;color:var(--muted);font-size:12px}
 .day{padding:10px 0;min-height:46px;border:1px solid transparent;background:#1d2938;border-radius:8px;color:var(--text);position:relative;text-align:center}
 .day.has:after{content:"";width:5px;height:5px;display:block;border-radius:50%;background:var(--accent);margin:1px auto -6px}
-.day.selected{border-color:var(--accent)}.day.blank{background:transparent}
+.day.today{background:#253748;font-weight:800;box-shadow:inset 0 0 0 1px #8ea7bd}
+.day.selected{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.day.blank{background:transparent}
 .toolbar{margin:14px 0}.filters input{max-width:280px}.filters select{width:auto;min-width:170px}
 .badge{font-size:11px;letter-spacing:.02em;background:#233c4d;color:#d5e4f0;padding:4px 8px;border-radius:6px}
 .badge.live{background:#14564d;color:#a8ffec}.badge.past{background:#303a48;color:#c1ccda}
@@ -164,8 +166,8 @@ footer{margin:25px 0;color:var(--muted);font-size:12px}
 <div class="calendar-tools"><h2 style="margin:0;flex:1">Календарь</h2><button id="prevMonth" aria-label="Предыдущий месяц">‹</button><button id="nextMonth" aria-label="Следующий месяц">›</button></div>
 <div id="month" style="font-weight:700;margin-top:7px"></div>
 <div id="days" class="days"></div>
-<button id="allDates">Показать весь архив</button>
-<p class="muted-small">Список справа фильтруется по выбранной дате. Зелёная точка означает, что есть сохранённые LIVE-события.</p>
+<button id="allDates">Все даты</button>
+<p class="muted-small">Текущий день выделен визуально и не ограничивает список. По умолчанию показаны события за все сохранённые даты. Нажатие на день включает фильтр. Зелёная точка означает, что есть LIVE-события.</p>
 </section>
 <section class="card">
 <h2>События и архив</h2>
@@ -182,7 +184,7 @@ footer{margin:25px 0;color:var(--muted);font-size:12px}
 <div id="events" class="events"></div>
 </section>
 </div>
-<footer>Данные поступают только из подтверждённых источников. При отсутствии почтовых файлов частичный сбор требует подтверждения. Веб-сервис не запускает Telegram-бота.</footer>
+<footer>Данные поступают только из подтверждённых источников. Gmail-уведомления не блокируют сбор сайтов и API. Веб-сервис не запускает Telegram-бота.</footer>
 </section>
 </main>
 <script src="/assets/logos.js"></script>
@@ -467,9 +469,13 @@ async function manageNotice(id,action){
  if(action==="dismiss"&&!confirm("Закрыть уведомление?"))return;
  try{
   const result=await api("/api/gmail/notices/"+id+"/"+action,"POST",{});
-  msg(action==="approve"?
-   "Расписание загружено: "+result.channel+". LIVE: "+result.live_events:
-   "Уведомление закрыто.","success");
+  if(action==="approve"&&result.status==="superseded"){
+   msg(result.message||"Устаревшее письмо закрыто. Используется более новое расписание.","success");
+  }else if(action==="approve"){
+   msg("Расписание загружено: "+result.channel+". LIVE: "+result.live_events,"success");
+  }else{
+   msg("Уведомление закрыто.","success");
+  }
   await load();
  }catch(e){msg(e.message,"error")}
 }
@@ -495,8 +501,10 @@ function renderCalendar(){
  const root=$("days");root.replaceChildren();
  for(const label of ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"]){const n=document.createElement("div");n.className="week";n.textContent=label;root.append(n)}
  for(let i=0;i<start;i++){const n=document.createElement("div");n.className="day blank";root.append(n)}
+ const today=kzToday();
  for(let day=1;day<=days;day++){
-  const key=iso(y,m+1,day),btn=document.createElement("button");btn.className="day"+(counts.has(key)?" has":"")+(state.date===key?" selected":"");
+  const key=iso(y,m+1,day),btn=document.createElement("button");
+  btn.className="day"+(counts.has(key)?" has":"")+(key===today?" today":"")+(state.date===key?" selected":"");
   btn.textContent=day;btn.addEventListener("click",()=>{state.date=key;renderCalendar();renderEvents()});root.append(btn);
  }
 }
@@ -615,7 +623,7 @@ function renderEvents(){
  const channels=[...new Set(state.all.flatMap(e=>e.channels))].sort(),saved=$("channel").value;
  const selector=$("channel");selector.replaceChildren(new Option("Все каналы",""));
  channels.forEach(c=>selector.add(new Option(c,c)));selector.value=saved;
- const data=filtered();$("count").textContent=(state.date?state.date.split("-").reverse().join("."):"Весь архив")+" · Событий: "+data.length;
+ const data=filtered();$("count").textContent=(state.date?state.date.split("-").reverse().join("."):"Все даты")+" · Событий: "+data.length;
  for(const event of data)root.append(makeEvent(event));
  if(!data.length){const n=document.createElement("p");n.className="muted";n.textContent="Событий пока нет. Соберите расписание или выберите другую дату.";root.append(n)}
 }
@@ -633,14 +641,6 @@ $("collect").addEventListener("click",async()=>{
   try{result=await api("/api/collect","POST",{allow_partial:false})}
   catch(e){
    if(e.status!==409)throw e;
-   if(e.detail?.requires_approval){
-    const pending=(e.detail?.pending_channels||[]).join(", ");
-    $("gmailPanel").open=true;
-    await loadMailNotices();
-    msg("Получены новые расписания: "+pending+". Сначала подтвердите загрузку в разделе Gmail.","error");
-    $("gmailPanel").scrollIntoView({behavior:"smooth",block:"nearest"});
-    return;
-   }
    const missing=(e.detail?.missing_channels||[]).join(", ");
    if(!confirm("Нет актуальных Excel: "+missing+". Собрать по доступным источникам?")){msg("Сбор отменён");return}
    result=await api("/api/collect","POST",{allow_partial:true});
