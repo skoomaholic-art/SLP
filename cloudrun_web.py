@@ -38,6 +38,7 @@ from services import editorial_store as editorial
 from services.channel_registry import CHANNELS
 from services.event_text_ru import normalize_event_fields, strip_bookmakers
 from services.source_routing import route_for_channel, runtime_source_names
+from services.supplier_overlay import apply_supplier_overlay
 from services.vsetv_sources import WEB_CHANNEL_IDS, refresh_vsetv_web_sources
 from services.browser_schedule import browser_fallback_enabled, install_browser_for_python_runtime
 from services.epg_excel import (MAX_WORKBOOK_BYTES, InvalidEPG, import_parsed_epg,
@@ -214,7 +215,7 @@ def event_rows(
     overrides = editorial.get_editorial(
         database, [row["storage_id"] for row in rows]
     )
-    exact: dict[tuple, dict] = {}
+    records: list[dict] = []
     for row in rows:
         try:
             raw = json.loads(row["payload_json"])
@@ -275,16 +276,31 @@ def event_rows(
             }
         except (ValueError, TypeError, KeyError):
             continue
-        # Multiple providers may describe exactly one broadcast. Prefer a
-        # current confirmed supplier XLSX over a third-party copy.
-        key = (record["date"], record["time"], channel,
-               normalize_match_text(title), normalize_match_text(tournament),
-               normalize_match_text(sport))
+        records.append(record)
+
+    # Accepted supplier mail is the final authority for a matching
+    # channel/fixture. It overrides scraped time/title/tournament in the
+    # current schedule without deleting the scraped history. Supplier-only
+    # fixtures remain as additions.
+    current_records = (
+        records if include_inactive else apply_supplier_overlay(records)
+    )
+
+    exact: dict[tuple, dict] = {}
+    for record in current_records:
+        key = (
+            record["date"], record["time"], record["channel"],
+            normalize_match_text(record["title"]),
+            normalize_match_text(record["tournament"]),
+            normalize_match_text(record["sport"]),
+        )
         old = exact.get(key)
         if old is None or (
-            int(record["active"]), int(str(record["source"]).startswith("email_epg"))
+            int(record["active"]),
+            int(str(record["source"]).startswith("email_epg_")),
         ) > (
-            int(old["active"]), int(str(old["source"]).startswith("email_epg"))
+            int(old["active"]),
+            int(str(old["source"]).startswith("email_epg_")),
         ):
             exact[key] = record
 
