@@ -12,7 +12,8 @@ from zoneinfo import ZoneInfo
 import aiohttp
 from bs4 import BeautifulSoup
 
-from services.agent_reach_web import read_public_url\nfrom services.time_logic import KZ_TIMEZONE
+from services.agent_reach_web import read_public_url
+from services.time_logic import KZ_TIMEZONE
 
 logger = logging.getLogger(__name__)
 
