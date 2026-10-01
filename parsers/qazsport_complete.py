@@ -12,7 +12,8 @@ from parsers.qazsport import (
     get_qazsport_schedule,
     parse_qazsport_title,
 )
-from services.agent_reach_web import read_public_url\nfrom services.broadcast_evidence import add_broadcast_evidence
+from services.agent_reach_web import read_public_url
+from services.broadcast_evidence import add_broadcast_evidence
 
 
 logger = logging.getLogger(__name__)
