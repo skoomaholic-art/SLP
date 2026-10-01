@@ -36,6 +36,7 @@ from services import assistant_bridge
 from services import ai_pipeline
 from services import editorial_store as editorial
 from services.channel_registry import CHANNELS
+from services.source_routing import route_for_channel, runtime_source_names
 from services.vsetv_sources import WEB_CHANNEL_IDS, refresh_vsetv_web_sources
 from services.browser_schedule import browser_fallback_enabled, install_browser_for_python_runtime
 from services.epg_excel import (MAX_WORKBOOK_BYTES, InvalidEPG, import_parsed_epg,
@@ -605,15 +606,8 @@ def _source_status(request: Request) -> dict:
         by_channel[label] = by_channel.get(label, 0) + int(row["n"])
     websites = []
     for channel in CHANNELS:
-        sources = []
-        if channel.name == "QAZSPORT HD":
-            sources.append("qazsport")
-        if channel.name == "SPORT+ Qazaqstan":
-            sources.append("sportplus")
-        if channel.vsetv_id is not None:
-            sources.append("web_vsetv_" + str(channel.vsetv_id))
-        if channel.tvplus_id:
-            sources.append("tvguide")
+        sources = list(runtime_source_names(channel))
+        route = route_for_channel(channel.name)
         runs = [source_runs[name] for name in sources if name in source_runs]
         newest = max(
             runs, key=lambda item: str(item.get("created_at") or ""),
@@ -636,6 +630,11 @@ def _source_status(request: Request) -> dict:
             "secondary_guide": channel.secondary_guide,
             "provider_channel_id": channel.tvplus_id or None,
             "source_verified": bool(count),
+            "primary_transport": route.primary_transport,
+            "fallback_transports": list(route.fallback_transports),
+            "confirmation_transports": list(route.confirmation_transports),
+            "agent_reach_role": route.agent_reach_role,
+            "agent_reach_enabled": route.uses_agent_reach,
         })
     return {
         "websites": websites, "excel": files,

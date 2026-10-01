@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 import aiohttp
 from bs4 import BeautifulSoup
 
+from services.agent_reach_web import read_public_url
 from services.time_logic import KZ_TIMEZONE
 
 logger = logging.getLogger(__name__)
@@ -439,11 +440,15 @@ async def _fetch_reader_section(
     sport: str,
     path: str,
 ) -> tuple[list[dict], str | None]:
-    reader_url = build_reader_url(path)
-    async with semaphore:
-        text, error = await _download(session, reader_url)
-    if error:
-        return [], f"reader:{sport}:{error}"
+    source_url = build_match_center_url(path)
+    try:
+        async with semaphore:
+            text = await read_public_url(
+                source_url,
+                timeout_seconds=REQUEST_TIMEOUT_SECONDS + 5,
+            )
+    except Exception as error:
+        return [], f"reader:{sport}:agent_reach:{type(error).__name__}:{error}"
     events = parse_match_center_text(
         text,
         anchor_date,
@@ -510,8 +515,18 @@ async def fetch_championat_calendar(anchor_date: date) -> ChampionatCalendar:
                     f"direct:no_events:{_blocked_page_diagnostic(html)}"
                 )
 
-        root_reader_url = build_reader_url(PRIMARY_MATCH_CENTER)
-        reader_text, reader_error = await _download(session, root_reader_url)
+        try:
+            reader_text = await read_public_url(
+                primary_url,
+                timeout_seconds=REQUEST_TIMEOUT_SECONDS + 5,
+            )
+            reader_error = None
+        except Exception as error:
+            reader_text = ""
+            reader_error = (
+                f"agent_reach:{type(error).__name__}:{error}"
+            )
+
         reader_events = (
             parse_match_center_text(
                 reader_text,

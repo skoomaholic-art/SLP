@@ -7,6 +7,9 @@ on:
     paths:
       - "parsers/**"
       - "services/event_contract.py"
+      - "services/channel_registry.py"
+      - "services/source_routing.py"
+      - "services/agent_reach_web.py"
       - "tests/live_source_smoke.py"
       - ".github/workflows/source-smoke.yml"
   pull_request:
