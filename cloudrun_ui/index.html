@@ -759,7 +759,17 @@ $("collect").addEventListener("click",async()=>{
  $("collect").disabled=true;
  const stopTicker=startCollectTicker();
  try{
-  const result=await api("/api/collect","POST",{allow_partial:true});
+  await api("/api/collect","POST",{allow_partial:true});
+  let result=null;
+  for(let attempt=0;attempt<800;attempt++){
+   await new Promise(resolve=>setTimeout(resolve,1500));
+   const status=await api("/api/collect/status");
+   if(!status.running&&status.result){
+    result=status.result;
+    break;
+   }
+  }
+  if(!result)throw new Error("Сбор выполняется слишком долго. Статус сохранён, обновите страницу позже.");
   const mail=result.mail||{};
   const mailText=(mail.new_attachments||0)?
     " Новых писем в уведомлениях: "+mail.new_attachments+".":"";

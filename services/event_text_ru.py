@@ -171,6 +171,58 @@ _TOURNAMENT_HINT = re.compile(
     r"премьер-лига|ATP|WTA|UFC|КХЛ|НХЛ|НБА|УЕФА|ФИФА|АФК)\b"
 )
 
+_CANONICAL_TOURNAMENT_PREFIXES = (
+    "Лига наций УЕФА",
+    "Лига чемпионов УЕФА",
+    "Лига Европы УЕФА",
+    "Лига конференций УЕФА",
+    "Премьер-лига",
+    "Чемпионат мира",
+    "Летние Азиатские игры",
+    "Азиатские игры",
+)
+
+
+def _canonicalize_tournament_order(text: str) -> str:
+    value = str(text or "")
+    value = re.sub(
+        r"(?iu)^УЕФА\s+Лига\s+наций\b",
+        "Лига наций УЕФА",
+        value,
+    )
+    value = re.sub(
+        r"(?iu)^УЕФА\s+Лига\s+чемпионов\b",
+        "Лига чемпионов УЕФА",
+        value,
+    )
+    value = re.sub(
+        r"(?iu)^УЕФА\s+Лига\s+Европы\b",
+        "Лига Европы УЕФА",
+        value,
+    )
+    return value.strip()
+
+
+def _split_known_tournament_prefix(text: str) -> tuple[str, str]:
+    value = _canonicalize_tournament_order(text)
+    if not value:
+        return "", ""
+    for canonical in _CANONICAL_TOURNAMENT_PREFIXES:
+        if value.casefold() == canonical.casefold():
+            return canonical, ""
+        match = re.match(
+            r"(?iu)^" + re.escape(canonical) + r"\s+(.+)$",
+            value,
+        )
+        if not match:
+            continue
+        tail = match.group(1).strip(" .,:;-")
+        # Split only when the suffix clearly looks like the actual fixture
+        # or event, not a tournament stage such as "7-й тур".
+        if re.search(r"\s+-\s+", tail):
+            return canonical, tail
+    return "", value
+
 _LATIN_WORD_RE = re.compile(r"[A-Za-z][A-Za-z'-]*")
 
 _PROTECTED_LATIN_PHRASES = (
@@ -384,8 +436,29 @@ def _strip_prefix(text: str, prefix: str) -> str:
 
 def normalize_event_fields(*, title: str, sport: str, tournament: str) -> dict[str, str]:
     result_sport = canonical_sport(sport)
-    result_tournament = to_russian_text(tournament)
-    result_title = to_russian_text(title)
+    result_tournament = _canonicalize_tournament_order(
+        to_russian_text(tournament)
+    )
+    result_title = _canonicalize_tournament_order(
+        to_russian_text(title)
+    )
+
+    tournament_prefix, tournament_tail = _split_known_tournament_prefix(
+        result_tournament
+    )
+    if tournament_prefix:
+        result_tournament = tournament_prefix
+
+    title_prefix, title_tail = _split_known_tournament_prefix(result_title)
+    if title_prefix and title_tail:
+        if not result_tournament or result_tournament == title_prefix:
+            result_tournament = title_prefix
+        result_title = title_tail
+    elif tournament_prefix and tournament_tail and (
+        not result_title
+        or result_title.casefold() == to_russian_text(tournament).casefold()
+    ):
+        result_title = tournament_tail
 
     parts = [part.strip() for part in re.split(r"\.\s+", result_title) if part.strip()]
     if parts:
@@ -416,12 +489,8 @@ def normalize_event_fields(*, title: str, sport: str, tournament: str) -> dict[s
         result_title,
     ).strip()
 
-    # A tournament can arrive as "УЕФА Лига наций" from one source and
-    # "Лига наций УЕФА" from another. Use one stable order for matching.
-    result_tournament = re.sub(
-        r"(?iu)^УЕФА\s+Лига\s+наций$",
-        "Лига наций УЕФА",
-        result_tournament,
+    result_tournament = _canonicalize_tournament_order(
+        result_tournament
     )
 
     return {

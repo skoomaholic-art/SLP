@@ -287,22 +287,41 @@ def event_rows(
         records if include_inactive else apply_supplier_overlay(records)
     )
 
+    def slot_rank(record: dict) -> tuple:
+        source = str(record.get("source") or "")
+        supplier = source.startswith("email_epg_")
+        official_direct = source in {"qazsport", "sportplus"}
+        verified_web = source.startswith("web_vsetv_")
+        return (
+            int(record["active"]),
+            int(supplier),
+            int(official_direct),
+            int(verified_web),
+            int(bool(record.get("tournament"))),
+            -len(str(record.get("title") or "")),
+        )
+
     exact: dict[tuple, dict] = {}
     for record in current_records:
-        key = (
-            record["date"], record["time"], record["channel"],
-            normalize_match_text(record["title"]),
-            normalize_match_text(record["tournament"]),
-            normalize_match_text(record["sport"]),
-        )
+        # One linear TV channel cannot carry two different LIVE broadcasts at
+        # the exact same minute. Different source wording for the same slot is
+        # therefore one broadcast, not two separate cards. Keep archive mode
+        # granular so historical source versions remain inspectable.
+        if include_inactive:
+            key = (
+                record["date"], record["time"], record["channel"],
+                normalize_match_text(record["title"]),
+                normalize_match_text(record["tournament"]),
+                normalize_match_text(record["sport"]),
+            )
+        else:
+            key = (
+                record["date"],
+                record["time"],
+                record["channel"],
+            )
         old = exact.get(key)
-        if old is None or (
-            int(record["active"]),
-            int(str(record["source"]).startswith("email_epg_")),
-        ) > (
-            int(old["active"]),
-            int(str(old["source"]).startswith("email_epg_")),
-        ):
+        if old is None or slot_rank(record) > slot_rank(old):
             exact[key] = record
 
     groups: list[list[dict]] = []
@@ -427,6 +446,7 @@ async def lifespan(application: FastAPI):
         RuntimeParserOrchestrator(database=database)
     )
     application.state.collect_lock = asyncio.Lock()
+    application.state.collect_task = None
     application.state.collect_progress = {
         "running": False,
         "phase": "idle",
@@ -1230,20 +1250,176 @@ async def send_test_request(request: Request, options: MailRequest):
 
 
 def _set_collect_progress(
-    request: Request,
+    application: FastAPI,
     *,
     phase: str,
     message: str,
     detail: str = "",
     running: bool = True,
+    result: dict | None = None,
 ) -> None:
-    request.app.state.collect_progress = {
+    payload = {
         "running": running,
         "phase": phase,
         "message": message,
         "detail": detail,
         "updated_at": datetime.now(KZ_TIMEZONE).isoformat(timespec="seconds"),
     }
+    if result is not None:
+        payload["result"] = result
+    application.state.collect_progress = payload
+
+
+async def _run_collection(application: FastAPI) -> dict:
+    database = application.state.database
+    result = {
+        "ok": True,
+        "errors": [],
+        "source_warnings": [],
+        "official_sources": None,
+        "vsetv": None,
+        "mail": None,
+    }
+
+    try:
+        async with application.state.collect_lock:
+            _set_collect_progress(
+                application,
+                phase="parsers",
+                message="Обрабатываю основные спортивные источники",
+                detail=(
+                    "QAZSPORT HD, SPORT+ Qazaqstan, Setanta, Q channels, "
+                    "Eurosport, viju+ Sport, KHL и МАТЧ! ПЛАНЕТА"
+                ),
+            )
+            try:
+                refreshed = await application.state.schedule.refresh()
+                result["official_sources"] = {
+                    "run_id": getattr(refreshed, "run_id", ""),
+                    "event_count": database.active_event_count(),
+                }
+                latest = database.latest_agent_run() or {}
+                summary = latest.get("summary") or {}
+                result["source_warnings"].extend(
+                    summary.get("source_errors") or []
+                )
+                result["source_warnings"].extend(
+                    summary.get("source_warnings") or []
+                )
+            except Exception as exc:
+                result["errors"].append(
+                    "Основные сайты: " + type(exc).__name__
+                )
+
+            _set_collect_progress(
+                application,
+                phase="fallbacks",
+                message="Проверяю резервные телегиды и LIVE-подтверждения",
+                detail=(
+                    "VseTV, Championat, Agent Reach и доступные "
+                    "подтверждающие страницы"
+                ),
+            )
+            try:
+                result["vsetv"] = await refresh_vsetv_web_sources(database)
+            except Exception as exc:
+                result["errors"].append(
+                    "Дополнительные телегиды: " + type(exc).__name__
+                )
+
+            _set_collect_progress(
+                application,
+                phase="mail",
+                message="Проверяю новые письма и Excel поставщиков",
+                detail=(
+                    "Setanta, Q LEAGUE, Q ARENA, Q FOOTBALL, "
+                    "QAZSPORT и SPORT+"
+                ),
+            )
+            mail_available = (
+                application.state.free_mail_bridge
+                or gmail.status(database)["connected"]
+            )
+            if mail_available:
+                try:
+                    importer = (
+                        freebridge.sync_inbox
+                        if application.state.free_mail_bridge
+                        else gmail.sync_inbox
+                    )
+                    result["mail"] = await asyncio.to_thread(
+                        importer,
+                        database,
+                        allow_auto_import=False,
+                    )
+                except freebridge.FreeDriveError as exc:
+                    result["errors"].append(
+                        "Почта/Drive: " + str(exc)[:160]
+                    )
+                except (
+                    gmail.GmailTransportError,
+                    gmail.GmailNotConfigured,
+                ) as exc:
+                    result["errors"].append(
+                        "Почта: " + str(exc)[:160]
+                    )
+            else:
+                result["source_warnings"].append(
+                    "Почта не подключена: новые Excel не проверялись"
+                )
+
+            _set_collect_progress(
+                application,
+                phase="merge",
+                message="Собираю итоговую сетку",
+                detail=(
+                    "Принятые почтовые данные имеют приоритет, "
+                    "остальные события дополняются парсингом"
+                ),
+            )
+            if application.state.backup:
+                try:
+                    await asyncio.to_thread(application.state.backup.save)
+                except Exception as exc:
+                    result["errors"].append(
+                        "Сохранение: " + type(exc).__name__
+                    )
+    except Exception as exc:
+        result["errors"].append(
+            "Внутренняя ошибка сбора: " + type(exc).__name__
+        )
+
+    result["ok"] = not bool(result["errors"])
+    try:
+        result["event_count"] = len(event_rows(database, "", ""))
+    except Exception as exc:
+        result["event_count"] = database.active_event_count()
+        result["errors"].append(
+            "Итоговая сетка: " + type(exc).__name__
+        )
+        result["ok"] = False
+    result["durable_storage"] = bool(application.state.backup)
+    result["last_run"] = database.latest_agent_run()
+    pending_notices = gmail.list_notices(database, limit=200)
+    result["pending_mail_channels"] = sorted({
+        item["detected_channel"]
+        for item in pending_notices
+        if item["status"] == "pending" and item["detected_channel"]
+    })
+
+    _set_collect_progress(
+        application,
+        phase="done" if result["ok"] else "done_with_errors",
+        message=(
+            "Сбор завершён успешно"
+            if result["ok"]
+            else "Сбор завершён с ошибками отдельных источников"
+        ),
+        detail=f"Итоговая сетка: {result['event_count']} событий",
+        running=False,
+        result=result,
+    )
+    return result
 
 
 @app.get("/api/collect/status")
@@ -1257,128 +1433,31 @@ def collect_status(request: Request):
     }))
 
 
-@app.post("/api/collect")
+@app.post("/api/collect", status_code=202)
 async def collect(request: Request, options: CollectOptions):
     current_user(request)
     origin_guard(request)
-    database = request.app.state.database
-    result = {
-        "ok": True,
-        "errors": [],
-        "source_warnings": [],
-        "official_sources": None,
-        "vsetv": None,
-        "mail": None,
-    }
+    existing = getattr(request.app.state, "collect_task", None)
+    if existing is not None and not existing.done():
+        return {
+            "accepted": True,
+            "already_running": True,
+        }
 
     _set_collect_progress(
-        request,
+        request.app,
         phase="start",
         message="Запускаю полный сбор",
         detail="Сайты, TV+/Mobikino, резервные телегиды и почта",
+        running=True,
     )
-
-    async with request.app.state.collect_lock:
-        _set_collect_progress(
-            request,
-            phase="parsers",
-            message="Обрабатываю основные спортивные источники",
-            detail=(
-                "QAZSPORT HD, SPORT+ Qazaqstan, Setanta, Q channels, "
-                "Eurosport, viju+ Sport, KHL и МАТЧ! ПЛАНЕТА"
-            ),
-        )
-        try:
-            refreshed = await request.app.state.schedule.refresh()
-            result["official_sources"] = {
-                "run_id": getattr(refreshed, "run_id", ""),
-                "event_count": database.active_event_count(),
-            }
-            latest = database.latest_agent_run() or {}
-            summary = latest.get("summary") or {}
-            result["source_warnings"].extend(summary.get("source_errors") or [])
-            result["source_warnings"].extend(summary.get("source_warnings") or [])
-        except Exception as exc:
-            result["errors"].append(
-                "Основные сайты: " + type(exc).__name__
-            )
-
-        _set_collect_progress(
-            request,
-            phase="fallbacks",
-            message="Проверяю резервные телегиды и LIVE-подтверждения",
-            detail="VseTV, Championat, Agent Reach и доступные подтверждающие страницы",
-        )
-        try:
-            result["vsetv"] = await refresh_vsetv_web_sources(database)
-        except Exception as exc:
-            result["errors"].append(
-                "Дополнительные телегиды: " + type(exc).__name__
-            )
-
-        _set_collect_progress(
-            request,
-            phase="mail",
-            message="Проверяю новые письма и Excel поставщиков",
-            detail="Setanta, Q LEAGUE, Q ARENA, Q FOOTBALL, QAZSPORT и SPORT+",
-        )
-        mail_available = (
-            request.app.state.free_mail_bridge
-            or gmail.status(database)["connected"]
-        )
-        if mail_available:
-            try:
-                importer = (
-                    freebridge.sync_inbox
-                    if request.app.state.free_mail_bridge
-                    else gmail.sync_inbox
-                )
-                result["mail"] = await asyncio.to_thread(
-                    importer, database, allow_auto_import=False
-                )
-            except freebridge.FreeDriveError as exc:
-                result["errors"].append("Почта/Drive: " + str(exc)[:160])
-            except (gmail.GmailTransportError, gmail.GmailNotConfigured) as exc:
-                result["errors"].append("Почта: " + str(exc)[:160])
-        else:
-            result["source_warnings"].append(
-                "Почта не подключена: новые Excel не проверялись"
-            )
-
-        _set_collect_progress(
-            request,
-            phase="merge",
-            message="Собираю итоговую сетку",
-            detail="Принятые почтовые данные имеют приоритет, остальные события дополняются парсингом",
-        )
-        if request.app.state.backup:
-            try:
-                await asyncio.to_thread(request.app.state.backup.save)
-            except Exception as exc:
-                result["errors"].append(
-                    "Сохранение: " + type(exc).__name__
-                )
-
-    result["ok"] = not bool(result["errors"])
-    result["event_count"] = len(event_rows(database, "", ""))
-    result["durable_storage"] = bool(request.app.state.backup)
-    result["last_run"] = database.latest_agent_run()
-    result["pending_mail_channels"] = _source_status(request)["pending_channels"]
-
-    _set_collect_progress(
-        request,
-        phase="done" if result["ok"] else "done_with_errors",
-        message=(
-            "Сбор завершён успешно"
-            if result["ok"]
-            else "Сбор завершён с ошибками отдельных источников"
-        ),
-        detail=(
-            f"Итоговая сетка: {result['event_count']} событий"
-        ),
-        running=False,
+    request.app.state.collect_task = asyncio.create_task(
+        _run_collection(request.app)
     )
-    return result
+    return {
+        "accepted": True,
+        "already_running": False,
+    }
 
 
 
