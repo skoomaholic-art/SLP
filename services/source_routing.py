@@ -24,7 +24,11 @@ def _guide_transport(channel: Channel) -> str:
     return "tvplus_api"
 
 
-def _fallbacks(channel: Channel, *extra: str) -> tuple[str, ...]:
+def _fallbacks(
+    channel: Channel,
+    *extra: str,
+    include_guide: bool = True,
+) -> tuple[str, ...]:
     result: list[str] = []
     for value in extra:
         if value and value not in result:
@@ -32,7 +36,7 @@ def _fallbacks(channel: Channel, *extra: str) -> tuple[str, ...]:
     if channel.vsetv_id is not None and "vsetv_live_badge" not in result:
         result.append("vsetv_live_badge")
     guide = _guide_transport(channel)
-    if channel.tvplus_id and guide not in result:
+    if include_guide and channel.tvplus_id and guide not in result:
         result.append(guide)
     return tuple(result)
 
@@ -108,42 +112,60 @@ ROUTES = {
     "EUROSPORT 1": ChannelRoute(
         channel="EUROSPORT 1",
         primary_transport="mobikino_api",
-        fallback_transports=_fallbacks(CHANNEL_BY_NAME["EUROSPORT 1"]),
+        fallback_transports=_fallbacks(
+            CHANNEL_BY_NAME["EUROSPORT 1"],
+            include_guide=False,
+        ),
         confirmation_transports=("vsetv_live_badge", "championat_calendar", "official_event_sources"),
         agent_reach_role="championat_reader_and_official_page_extraction_fallback",
     ),
     "EUROSPORT 2": ChannelRoute(
         channel="EUROSPORT 2",
         primary_transport="mobikino_api",
-        fallback_transports=_fallbacks(CHANNEL_BY_NAME["EUROSPORT 2"]),
+        fallback_transports=_fallbacks(
+            CHANNEL_BY_NAME["EUROSPORT 2"],
+            include_guide=False,
+        ),
         confirmation_transports=("vsetv_live_badge", "championat_calendar", "official_event_sources"),
         agent_reach_role="championat_reader_and_official_page_extraction_fallback",
     ),
     "viju+ Sport": ChannelRoute(
         channel="viju+ Sport",
         primary_transport="tvplus_api",
-        fallback_transports=_fallbacks(CHANNEL_BY_NAME["viju+ Sport"]),
+        fallback_transports=_fallbacks(
+            CHANNEL_BY_NAME["viju+ Sport"],
+            include_guide=False,
+        ),
         confirmation_transports=("vsetv_live_badge", "championat_calendar", "official_event_sources"),
         agent_reach_role="championat_reader_and_official_page_extraction_fallback",
     ),
     "KHL HD": ChannelRoute(
         channel="KHL HD",
         primary_transport="tvplus_api",
-        fallback_transports=_fallbacks(CHANNEL_BY_NAME["KHL HD"]),
+        fallback_transports=_fallbacks(
+            CHANNEL_BY_NAME["KHL HD"],
+            include_guide=False,
+        ),
         confirmation_transports=("vsetv_live_badge", "championat_calendar", "official_event_sources"),
         agent_reach_role="championat_reader_and_official_page_extraction_fallback",
     ),
     "KHL PRIME": ChannelRoute(
         channel="KHL PRIME",
         primary_transport="tvplus_api",
-        fallback_transports=_fallbacks(CHANNEL_BY_NAME["KHL PRIME"]),
+        fallback_transports=_fallbacks(
+            CHANNEL_BY_NAME["KHL PRIME"],
+            include_guide=False,
+        ),
         confirmation_transports=("vsetv_live_badge", "championat_calendar", "official_event_sources"),
         agent_reach_role="championat_reader_and_official_page_extraction_fallback",
     ),
     "МАТЧ! ПЛАНЕТА": ChannelRoute(
         channel="МАТЧ! ПЛАНЕТА",
         primary_transport="tvplus_api",
-        fallback_transports=_fallbacks(CHANNEL_BY_NAME["МАТЧ! ПЛАНЕТА"]),
+        fallback_transports=_fallbacks(
+            CHANNEL_BY_NAME["МАТЧ! ПЛАНЕТА"],
+            include_guide=False,
+        ),
         confirmation_transports=("vsetv_live_badge", "championat_calendar", "official_event_sources"),
         agent_reach_role="championat_reader_and_official_page_extraction_fallback",
     ),
