@@ -1,10 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
-
-logger = logging.getLogger(__name__)
-
 try:
     from agent_reach.channels.web import WebChannel
 except Exception as exc:  # pragma: no cover - surfaced by runtime helper
