@@ -86,6 +86,22 @@ class SLPDatabase:
                 CREATE INDEX IF NOT EXISTS idx_events_start_at
                     ON events(start_at);
 
+                CREATE TABLE IF NOT EXISTS event_revisions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    storage_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    scope_date TEXT NOT NULL,
+                    change_kind TEXT NOT NULL,
+                    before_json TEXT,
+                    after_json TEXT,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_revisions_event
+                    ON event_revisions(storage_id, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_revisions_source
+                    ON event_revisions(source, scope_date, id DESC);
+
                 CREATE TABLE IF NOT EXISTS parser_runs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     run_id TEXT NOT NULL,
@@ -237,11 +253,61 @@ class SLPDatabase:
         source: str,
         scope_date: str,
         events: Iterable[dict],
+        preserve_editorial: bool = False,
     ) -> None:
         now_iso = _now_iso()
         event_list = list(events)
+        if preserve_editorial:
+            from services.editorial_store import init_editorial
+            init_editorial(self)
 
         with self._connect() as connection:
+            before = {
+                row["storage_id"]: row
+                for row in connection.execute(
+                    "SELECT storage_id,payload_json FROM events "
+                    "WHERE source=? AND scope_date=? AND active=1",
+                    (source, scope_date),
+                ).fetchall()
+            }
+            # Identify only unique same-day/channel/fixture replacements.
+            # If a source moved a fixture's kickoff, its storage ID changes.
+            transfers = []
+            if preserve_editorial and before and event_list:
+                from collections import defaultdict
+                from services.schedule_merge import normalize_match_text
+
+                def fixture_key(item):
+                    return tuple(normalize_match_text(str(item.get(field) or ""))
+                                 for field in ("date", "channel", "sport",
+                                               "tournament", "title"))
+
+                old_keys = defaultdict(list)
+                new_keys = defaultdict(list)
+                for old_id, old_row in before.items():
+                    old_keys[fixture_key(json.loads(old_row["payload_json"]))].append(old_id)
+                for event in event_list:
+                    new_keys[fixture_key(event)].append(
+                        _event_storage_id(source, scope_date, event))
+                for key, old_ids in old_keys.items():
+                    new_ids = new_keys.get(key, ())
+                    if len(old_ids) == len(new_ids) == 1 and old_ids[0] != new_ids[0]:
+                        transfers.append((old_ids[0], new_ids[0]))
+            # Record a superseded programme as removed from the EPG, not
+            # as cancelled. A disappearing listing is not proof of cancellation.
+            next_ids = {
+                _event_storage_id(source, scope_date, event)
+                for event in event_list
+            }
+            for removed_id in before.keys() - next_ids:
+                connection.execute(
+                    "INSERT INTO event_revisions("
+                    "storage_id,run_id,source,scope_date,change_kind,"
+                    "before_json,after_json,created_at) "
+                    "VALUES(?,?,?,?,'removed_from_source',?,NULL,?)",
+                    (removed_id,run_id,source,scope_date,
+                     before[removed_id]["payload_json"],now_iso),
+                )
             connection.execute(
                 "UPDATE events SET active = 0 WHERE source = ? AND scope_date = ?",
                 (source, scope_date),
@@ -254,6 +320,18 @@ class SLPDatabase:
                 normalized_title = str(
                     event.get("title") or event.get("raw_title") or ""
                 ).strip()
+                old_payload = before.get(storage_id)
+                if old_payload is None or old_payload["payload_json"] != payload:
+                    connection.execute(
+                        "INSERT INTO event_revisions("
+                        "storage_id,run_id,source,scope_date,change_kind,"
+                        "before_json,after_json,created_at) "
+                        "VALUES(?,?,?,?,?,?,?,?)",
+                        (storage_id,run_id,source,scope_date,
+                         "added_to_source" if old_payload is None else "source_changed",
+                         old_payload["payload_json"] if old_payload else None,
+                         payload,now_iso),
+                    )
 
                 connection.execute(
                     """
@@ -308,6 +386,45 @@ class SLPDatabase:
                         payload,
                     ),
                 )
+
+            for old_id, new_id in transfers:
+                old_edit = connection.execute(
+                    "SELECT values_json,updated_by,updated_at "
+                    "FROM editorial_overrides WHERE storage_id=?", (old_id,)
+                ).fetchone()
+                if old_edit is None:
+                    continue
+                created = connection.execute(
+                    "INSERT OR IGNORE INTO editorial_overrides("
+                    "storage_id,values_json,updated_by,updated_at) VALUES(?,?,?,?)",
+                    (new_id, old_edit["values_json"], old_edit["updated_by"],
+                     old_edit["updated_at"]),
+                )
+                if created.rowcount:
+                    connection.execute(
+                        "INSERT INTO editorial_audit("
+                        "storage_id,editor,before_json,after_json,changed_at)"
+                        " VALUES(?,?,?,?,?)",
+                        (new_id, "SLP_IMPORT_TRANSFER",
+                         json.dumps({"copied_from_storage_id": old_id}),
+                         old_edit["values_json"], now_iso),
+                    )
+
+    def event_revisions(self, storage_id: str = "", limit: int = 100) -> list[dict]:
+        limit = min(max(int(limit), 1), 500)
+        with self._connect() as connection:
+            if storage_id:
+                rows = connection.execute(
+                    "SELECT * FROM event_revisions WHERE storage_id=? "
+                    "ORDER BY id DESC LIMIT ?",
+                    (storage_id, limit),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM event_revisions ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+        return [dict(row) for row in rows]
 
     def load_active_source_snapshot(self, source: str, scope_date: str) -> list[dict]:
         with self._connect() as connection:

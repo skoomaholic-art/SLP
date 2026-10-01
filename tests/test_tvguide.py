@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 from parsers.championat import ChampionatCalendar
 from parsers.tvplus import EUROSPORT_CHANNELS, TARGET_CHANNELS
+from services.channel_registry import CHANNELS
 from parsers.tvguide_cached import (
     SOURCE,
     _reconcile_external,
@@ -44,14 +45,14 @@ class TVGuideTests(unittest.TestCase):
             "end_confidence": "high",
         }
 
-    def test_inventory_contains_all_14_epg_channels(self):
+    def test_inventory_contains_exact_14_approved_channels(self):
         names = {item.name for item in TARGET_CHANNELS + EUROSPORT_CHANNELS}
+        self.assertEqual(len(CHANNELS), 14)
         self.assertEqual(len(names), 14)
-        self.assertIn("Eurosport", names)
-        self.assertIn("Eurosport 2", names)
-        self.assertIn("KHL HD", names)
-        self.assertIn("Setanta Sports KZ", names)
-        self.assertIn("МАТЧ! Планета", names)
+        self.assertEqual(names, {channel.tvplus_name for channel in CHANNELS})
+        self.assertTrue(names.isdisjoint({
+            "Fight Club", "Qazaqstan", "MMA-TV.COM", "БОКС ТВ",
+        }))
 
     def test_epg_clock_is_converted_from_utc_to_almaty(self):
         event = self.event("Футбол. Тоттенхэм - Эвертон")

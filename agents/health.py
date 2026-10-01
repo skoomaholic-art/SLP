@@ -4,24 +4,26 @@ from collections import Counter
 from datetime import datetime
 
 from agents.orchestrator import SOURCE_LABELS
-from parsers.tvplus import EUROSPORT_CHANNELS, TARGET_CHANNELS
+from services.channel_registry import CHANNELS
 from services.time_logic import KZ_TIMEZONE
 from storage.database import SLPDatabase
 
 
 SOURCE_NAMES = SOURCE_LABELS
 CHANNEL_SOURCES = tuple(
-    sorted(
+    (
         (
-            ("Qazsport", "qazsport"),
-            ("Sport+ Qazaqstan", "sportplus"),
-            *(
-                (channel.name, "tvguide")
-                for channel in TARGET_CHANNELS + EUROSPORT_CHANNELS
-            ),
+            "Qazsport" if channel.name == "QAZSPORT HD" else
+            "Sport+ Qazaqstan" if channel.name == "SPORT+ Qazaqstan" else
+            channel.tvplus_name
         ),
-        key=lambda item: item[0].casefold(),
+        (
+            "qazsport" if channel.name == "QAZSPORT HD" else
+            "sportplus" if channel.name == "SPORT+ Qazaqstan" else
+            "tvguide"
+        )
     )
+    for channel in CHANNELS
 )
 
 

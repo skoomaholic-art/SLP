@@ -10,6 +10,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 
 from services.time_logic import KZ_TIMEZONE
+from services.browser_schedule import browser_fallback_enabled, render_schedule_html
 
 
 logger = logging.getLogger(__name__)
@@ -289,7 +290,29 @@ async def _fetch_week_channel(
             len(rows),
             sorted({row["date"] for row in rows}),
         )
+        # HTTP 200 may be a blank page, bot challenge or changed markup.
+        # Do not treat it as a successfully parsed guide, and try the
+        # remaining configured mirrors before reporting an empty source.
+        if not rows:
+            errors.append(f"{final_url or url}:no_live_rows_or_changed_markup")
+            continue
         return rows, None
+
+    # Render JS-only guides only after all cheap HTTP mirrors have failed.
+    # Keep this opt-in: Chromium is not installed in every deployment.
+    if browser_fallback_enabled():
+        for url in build_week_urls(channel_id):
+            html, final_url = await render_schedule_html(url)
+            if not html:
+                continue
+            rows = parse_vsetv_week_html(
+                html, channel=channel, anchor_date=anchor_date,
+                source_url=final_url or url,
+            )
+            if rows:
+                logger.info("vsetv browser fallback channel=%s rows=%d", channel, len(rows))
+                return rows, None
+        errors.append("browser_fallback_no_live_rows")
 
     return [], f"{channel}:" + " | ".join(errors)
 

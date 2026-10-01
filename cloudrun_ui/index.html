@@ -1,0 +1,779 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SLP - Спортивное расписание</title>
+<meta name="theme-color" content="#0e121b">
+<link rel="icon" type="image/png" sizes="192x192" href="/assets/app-icon.png">
+<link rel="apple-touch-icon" href="/assets/app-icon.png">
+<style>
+:root{color-scheme:dark;--bg:#0e121b;--card:#171e2b;--line:#2c3545;--muted:#a1aec1;--text:#eef2f7;--accent:#41dcc2;--danger:#f5a38f}
+*{box-sizing:border-box}body{background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;margin:0}
+button,input,select{font:inherit}button{cursor:pointer;background:#233344;border:1px solid #405266;border-radius:10px;color:var(--text);padding:10px 14px}
+button:hover{border-color:var(--accent)}button.primary{background:var(--accent);color:#0a2830;border-color:var(--accent);font-weight:700}
+button:disabled{opacity:.46;cursor:not-allowed}input,select{border:1px solid #36475d;background:#101723;color:var(--text);border-radius:8px;padding:9px;width:100%;max-width:100%}
+header{padding:19px 5%;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:16px}
+.brand{display:flex;align-items:center;gap:10px;font-size:22px;font-weight:850;letter-spacing:.1em}
+.brand span{color:var(--accent)}
+.app-icon{width:46px;height:46px;object-fit:contain;background:#000;border:1px solid #334153;border-radius:12px;flex:none}
+.profile{display:flex;align-items:center;gap:9px;min-width:0}
+.who{color:var(--muted);font-size:13px;overflow-wrap:anywhere}
+.user-avatar,.avatar-fallback{height:42px;width:42px;flex:none;border-radius:50%;object-fit:cover;border:2px solid #465970;background:#1a2836}
+.avatar-fallback{display:grid;place-items:center;font-size:23px}
+main{max-width:1240px;margin:30px auto;padding:0 18px}.hide{display:none!important}
+h1{font-size:30px;margin:0 0 7px}h2{font-size:19px;margin:0 0 12px}.subtitle,.muted{color:var(--muted)}
+.actions,.filters,.calendar-tools,.item-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.actions{margin:22px 0 14px}.muted-small{font-size:12px;color:var(--muted)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px}
+.grid{display:grid;grid-template-columns:minmax(260px,380px) minmax(0,1fr);gap:18px;margin-top:18px}
+@media(max-width:850px){.grid{grid-template-columns:1fr}h1{font-size:25px}}
+#login{max-width:440px;margin:9vh auto;padding:26px}#login label{display:block;margin:14px 0 5px;color:var(--muted)}
+#login button{width:100%;margin-top:20px}.notice{border-radius:10px;border:1px solid #755c43;background:#34291f;padding:12px;margin:12px 0}
+.notice.success{border-color:#276959;background:#123529}.notice.error{border-color:#85484a;background:#341e26}
+.days{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;margin:16px 0}
+.week{text-align:center;color:var(--muted);font-size:12px}
+.day{padding:10px 0;min-height:46px;border:1px solid transparent;background:#1d2938;border-radius:8px;color:var(--text);position:relative;text-align:center}
+.day.has:after{content:"";width:5px;height:5px;display:block;border-radius:50%;background:var(--accent);margin:1px auto -6px}
+.day.selected{border-color:var(--accent)}.day.blank{background:transparent}
+.toolbar{margin:14px 0}.filters input{max-width:280px}.filters select{width:auto;min-width:170px}
+.badge{font-size:11px;letter-spacing:.02em;background:#233c4d;color:#d5e4f0;padding:4px 8px;border-radius:6px}
+.badge.live{background:#14564d;color:#a8ffec}.badge.past{background:#303a48;color:#c1ccda}
+.events{display:grid;gap:8px;max-height:620px;overflow:auto}
+.event{background:#101722;border:1px solid #29384b;border-radius:11px;padding:13px}
+.item-top{justify-content:space-between;gap:8px}.name{font-weight:700;margin:8px 0 2px}.channel{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:7px;color:var(--accent);font-size:12px}
+.channel-pill{display:inline-flex;align-items:center;gap:6px;border:1px solid #3a495e;border-radius:7px;padding:4px 8px;min-height:30px;max-width:100%}
+.logo-frame{display:inline-flex;align-items:center;justify-content:center;position:relative;
+  width:86px;height:38px;flex:0 0 86px;overflow:visible;background:#142032;
+  border-radius:8px;padding:3px}
+.channel-logo{display:block;width:100%;height:100%;object-fit:contain;object-position:center}
+.channel-pill .logo-frame{width:67px;height:30px;flex-basis:67px;padding:2px}
+.channel-pill .channel-label{overflow-wrap:anywhere;word-break:normal}
+.source-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px;margin:12px 0}
+.source-item{display:flex;gap:11px;align-items:center;border:1px solid var(--line);border-radius:10px;padding:9px;min-width:0;min-height:68px}
+.source-item .logo-frame{width:105px;flex-basis:105px;height:47px}
+.source-text{min-width:0;overflow-wrap:anywhere}
+.source-state{color:var(--muted);font-size:12px}
+.source-state.ok{color:var(--accent)}
+details.sources{margin:16px 0}
+details.sources summary{cursor:pointer;font-weight:700;font-size:16px}
+.import-row{display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin-top:15px}
+.import-row input{max-width:340px}
+.mail-bar{display:flex;align-items:center;flex-wrap:wrap;gap:9px;margin:12px 0}
+.mail-notices{display:grid;gap:8px;margin:14px 0}
+.mail-item{background:#111b29;border:1px solid #35465b;border-radius:10px;padding:12px}
+.mail-item b{display:block;font-size:13px}
+.mail-item p{font-size:12px;margin:5px 0;color:var(--muted);overflow-wrap:anywhere}
+.mail-controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.mail-controls button{padding:6px 9px;font-size:12px}
+.mail-status{font-size:13px;color:var(--muted)}
+.mail-icon{display:inline-block;background:#0e2732;color:var(--accent);border-radius:7px;padding:4px 7px;font-weight:750}
+.mail-notice-count{border-radius:9px;padding:3px 7px;background:#4e3628;color:#ffddb4}
+.notification-list{display:grid;gap:8px;margin-top:10px}
+.notification-item{border:1px solid var(--line);border-radius:9px;padding:9px;background:#101b29}
+.notification-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+.notification-title{font-weight:750}
+.notification-time{color:var(--muted);font-size:11px;white-space:nowrap}
+.notification-message{color:var(--muted);font-size:12px;margin-top:4px}
+.notification-item.attention{border-color:#8d6434}
+.notification-item.error,.notification-item.critical{border-color:#934444}
+.notification-count{display:inline-grid;place-items:center;min-width:22px;height:22px;padding:0 6px;
+ border-radius:99px;background:#d94b4b;color:white;font-size:11px;margin-left:6px}
+.mail-request-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0}
+.mail-request-controls select{max-width:240px}
+.edit-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:9px;margin:12px 0}
+.edit-fields label{display:flex;flex-direction:column;font-size:12px;color:var(--muted);gap:4px}
+.edit-fields input{width:100%;padding:7px}
+.edit-panel{padding:9px;border:1px solid var(--line);border-radius:10px;margin-top:8px}
+.history-list{font-size:12px;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
+.status-line{font-size:12px;color:var(--muted)}
+.template-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:9px 0}
+.template-bar input{width:min(100%,400px)}
+
+footer{margin:25px 0;color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+<header>
+<div class="brand"><img class="app-icon" src="/assets/app-icon.png" width="46" height="46" alt=""><div>SLP <span>SPORT EPG</span></div></div>
+<div class="profile"><img id="userAvatar" class="user-avatar hide" src="/assets/skoomaholic.webp" alt="">
+<span id="avatarFallback" class="avatar-fallback hide"></span><div class="who" id="who">UTC+5</div></div>
+</header>
+<main>
+<section class="card hide" id="login">
+<h1>Вход в систему</h1><p class="subtitle">Спортивное расписание, календарь и архив</p>
+<form id="loginForm"><label for="loginName">Логин</label><input id="loginName" autocomplete="username" required>
+<label for="loginPassword">Пароль</label><input id="loginPassword" type="password" autocomplete="current-password" required>
+<button type="submit" class="primary">Войти</button></form>
+<p id="loginMessage" class="muted-small"></p>
+</section>
+<section id="workspace" class="hide">
+<h1>Спортивное расписание</h1>
+<div class="subtitle">События по Алматы (UTC+5). В архиве сохраняются все известные каналы, в экспорте выбирается один.</div>
+<div class="actions">
+<button id="collect" class="primary">⟳ Собрать расписание</button>
+<button id="export">↓ Выгрузить Excel</button>
+<button id="request" disabled title="Тестовая отправка пока не разрешена">✉ Запросить расписание</button>
+<button id="logout">Выйти</button>
+</div>
+<div id="message" class="hide notice"></div>
+<details class="card sources" id="notificationPanel">
+<summary>Уведомления <span id="notificationCounter" class="notification-count hide"></span></summary>
+<div id="notifications" class="notification-list"><p class="muted-small">Загружаю изменения...</p></div>
+</details>
+<details class="card sources" id="gmailPanel">
+<summary><span class="mail-icon">✉ Gmail</span> Почта и обновления <span id="mailCounter" class="mail-notice-count hide"></span></summary>
+<p id="mailStatus" class="mail-status">Проверяю подключение...</p>
+<div class="mail-bar">
+<a id="gmailConnect" class="hide" href="/api/gmail/connect">Подключить Gmail владельца</a>
+<button type="button" id="mailCheck" class="hide">Проверить новые письма</button>
+</div>
+<div id="mailNotices" class="mail-notices"></div>
+<div id="mailRequestPanel" class="hide">
+<h3>Запросить расписание</h3>
+<p class="muted-small">Ни получатель, ни текст не редактируются. До разрешения отправки письмо не отправится.</p>
+<div class="mail-request-controls">
+<select id="requestCategory" aria-label="Расписание какого поставщика">
+<option value="q">QSport</option><option value="setanta">Setanta</option><option value="all">QSport + Setanta</option>
+</select>
+<label>с <input id="requestStart" type="date" aria-label="Начало периода"></label>
+<label>по <input id="requestEnd" type="date" aria-label="Конец периода"></label>
+<button type="button" id="requestConfirm">Отправить запрос</button>
+<button type="button" id="requestCancel">Отмена</button>
+</div>
+<p id="requestTo" class="muted-small"></p>
+</div>
+</details>
+<details class="card sources" id="sourcesPanel"><summary>Источники и импорт Excel</summary>
+<div id="sources" aria-live="polite"><p class="muted">Статусы загружаются...</p></div>
+<form id="epgForm" class="import-row">
+<input id="epgFiles" type="file" accept=".xlsx" multiple aria-label="Выберите EPG-файлы QSport или Setanta">
+<button type="submit" id="epgUpload">Загрузить Excel</button>
+</form>
+<p class="muted-small">Ручная загрузка остаётся запасным вариантом. После подключения Gmail и постоянного хранилища подтверждённые LIVE из Excel поступают автоматически. Только противоречия попадают в очередь.</p>
+<div id="templateArea" class="hide">
+<h3>Утверждённый Excel-шаблон</h3><p id="templateStatus" class="status-line">Проверяю шаблон...</p>
+<form id="templateForm" class="template-bar">
+<input id="templateFile" type="file" accept=".xlsx" required aria-label="Выберите утверждённый шаблон">
+<button id="templateUpload" type="submit">Загрузить шаблон</button>
+</form>
+<p class="muted-small">Только администратор. Заменяет шаблон экспорта, не изменяя исторические записи.</p>
+</div>
+</details>
+<div class="grid">
+<section class="card">
+<div class="calendar-tools"><h2 style="margin:0;flex:1">Календарь</h2><button id="prevMonth" aria-label="Предыдущий месяц">‹</button><button id="nextMonth" aria-label="Следующий месяц">›</button></div>
+<div id="month" style="font-weight:700;margin-top:7px"></div>
+<div id="days" class="days"></div>
+<button id="allDates">Показать весь архив</button>
+<p class="muted-small">Список справа фильтруется по выбранной дате. Зелёная точка означает, что есть сохранённые LIVE-события.</p>
+</section>
+<section class="card">
+<h2>События и архив</h2>
+<div class="actions" style="margin:0 0 14px">
+<button id="archiveToggle" aria-pressed="false">Показать исторические версии</button>
+<button id="archiveExport" class="hide">↓ Выгрузить архив</button>
+</div>
+<p id="archiveNote" class="muted-small hide">Здесь показаны также снятые из текущих EPG записи. Полный журнал изменения каждого поля ещё не подключён.</p>
+<div class="filters toolbar">
+<input id="search" placeholder="Поиск матча, турнира" aria-label="Поиск">
+<select id="channel"><option value="">Все каналы</option></select>
+</div>
+<div id="count" class="muted-small" style="margin:10px 0"></div>
+<div id="events" class="events"></div>
+</section>
+</div>
+<footer>Данные поступают только из подтверждённых источников. При отсутствии почтовых файлов частичный сбор требует подтверждения. Веб-сервис не запускает Telegram-бота.</footer>
+</section>
+</main>
+<script src="/assets/logos.js"></script>
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+const state={all:[],date:"",month:new Date(),logged:false,archive:false,
+ gmailConnected:false,gmailAdmin:false,gmailSend:false,gmailMode:"test",gmailTestTo:"",mailPoll:null};
+const kzToday=()=>new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Almaty",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+const iso=(y,m,d)=>[y,String(m).padStart(2,"0"),String(d).padStart(2,"0")].join("-");
+function msg(text,kind=""){const n=$("message");n.textContent=text;n.className="notice "+kind}
+async function api(url,method="GET",body){
+  const options={method,credentials:"same-origin",headers:{}};
+  if(body!==undefined){options.headers["Content-Type"]="application/json";options.body=JSON.stringify(body)}
+  const res=await fetch(url,options);const data=await res.json().catch(()=>({}));
+  if(!res.ok)throw Object.assign(new Error(typeof data.detail==="string"?data.detail:(data.detail?.message||"Ошибка сервера "+res.status)),{status:res.status,detail:data.detail});
+  return data;
+}
+function showLogin(){
+ $("login").classList.remove("hide");$("workspace").classList.add("hide");
+ $("userAvatar").classList.add("hide");$("avatarFallback").classList.add("hide");
+ $("who").textContent="UTC+5";state.logged=false;
+ if(state.mailPoll){clearInterval(state.mailPoll);state.mailPoll=null}
+}
+function showApp(user){
+  $("login").classList.add("hide");$("workspace").classList.remove("hide");
+  $("who").textContent=user.username+" · UTC+5";
+  const portrait=$("userAvatar"),fallback=$("avatarFallback");
+  portrait.classList.add("hide");fallback.classList.add("hide");
+  const approved={
+    "Skoomaholic":"/assets/skoomaholic.webp",
+    "Дания":"/assets/daniya.webp",
+    "Вадим":"/assets/vadim.webp"
+  };
+  const url=approved[user.username];
+  if(url&&user.avatar_url===url){portrait.src=url;portrait.classList.remove("hide")}
+  else if(user.avatar){fallback.textContent=user.avatar;fallback.classList.remove("hide")}
+  state.logged=true;state.gmailAdmin=user.role==="admin";
+  $("templateArea").classList.toggle("hide",!state.gmailAdmin);
+  load();
+}
+async function load(){
+ try{
+  const data=await api(state.archive?"/api/archive":"/api/events");
+  state.all=data.events||[];
+  renderCalendar();renderEvents();
+  const status=await api("/api/sources");
+  renderSources(status);
+  await loadNotifications();
+  await loadMailStatus();
+  await loadTemplateStatus();
+ }catch(e){msg(e.message,"error")}
+}
+
+function channelLogo(channel){
+ const uri=typeof CHANNEL_LOGOS==="object"&&CHANNEL_LOGOS[channel];
+ if(!uri)return null;
+ const frame=document.createElement("span");frame.className="logo-frame";
+ const img=document.createElement("img");img.className="channel-logo";
+ img.src=uri;img.alt="";img.setAttribute("aria-hidden","true");img.loading="lazy";
+ frame.append(img);
+ return frame;
+}
+function channelPill(channel){
+ const chip=document.createElement("span");chip.className="channel-pill";
+ const logo=channelLogo(channel);if(logo)chip.append(logo);
+ const name=document.createElement("span");name.className="channel-label";name.textContent=channel;
+ chip.append(name);return chip;
+}
+function renderSources(data){
+ const node=$("sources");node.replaceChildren();
+ const grid=document.createElement("div");grid.className="source-grid";
+ for(const item of [...(data.websites||[]),...(data.excel||[])]){
+  const row=document.createElement("div");row.className="source-item";
+  const logo=channelLogo(item.channel);
+  if(logo)row.append(logo);
+  const info=document.createElement("div");info.className="source-text";
+  const name=document.createElement("strong");name.textContent=item.channel;
+  const state=document.createElement("div");
+  const labels={
+   ready:"Актуальный Excel",partial:"Excel покрывает часть недели",
+   awaiting_approval:"Получен по почте - ждёт подтверждения",
+   awaiting_response:"Запрос отправлен - ожидается ответ",
+   outdated:"Excel устарел",missing:"Excel не получен",
+   ok:"Источник обработан",warning:"Обработан с предупреждением",
+   error:"Ошибка источника",not_checked:"Источник ещё не проверялся"
+  };
+  state.textContent=labels[item.status]||item.status;
+  state.className="source-state"+(["ok","ready"].includes(item.status)?" ok":"");
+  if(["awaiting_approval","awaiting_response"].includes(item.status))state.style.color="#ffbf69";
+  info.append(name,state);
+  if(item.coverage?.length){
+   const note=document.createElement("div");note.className="muted-small";
+   note.textContent=item.coverage[0]+" - "+item.coverage.at(-1)+
+     ", LIVE: "+(item.live_events??0);info.append(note);
+  }
+  if(item.official_excel){
+   const note=document.createElement("div");note.className="muted-small";
+   const file=item.official_excel,dates=file.coverage||[];
+   note.textContent="Excel поставщика: "+(dates.length?
+     dates[0]+" - "+dates.at(-1)+", LIVE: "+file.live_events:
+     "нет покрытия выбранной недели");
+   info.append(note);
+  }
+  row.append(info);grid.append(row);
+ }
+ node.append(grid);
+ const mail=document.createElement("p");mail.className="muted-small";
+ mail.textContent=data.gmail_connected?(data.auto_import?
+   "Gmail подключён. Однозначные расписания обрабатываются автоматически.":
+   "Gmail подключён. Для автоматического импорта нужно постоянное хранилище."):
+   "Gmail пока не подключён. Файлы загружаются вручную.";node.append(mail);
+ const ai=document.createElement("p");ai.className="muted-small";
+ const aiStatus=data.ai||{};
+ ai.textContent="Обработка: сначала правила. AI_MAIL "+(aiStatus.mail_local_ready?"подключён":"не подключён")+
+   ", AI_EDITOR "+(aiStatus.editor_local_ready?"подключён":"не подключён")+".";
+ node.append(ai);
+ if(data.mail_request && !data.mail_request.enabled){
+  const request=document.createElement("p");request.className="muted-small";
+  request.textContent="Почтовые запросы пока отключены. Тестовый получатель: "+
+    (data.mail_request.test_to||"не настроен")+
+    ". После запуска отправки рабочий адрес будет доступен для поля «Копия».";
+  node.append(request);
+ }
+}
+
+
+
+async function loadTemplateStatus(){
+ if(!state.gmailAdmin)return;
+ try{
+  const result=await api("/api/template/status");
+  $("templateStatus").textContent=result.available?
+    "Шаблон найден: "+result.name+(result.message?". "+result.message:""):
+    "Шаблон пока не загружен. "+(result.message||"Для выгрузки потребуется утверждённый XLSX.");
+ }catch(e){$("templateStatus").textContent=e.message}
+}
+
+async function loadNotifications(){
+ try{
+  const response=await api("/api/notifications?limit=80");
+  const items=response.notifications||[];
+  const actionable=items.filter(x=>["attention","warning","error","critical"].includes(x.level));
+  $("notificationCounter").textContent=String(actionable.length);
+  $("notificationCounter").classList.toggle("hide",!actionable.length);
+  const root=$("notifications");root.replaceChildren();
+  for(const item of items){
+   const card=document.createElement("article");
+   card.className="notification-item "+(item.level||"info");
+   const top=document.createElement("div");top.className="notification-top";
+   const title=document.createElement("div");title.className="notification-title";
+   title.textContent=item.title||"Изменение";
+   const when=document.createElement("div");when.className="notification-time";
+   when.textContent=(item.created_at||"").slice(0,16).replace("T"," ");
+   top.append(title,when);
+   const message=document.createElement("div");message.className="notification-message";
+   message.textContent=item.message||"";
+   card.append(top,message);
+   if(item.action==="gmail"){
+    card.style.cursor="pointer";
+    card.addEventListener("click",()=>{$("gmailPanel").open=true;$("gmailPanel").scrollIntoView({behavior:"smooth",block:"nearest"})});
+   }else if(item.action==="archive"){
+    card.style.cursor="pointer";
+    card.addEventListener("click",async()=>{
+     if(!state.archive){state.archive=true;$("archiveToggle").setAttribute("aria-pressed","true");
+      $("archiveToggle").textContent="Показать текущее расписание";
+      $("archiveExport").classList.remove("hide");$("archiveNote").classList.remove("hide");await load();}
+    });
+   }else if(item.action==="sources"){
+    card.style.cursor="pointer";
+    card.addEventListener("click",()=>{$("sourcesPanel").open=true;$("sourcesPanel").scrollIntoView({behavior:"smooth",block:"nearest"})});
+   }
+   root.append(card);
+  }
+  if(!items.length){const empty=document.createElement("p");empty.className="muted-small";
+   empty.textContent="Новых изменений и ошибок источников нет.";root.append(empty)}
+ }catch(e){
+  const root=$("notifications");root.textContent=e.message;
+ }
+}
+
+async function loadMailStatus(){
+ const status=await api("/api/gmail/status");
+ state.gmailConnected=status.connected;
+ state.gmailSend=status.send_enabled&&status.connected;
+ state.gmailTestTo=status.connected?"" : "";
+ state.gmailMode=status.mail_mode||"test";
+ $("mailStatus").textContent= !status.configured?
+  "Gmail OAuth пока не настроен. Необходимы секреты клиента, ключ шифрования и постоянное GCS-хранилище.":
+  status.connected?(status.auto_import?
+   "Gmail подключён ("+status.email+"). Подтверждённые Excel загружаются автоматически; противоречия отправляются на проверку.":
+   "Gmail подключён ("+status.email+"). Автоматический импорт ожидает постоянное GCS-хранилище."):
+  "OAuth настроен, но владелец ещё не авторизовал Gmail.";
+ $("gmailConnect").classList.toggle("hide",!status.configured||!state.gmailAdmin);
+ $("mailCheck").classList.toggle("hide",!status.connected);
+ $("request").disabled=!state.gmailSend;
+ $("request").title=state.gmailSend?
+  (state.gmailMode==="production"?"Отправка подтверждённому поставщику":"Отправка на тестовый адрес"):
+  "Ожидает подключения Gmail и разрешения отправки";
+ $("requestTo").textContent=(state.gmailMode==="production"?"Режим PRODUCTION. Получатель берётся из конфигурации: ":"Тестовый получатель: ")+
+  (state.gmailTestTo||"alexandr.petrossov@fmedia.kz");
+ if(status.connected)await loadMailNotices();
+ if(status.connected&&!state.mailPoll){
+  // Check new inbox messages only while an authorized editor has the page open.
+  // A separate authenticated Cloud Scheduler trigger is needed for 24/7 checks.
+  state.mailPoll=setInterval(async()=>{
+   if(document.hidden||!state.logged)return;
+   await checkGmail(true);
+  },15*60*1000);
+ }
+ if(!status.connected&&state.mailPoll){clearInterval(state.mailPoll);state.mailPoll=null}
+}
+async function loadMailNotices(){
+ const response=await api("/api/gmail/notices");
+ const notices=response.notices||[],unread=notices.filter(x=>
+  ["pending","review"].includes(x.status));
+ $("mailCounter").textContent=String(unread.length);
+ $("mailCounter").classList.toggle("hide",!unread.length);
+ const root=$("mailNotices");root.replaceChildren();
+ for(const notice of unread){
+  const item=document.createElement("article");item.className="mail-item";
+  const title=document.createElement("b");
+  title.textContent=(notice.detected_channel||"Нужно определить канал")+
+    " · "+(notice.filename||"Письмо без вложения");
+  const subject=document.createElement("p");subject.textContent=notice.subject||"Без темы";
+  const detail=document.createElement("p");
+  detail.textContent=notice.received_at.slice(0,16).replace("T"," ")+
+    (notice.reason?" · "+notice.reason:"");
+  item.append(title,subject,detail);
+  const controls=document.createElement("div");controls.className="mail-controls";
+  if(notice.status==="pending"){
+   const preview=document.createElement("button");
+   preview.textContent="Посмотреть изменения";
+   const diff=document.createElement("div");diff.className="history-list";
+   preview.addEventListener("click",async()=>{
+    preview.disabled=true;
+    try{
+     const result=await api("/api/gmail/notices/"+notice.id+"/preview");
+     const line=[
+      "Новые: "+result.counts.new,
+      "Изменилось время: "+result.counts.time_changed,
+      "Исчезли из EPG (не означает отмену): "+result.counts.missing_from_update,
+      "Неоднозначно: "+result.counts.ambiguous,
+      "Без изменений: "+result.counts.unchanged,
+     ];
+     for(const change of result.changes){
+      line.push(change.date+" · "+change.title+" · "+
+       (change.before_times.join(", ")||"нет")+
+       " → "+(change.after_times.join(", ")||"нет")+" · "+change.note);
+     }
+     diff.textContent=line.join("\n");
+    }catch(e){diff.textContent=e.message}
+    finally{preview.disabled=false}
+   });
+   const approve=document.createElement("button");approve.textContent="Загрузить в расписание";
+   approve.addEventListener("click",()=>manageNotice(notice.id,"approve"));
+   controls.append(preview,approve);
+   item.append(diff);
+  }
+  const dismiss=document.createElement("button");dismiss.textContent=
+   notice.status==="review"?"Закрыть после проверки":"Позже / отклонить";
+  dismiss.addEventListener("click",()=>manageNotice(notice.id,"dismiss"));
+  controls.append(dismiss);item.append(controls);root.append(item);
+ }
+ if(!unread.length){
+  const empty=document.createElement("p");empty.className="muted-small";
+  empty.textContent="Новых писем на подтверждение нет.";root.append(empty);
+ }
+}
+async function manageNotice(id,action){
+ if(action==="dismiss"&&!confirm("Закрыть уведомление?"))return;
+ try{
+  const result=await api("/api/gmail/notices/"+id+"/"+action,"POST",{});
+  msg(action==="approve"?
+   "Расписание загружено: "+result.channel+". LIVE: "+result.live_events:
+   "Уведомление закрыто.","success");
+  await load();
+ }catch(e){msg(e.message,"error")}
+}
+async function checkGmail(silent=false){
+ if(!state.gmailConnected)return;
+ $("mailCheck").disabled=true;
+ try{
+  const result=await api("/api/gmail/sync","POST",{});
+  if(!silent||result.new_attachments)msg("Новых вложений: "+result.new_attachments+
+     ". Автоматически загружено: "+result.auto_imported+
+     ". Требуют проверки: "+result.requires_review+".","success");
+  if(result.auto_imported){await load();}
+  else await loadMailNotices();
+ }catch(e){if(!silent)msg(e.message,"error")}
+ finally{$("mailCheck").disabled=false}
+}
+
+function renderCalendar(){
+ const d=state.month,y=d.getFullYear(),m=d.getMonth(),start=(new Date(y,m,1).getDay()+6)%7;
+ const days=new Date(y,m+1,0).getDate(),counts=new Set(state.all.map(x=>x.date));
+ $("month").textContent=new Intl.DateTimeFormat("ru-RU",{month:"long",year:"numeric"}).format(d);
+ const root=$("days");root.replaceChildren();
+ for(const label of ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"]){const n=document.createElement("div");n.className="week";n.textContent=label;root.append(n)}
+ for(let i=0;i<start;i++){const n=document.createElement("div");n.className="day blank";root.append(n)}
+ for(let day=1;day<=days;day++){
+  const key=iso(y,m+1,day),btn=document.createElement("button");btn.className="day"+(counts.has(key)?" has":"")+(state.date===key?" selected":"");
+  btn.textContent=day;btn.addEventListener("click",()=>{state.date=key;renderCalendar();renderEvents()});root.append(btn);
+ }
+}
+function makeEvent(ev){
+ const outer=document.createElement("article");outer.className="event";
+ const top=document.createElement("div");top.className="item-top";
+ const time=document.createElement("strong");time.textContent=ev.date.split("-").reverse().join(".")+", "+ev.time;
+ const flag=document.createElement("span");flag.className="badge "+ev.status;flag.textContent=ev.archived?"Нет в актуальной сетке":ev.status==="past"?"Прошло":ev.status==="live"?"Сейчас LIVE":"Скоро";
+ top.append(time,flag);
+ const title=document.createElement("div");title.className="name";title.textContent=ev.title;
+ const label=document.createElement("div");label.className="muted-small";label.textContent=[ev.sport,ev.tournament].filter(Boolean).join(" · ");
+ const ch=document.createElement("div");ch.className="channel";
+ for(const channel of ev.channels)ch.append(channelPill(channel));
+ outer.append(top,title,label,ch);
+ if(state.archive && ev.broadcasts?.length){
+  const details=document.createElement("details");
+  const summary=document.createElement("summary");
+  summary.className="muted-small";summary.textContent="Эфиры и источники ("+ev.broadcasts.length+")";
+  details.append(summary);
+  for(const b of ev.broadcasts){
+   const line=document.createElement("div");line.className="muted-small";
+   line.textContent=b.channel+" · "+b.start_at.replace("T"," ").slice(0,16)+
+      " · "+(b.active?"В текущем EPG":"Историческая запись")+
+      (b.source?" · "+b.source:"");
+   details.append(line);
+  }
+  outer.append(details);
+ }
+ if(ev.broadcasts?.length&&ev.broadcasts[0].source_record_id){
+  outer.append(editorPanel(ev, ev.broadcasts[0].source_record_id));
+ }
+ return outer;
+}
+
+function editorPanel(ev,storageId){
+ const panel=document.createElement("details");panel.className="edit-panel";
+ const summary=document.createElement("summary");summary.className="muted-small";
+ summary.textContent="Редактировать событие · история";panel.append(summary);
+ const help=document.createElement("p");help.className="muted-small";
+ help.textContent="Исправления сохраняются поверх EPG, источник остаётся неизменным. "+
+  "Изменения этого канала не затрагивают другие эфиры.";
+ panel.append(help);
+ const form=document.createElement("form");
+ const grid=document.createElement("div");grid.className="edit-fields";
+ const spec=[
+  ["title","Событие",ev.title],["sport","Вид спорта",ev.sport],
+  ["tournament","Турнир",ev.tournament],["time","Начало (UTC+5)",ev.time],
+  ["end_time","Окончание (если известно)",ev.editorial?.end_time||""],
+  ["team1_ru","TEAM 1 RU",ev.team1_ru||""],
+  ["team1_kz","TEAM 1 KZ",ev.team1_kz||""],
+  ["team2_ru","TEAM 2 RU",ev.team2_ru||""],
+  ["team2_kz","TEAM 2 KZ",ev.team2_kz||""],
+  ["subtitle_ru","SUBTITLE RU",ev.subtitle_ru||""],
+  ["subtitle_kz","SUBTITLE KZ",ev.subtitle_kz||""],
+ ];
+ for(const [field,label,value] of spec){
+  const labelEl=document.createElement("label");labelEl.textContent=label;
+  const input=document.createElement("input");input.name=field;input.value=value;
+  input.maxLength=250;input.autocomplete="off";
+  if(["time","end_time"].includes(field))input.placeholder="ЧЧ:ММ";
+  labelEl.append(input);grid.append(labelEl);
+ }
+ form.append(grid);
+ const button=document.createElement("button");button.textContent="Сохранить правки";
+ button.type="submit";
+ form.append(button);
+ form.addEventListener("submit",async e=>{
+  e.preventDefault();
+  const values={};
+  for(const [field,,oldValue] of spec){
+   const value=form.elements.namedItem(field).value.trim();
+   if(value!==oldValue)values[field]=value;
+  }
+  if(!Object.keys(values).length){msg("Изменений нет.");return}
+  button.disabled=true;
+  try{
+   await api("/api/editorial/"+storageId,"PATCH",{values});
+   msg("Изменения сохранены. Исходная программа не перезаписана.","success");
+   await load();
+  }catch(error){msg(error.message,"error")}
+  finally{button.disabled=false}
+ });
+ panel.append(form);
+ const historyButton=document.createElement("button");
+ historyButton.type="button";historyButton.textContent="История изменений";
+ historyButton.style.marginLeft="8px";
+ const history=document.createElement("div");history.className="history-list";
+ historyButton.addEventListener("click",async()=>{
+  try{
+   const [source,editor]=await Promise.all([
+    api("/api/archive/revisions?storage_id="+storageId),
+    api("/api/editorial/"+storageId+"/history")
+   ]);
+   const lines=[];
+   for(const entry of (source.revisions||[]).slice(0,20)){
+    lines.push(entry.created_at.slice(0,16).replace("T"," ")+
+     " · EPG: "+entry.change_kind);
+   }
+   for(const entry of (editor.history||[]).slice(0,20)){
+    lines.push(entry.changed_at.slice(0,16).replace("T"," ")+
+     " · Редактор "+entry.editor+": "+Object.keys(JSON.parse(entry.after_json||"{}")).join(", "));
+   }
+   history.textContent=lines.join("\n")||"Изменений пока нет.";
+  }catch(e){history.textContent=e.message}
+ });
+ panel.append(historyButton,history);return panel;
+}
+
+function filtered(){
+ const needle=$("search").value.trim().toLocaleLowerCase("ru-RU"),channel=$("channel").value;
+ return state.all.filter(x=>(!state.date||x.date===state.date)&&(!channel||x.channels.includes(channel))&&
+   (!needle||(x.title+" "+x.tournament+" "+x.sport).toLocaleLowerCase("ru-RU").includes(needle)));
+}
+function renderEvents(){
+ const root=$("events");root.replaceChildren();
+ const channels=[...new Set(state.all.flatMap(e=>e.channels))].sort(),saved=$("channel").value;
+ const selector=$("channel");selector.replaceChildren(new Option("Все каналы",""));
+ channels.forEach(c=>selector.add(new Option(c,c)));selector.value=saved;
+ const data=filtered();$("count").textContent=(state.date?state.date.split("-").reverse().join("."):"Весь архив")+" · Событий: "+data.length;
+ for(const event of data)root.append(makeEvent(event));
+ if(!data.length){const n=document.createElement("p");n.className="muted";n.textContent="Событий пока нет. Соберите расписание или выберите другую дату.";root.append(n)}
+}
+$("loginForm").addEventListener("submit",async event=>{
+ event.preventDefault();
+ try{const data=await api("/api/login","POST",{username:$("loginName").value,password:$("loginPassword").value});
+   $("loginMessage").textContent="";$("loginPassword").value="";showApp(data.user);
+ }catch(e){$("loginMessage").textContent=e.message}
+});
+$("collect").addEventListener("click",async()=>{
+ msg("Собираю источники, это может занять несколько минут...");
+ $("collect").disabled=true;
+ try{
+  let result;
+  try{result=await api("/api/collect","POST",{allow_partial:false})}
+  catch(e){
+   if(e.status!==409)throw e;
+   if(e.detail?.requires_approval){
+    const pending=(e.detail?.pending_channels||[]).join(", ");
+    $("gmailPanel").open=true;
+    await loadMailNotices();
+    msg("Получены новые расписания: "+pending+". Сначала подтвердите загрузку в разделе Gmail.","error");
+    $("gmailPanel").scrollIntoView({behavior:"smooth",block:"nearest"});
+    return;
+   }
+   const missing=(e.detail?.missing_channels||[]).join(", ");
+   if(!confirm("Нет актуальных Excel: "+missing+". Собрать по доступным источникам?")){msg("Сбор отменён");return}
+   result=await api("/api/collect","POST",{allow_partial:true});
+  }
+  msg("Сбор завершён. Записей источников: "+result.event_count+
+      (result.durable_storage?". Архив сохранён.":". ВНИМАНИЕ: архив временный, постоянное хранилище не подключено."),"success");
+  await load();
+ }catch(e){msg(e.message,"error")}finally{$("collect").disabled=false}
+});
+$("export").addEventListener("click",async()=>{
+ const url="/api/export"+(state.date?"?start="+encodeURIComponent(state.date)+"&end="+encodeURIComponent(state.date):"");
+ try{
+  const res=await fetch(url,{credentials:"same-origin"});
+  if(!res.ok){const o=await res.json().catch(()=>({}));throw new Error(o.detail||"Ошибка выгрузки")}
+  const blob=await res.blob(),href=URL.createObjectURL(blob),a=document.createElement("a");
+  a.href=href;a.download="sport_epg_schedule.xlsx";a.click();setTimeout(()=>URL.revokeObjectURL(href),1000);
+ }catch(e){msg(e.message,"error")}
+});
+
+$("epgForm").addEventListener("submit",async event=>{
+ event.preventDefault();
+ const files=[...$("epgFiles").files||[]];
+ if(!files.length){msg("Выберите XLSX Setanta, QSport, QAZSPORT или SPORT+.","error");return}
+ $("epgUpload").disabled=true;
+ const outcomes=[];
+ try{
+  for(const file of files){
+   const form=new FormData();form.append("upload",file,file.name);
+   const previewResponse=await fetch("/api/preview-epg",{method:"POST",body:form,credentials:"same-origin"});
+   const preview=await previewResponse.json().catch(()=>({}));
+   if(!previewResponse.ok){
+    outcomes.push(file.name+": "+(preview.detail||"Ошибка предпросмотра"));
+    continue;
+   }
+   const summary=(preview.previews||[]).map(item=>{
+    const counts=item.counts||{};
+    return item.channel+": LIVE "+item.new_count+
+      ", новых "+(counts.new||0)+
+      ", переносов "+(counts.time_changed||0)+
+      ", исчезли из файла "+(counts.missing_from_update||0)+
+      ", неоднозначных "+(counts.ambiguous||0);
+   }).join("\n");
+   if(!window.confirm("Предпросмотр "+file.name+"\n"+summary+"\n"+
+       (preview.warning||"")+"\nПрименить изменения?")){
+    outcomes.push(file.name+": отменено");
+    continue;
+   }
+   const response=await fetch("/api/import-epg",{method:"POST",body:form,credentials:"same-origin"});
+   const data=await response.json().catch(()=>({}));
+   if(!response.ok){
+    outcomes.push(file.name+": "+(data.detail||"Ошибка "+response.status));
+    continue;
+   }
+   outcomes.push(data.channel+": "+(data.status==="already_imported"?"уже загружен":
+       "загружен, LIVE "+data.live_events));
+  }
+  msg(outcomes.join(". ")+"."+(outcomes.length?" Список событий обновлён.":""),
+      outcomes.length===files.length?"success":"error");
+  $("epgFiles").value="";
+  await load();
+ }catch(error){msg(error.message,"error")}
+ finally{$("epgUpload").disabled=false}
+});
+
+
+
+
+$("templateForm").addEventListener("submit",async event=>{
+ event.preventDefault();
+ const file=$("templateFile").files[0];
+ if(!file){msg("Выберите XLSX-шаблон.","error");return}
+ $("templateUpload").disabled=true;
+ try{
+  const form=new FormData();form.append("upload",file,file.name);
+  const response=await fetch("/api/template",{
+   method:"POST",body:form,credentials:"same-origin"
+  });
+  const result=await response.json().catch(()=>({}));
+  if(!response.ok)throw new Error(result.detail||"Ошибка загрузки шаблона");
+  msg("Утверждённый шаблон загружен: "+result.name+(result.warning?". "+result.warning:""),result.warning?"warn":"success");
+  $("templateFile").value="";await loadTemplateStatus();
+ }catch(e){msg(e.message,"error")}
+ finally{$("templateUpload").disabled=false}
+});
+
+$("mailCheck").addEventListener("click",()=>checkGmail(false));
+$("request").addEventListener("click",()=>{
+ if(!state.gmailSend){msg("Отправка запросов пока не настроена.","error");return}
+ const start=new Date(),end=new Date(start.getTime()+6*86400000),
+  iso=d=>d.toISOString().slice(0,10);
+ if(!$("requestStart").value)$("requestStart").value=iso(start);
+ if(!$("requestEnd").value)$("requestEnd").value=iso(end);
+ $("gmailPanel").open=true;
+ $("mailRequestPanel").classList.remove("hide");
+ $("mailRequestPanel").scrollIntoView({block:"nearest",behavior:"smooth"});
+});
+$("requestCancel").addEventListener("click",()=>{
+ $("mailRequestPanel").classList.add("hide");
+});
+$("requestConfirm").addEventListener("click",async()=>{
+ if(!state.gmailSend)return;
+ const category=$("requestCategory").value,
+  period_start=$("requestStart").value,period_end=$("requestEnd").value,labels={
+  q:"QSport",setanta:"Setanta",all:"QSport + Setanta"
+ };
+ if(!period_start||!period_end){msg("Укажите период расписания.","error");return}
+ if(!confirm("Отправить запрос "+labels[category]+
+   " с подключённого Gmail на выбранный период?"))return;
+ $("requestConfirm").disabled=true;
+ try{
+  const result=await api("/api/gmail/request","POST",{category,period_start,period_end});
+  msg("Gmail подтвердил отправку: "+result.subject+" → "+result.to,"success");
+  $("mailRequestPanel").classList.add("hide");
+ }catch(e){msg(e.message,"error")}
+ finally{$("requestConfirm").disabled=false}
+});
+
+$("archiveToggle").addEventListener("click",async()=>{
+ state.archive=!state.archive;
+ $("archiveToggle").textContent=state.archive?"Показать текущее расписание":
+   "Показать исторические версии";
+ $("archiveToggle").setAttribute("aria-pressed",String(state.archive));
+ $("archiveExport").classList.toggle("hide",!state.archive);
+ $("archiveNote").classList.toggle("hide",!state.archive);
+ await load();
+});
+$("archiveExport").addEventListener("click",async()=>{
+ const p=new URLSearchParams();
+ if(state.date){p.set("start",state.date);p.set("end",state.date)}
+ if($("channel").value)p.set("channel",$("channel").value);
+ try{
+  const res=await fetch("/api/export-archive?"+p.toString(),{credentials:"same-origin"});
+  if(!res.ok){const err=await res.json().catch(()=>({}));throw new Error(err.detail||"Ошибка архива")}
+  const blob=await res.blob(),href=URL.createObjectURL(blob),a=document.createElement("a");
+  a.href=href;a.download="sport_epg_archive.xlsx";a.click();
+  setTimeout(()=>URL.revokeObjectURL(href),1000);
+ }catch(e){msg(e.message,"error")}
+});
+
+$("prevMonth").onclick=()=>{state.month=new Date(state.month.getFullYear(),state.month.getMonth()-1,1);renderCalendar()};
+$("nextMonth").onclick=()=>{state.month=new Date(state.month.getFullYear(),state.month.getMonth()+1,1);renderCalendar()};
+$("allDates").onclick=()=>{state.date="";renderCalendar();renderEvents()};
+$("search").oninput=renderEvents;$("channel").onchange=renderEvents;
+$("logout").onclick=async()=>{try{await api("/api/logout","POST",{})}catch(e){}showLogin()};
+state.month=new Date(kzToday().slice(0,4)*1,kzToday().slice(5,7)*1-1,1);
+api("/api/me").then(r=>showApp(r.user)).catch(showLogin);
+</script>
+</body></html>
