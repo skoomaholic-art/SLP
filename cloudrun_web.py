@@ -36,6 +36,7 @@ from services import assistant_bridge
 from services import ai_pipeline
 from services import editorial_store as editorial
 from services.channel_registry import CHANNELS
+from services.event_text_ru import normalize_event_fields, strip_bookmakers
 from services.source_routing import route_for_channel, runtime_source_names
 from services.vsetv_sources import WEB_CHANNEL_IDS, refresh_vsetv_web_sources
 from services.browser_schedule import browser_fallback_enabled, install_browser_for_python_runtime
@@ -78,10 +79,6 @@ PRIORITY = ("QAZSPORT HD", "SPORT+ Qazaqstan", "KHL PRIME", "KHL HD",
             "SETANTA SPORTS 1", "SETANTA SPORTS 2", "SETANTA SPORTS KZ",
             "Q LEAGUE", "Q ARENA", "Q FOOTBALL", "viju+ Sport")
 ALLOWED_CHANNELS = frozenset(channel.name for channel in CHANNELS)
-BOOKMAKERS = re.compile(
-    r"\b(?:фонбет|fonbet|betboom|бетбум|бетсити|betcity|"
-    r"winline|винлайн|parimatch|1xbet|лига ставок)\b\s*", re.I
-)
 EXCLUDE = re.compile(
     r"студия|студийн|студиялық|обзор|шолу|повтор|запись|"
     r"news|новости|тележурнал|подробно|перед матчем|"
@@ -164,7 +161,7 @@ class CollectOptions(BaseModel):
 
 
 def clean(value: str) -> str:
-    return " ".join(BOOKMAKERS.sub("", str(value or "")).split()).strip(" .,;-")
+    return strip_bookmakers(str(value or ""))
 
 
 def channel_name(name: str) -> str:
@@ -232,9 +229,14 @@ def event_rows(
                     and event_is_schedule_candidate(raw)
                     and is_user_event(raw)):
                 continue
-            title = clean(raw.get("title") or raw.get("raw_title") or "")
-            sport = clean(raw.get("sport") or "")
-            tournament = clean(raw.get("tournament") or "")
+            normalized = normalize_event_fields(
+                title=str(raw.get("title") or raw.get("raw_title") or ""),
+                sport=str(raw.get("sport") or ""),
+                tournament=str(raw.get("tournament") or ""),
+            )
+            title = normalized["title"]
+            sport = normalized["sport"]
+            tournament = normalized["tournament"]
             if not title or not sport or EXCLUDE.search(title + " " + tournament):
                 continue
             channel = channel_name(raw.get("channel", ""))
@@ -1208,13 +1210,9 @@ async def collect(request: Request, options: CollectOptions):
             if mail_sync.get("new_attachments") or mail_sync.get("requires_review"):
                 await _save_state(request)
     status = _source_status(request)
-    if status["pending_channels"]:
-        raise HTTPException(409, {
-            "message": "Новые расписания уже получены по почте и ждут подтверждения.",
-            "pending_channels": status["pending_channels"],
-            "missing_channels": status["missing_channels"],
-            "requires_approval": True,
-        })
+    # Pending Gmail/Drive notices are editorial work, not a parser lock.
+    # Website/API sources must refresh independently even when a supplier
+    # attachment is waiting for approval.
     if status["missing_channels"] and not options.allow_partial:
         raise HTTPException(409, {
             "message": "Нет актуальных Excel некоторых телеканалов. Собрать без них?",
@@ -1234,7 +1232,8 @@ async def collect(request: Request, options: CollectOptions):
     return {"ok": True, "event_count": db.active_event_count(),
             "durable_storage": bool(request.app.state.backup),
             "last_run": db.latest_agent_run(),
-            "vsetv": vsetv}
+            "vsetv": vsetv,
+            "pending_mail_channels": status["pending_channels"]}
 
 
 
