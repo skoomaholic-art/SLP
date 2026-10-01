@@ -8,6 +8,7 @@ import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from services.agent_reach_web import read_public_url_sync
 from services.time_logic import KZ_TIMEZONE
 from verifiers.web_search import (
     OPENSERP_BASE_URL,
@@ -336,14 +337,21 @@ def _extract_matching_pages(matching: list[dict]) -> list[dict]:
     if not selected:
         return []
 
+    urls = [
+        str(item.get("url") or item.get("link") or "")
+        for item in selected
+    ]
     try:
-        extracted = openserp_extract_batch([
-            str(item.get("url") or item.get("link") or "") for item in selected
-        ])
-    except Exception:
-        return []
+        extracted = openserp_extract_batch(urls)
+    except Exception as error:
+        logger.warning(
+            "OpenSERP extraction failed; Agent Reach fallback enabled: %s",
+            type(error).__name__,
+        )
+        extracted = []
 
     pages: list[dict] = []
+    covered_urls: set[str] = set()
     for result, item in zip(selected, extracted):
         if not isinstance(item, dict):
             continue
@@ -351,13 +359,40 @@ def _extract_matching_pages(matching: list[dict]) -> list[dict]:
         if not content:
             continue
         metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-        url = str(metadata.get("source") or result.get("url") or result.get("link") or "")
+        original_url = str(result.get("url") or result.get("link") or "")
+        url = str(metadata.get("source") or original_url)
+        covered_urls.add(original_url)
         pages.append({
             **result,
             "url": url,
             "title": str(metadata.get("title") or result.get("title") or ""),
             "content": content,
             "extracted": True,
+            "extraction_transport": "openserp",
+        })
+
+    for result in selected:
+        url = str(result.get("url") or result.get("link") or "")
+        if not url or url in covered_urls:
+            continue
+        try:
+            content = read_public_url_sync(url).strip()
+        except Exception as error:
+            logger.info(
+                "Agent Reach extraction failed domain=%s error=%s",
+                get_base_domain(get_domain(url)),
+                type(error).__name__,
+            )
+            continue
+        if not content:
+            continue
+        pages.append({
+            **result,
+            "url": url,
+            "title": str(result.get("title") or ""),
+            "content": content,
+            "extracted": True,
+            "extraction_transport": "agent_reach",
         })
     return pages
 
