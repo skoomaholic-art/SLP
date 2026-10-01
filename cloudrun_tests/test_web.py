@@ -94,6 +94,9 @@ class WebTests(unittest.TestCase):
         self.assertIn('const today=kzToday();', index)
         self.assertIn('date:""', index)
         self.assertIn('id="allDates">Все даты<', index)
+        self.assertIn("COLLECTION_QUOTES", index)
+        self.assertIn("Ещё собираю: проверяю сайты, телегиды и почту", index)
+        self.assertIn('approve.textContent="Добавить в расписание"', index)
 
     def test_source_inventory_covers_exact_14_channels_without_duplicate_web_cards(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -133,7 +136,7 @@ class WebTests(unittest.TestCase):
                  patch.object(web.gmail, "status", return_value={"connected": False}), \
                  patch.object(web, "_source_status", return_value={
                      "pending_channels": ["SPORT+ Qazaqstan"],
-                     "missing_channels": [],
+                     "missing_channels": ["SETANTA SPORTS 1"],
                  }), \
                  patch.object(
                      web, "refresh_vsetv_web_sources",
@@ -148,6 +151,116 @@ class WebTests(unittest.TestCase):
                 ["SPORT+ Qazaqstan"],
             )
             refresh.assert_awaited_once()
+
+    def test_collect_scans_mail_last_and_never_auto_imports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = SLPDatabase(Path(directory) / "sport.db")
+            refresh = AsyncMock(return_value=SimpleNamespace(run_id="run-1"))
+            mail_result = {
+                "new_attachments": 2,
+                "requires_review": 2,
+                "auto_imported": 0,
+            }
+            request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+                database=database,
+                backup=None,
+                collect_lock=asyncio.Lock(),
+                free_mail_bridge=False,
+                schedule=SimpleNamespace(refresh=refresh),
+            )))
+            with patch.object(web, "current_user", return_value={"role": "editor"}), \
+                 patch.object(web, "origin_guard"), \
+                 patch.object(web.gmail, "status", return_value={"connected": True}), \
+                 patch.object(web.gmail, "sync_inbox", return_value=mail_result) as sync, \
+                 patch.object(web, "_source_status", return_value={
+                     "pending_channels": ["SETANTA SPORTS 2"],
+                     "missing_channels": ["SETANTA SPORTS 1"],
+                 }), \
+                 patch.object(
+                     web, "refresh_vsetv_web_sources",
+                     new=AsyncMock(return_value={"stats": []}),
+                 ):
+                result = asyncio.run(
+                    web.collect(request, web.CollectOptions(allow_partial=False))
+                )
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["mail"]["new_attachments"], 2)
+            sync.assert_called_once()
+            self.assertFalse(sync.call_args.kwargs["allow_auto_import"])
+            refresh.assert_awaited_once()
+
+    def test_supplier_mail_overrides_matching_scrape_and_supplements_missing_event(self):
+        with tempfile.TemporaryDirectory() as folder:
+            database = SLPDatabase(Path(folder) / "sports.db")
+
+            def event(title, channel, time, source):
+                return {
+                    "source": source,
+                    "source_url": "https://example.test/program",
+                    "date": "2026-10-02",
+                    "time": time,
+                    "channel": channel,
+                    "sport": "Футбол",
+                    "tournament": "Премьер-лига",
+                    "title": title,
+                    "raw_title": title,
+                    "is_live": True,
+                    "is_live_broadcast": True,
+                }
+
+            database.upsert_source_snapshot(
+                run_id="web-run",
+                source="tvguide",
+                scope_date="2026-10-02",
+                events=[
+                    event(
+                        "Арсенал - Челси",
+                        "SETANTA SPORTS 1",
+                        "20:00",
+                        "tvguide",
+                    ),
+                    event(
+                        "Ливерпуль - Эвертон",
+                        "SETANTA SPORTS 1",
+                        "22:00",
+                        "tvguide",
+                    ),
+                ],
+            )
+            database.upsert_source_snapshot(
+                run_id="mail-approved",
+                source="email_epg_setanta1",
+                scope_date="2026-10-02",
+                events=[
+                    event(
+                        "Арсенал - Челси",
+                        "SETANTA SPORTS 1",
+                        "20:30",
+                        "email_epg_setanta1",
+                    ),
+                    event(
+                        "Брентфорд - Фулхэм",
+                        "SETANTA SPORTS 1",
+                        "23:00",
+                        "email_epg_setanta1",
+                    ),
+                ],
+            )
+
+            rows = web.event_rows(database, "2026-10-02", "2026-10-02")
+            by_title = {row["title"]: row for row in rows}
+
+            self.assertEqual(
+                by_title["Арсенал - Челси"]["time"],
+                "20:30",
+            )
+            self.assertEqual(
+                by_title["Арсенал - Челси"]["broadcasts"][0]["source"],
+                "email_epg_setanta1",
+            )
+            self.assertIn("Брентфорд - Фулхэм", by_title)
+            self.assertIn("Ливерпуль - Эвертон", by_title)
+            self.assertEqual(len(rows), 3)
 
     def test_supplier_preview_does_not_import_or_save(self):
         request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(

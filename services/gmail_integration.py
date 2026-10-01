@@ -1067,9 +1067,12 @@ def approve_notice(database, notice_id: int, *, username: str) -> dict:
         if row["status"] != "pending" or not row["attachment_bytes"]:
             raise GmailTransportError("Вложение недоступно для импорта")
         filename, raw = row["filename"], bytes(row["attachment_bytes"])
-    from services.epg_excel import import_parsed_epg, initialize_epg_imports
+    from services.epg_excel import (
+        import_parsed_epg, initialize_epg_imports, preview_parsed_epg,
+    )
     parsed = _parse_notice(row)
     initialize_epg_imports(database)
+    preview = preview_parsed_epg(database, parsed)
     # If the editor already approved a more recently received supplier file
     # for any overlapping day on this SAME channel, reject this older file.
     # Manual per-event review is still possible, without reverting an entire
@@ -1122,6 +1125,13 @@ def approve_notice(database, notice_id: int, *, username: str) -> dict:
             (parsed.content_hash, username, datetime.now(KZ_TIMEZONE).isoformat(),
              notice_id),
         )
+    outcome = dict(outcome)
+    outcome["changes"] = dict(preview.get("counts") or {})
+    outcome["applied"] = outcome.get("status") in ("imported", "partial_review")
+    outcome["message"] = (
+        "Почтовая сетка принята как более точный источник: "
+        "совпавшие события актуализированы, отсутствующие добавлены."
+    )
     return outcome
 
 

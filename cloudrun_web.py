@@ -38,6 +38,7 @@ from services import editorial_store as editorial
 from services.channel_registry import CHANNELS
 from services.event_text_ru import normalize_event_fields, strip_bookmakers
 from services.source_routing import route_for_channel, runtime_source_names
+from services.supplier_overlay import apply_supplier_overlay
 from services.vsetv_sources import WEB_CHANNEL_IDS, refresh_vsetv_web_sources
 from services.browser_schedule import browser_fallback_enabled, install_browser_for_python_runtime
 from services.epg_excel import (MAX_WORKBOOK_BYTES, InvalidEPG, import_parsed_epg,
@@ -214,7 +215,7 @@ def event_rows(
     overrides = editorial.get_editorial(
         database, [row["storage_id"] for row in rows]
     )
-    exact: dict[tuple, dict] = {}
+    records: list[dict] = []
     for row in rows:
         try:
             raw = json.loads(row["payload_json"])
@@ -275,16 +276,31 @@ def event_rows(
             }
         except (ValueError, TypeError, KeyError):
             continue
-        # Multiple providers may describe exactly one broadcast. Prefer a
-        # current confirmed supplier XLSX over a third-party copy.
-        key = (record["date"], record["time"], channel,
-               normalize_match_text(title), normalize_match_text(tournament),
-               normalize_match_text(sport))
+        records.append(record)
+
+    # Accepted supplier mail is the final authority for a matching
+    # channel/fixture. It overrides scraped time/title/tournament in the
+    # current schedule without deleting the scraped history. Supplier-only
+    # fixtures remain as additions.
+    current_records = (
+        records if include_inactive else apply_supplier_overlay(records)
+    )
+
+    exact: dict[tuple, dict] = {}
+    for record in current_records:
+        key = (
+            record["date"], record["time"], record["channel"],
+            normalize_match_text(record["title"]),
+            normalize_match_text(record["tournament"]),
+            normalize_match_text(record["sport"]),
+        )
         old = exact.get(key)
         if old is None or (
-            int(record["active"]), int(str(record["source"]).startswith("email_epg"))
+            int(record["active"]),
+            int(str(record["source"]).startswith("email_epg_")),
         ) > (
-            int(old["active"]), int(str(old["source"]).startswith("email_epg"))
+            int(old["active"]),
+            int(str(old["source"]).startswith("email_epg_")),
         ):
             exact[key] = record
 
@@ -422,7 +438,7 @@ async def lifespan(application: FastAPI):
         async with application.state.collect_lock:
             try:
                 result = await asyncio.to_thread(
-                    freebridge.sync_inbox, database, allow_auto_import=True,
+                    freebridge.sync_inbox, database, allow_auto_import=False,
                 )
                 if result["new_attachments"] or result["requires_review"]:
                     await asyncio.to_thread(application.state.backup.save)
@@ -659,17 +675,13 @@ def _source_status(request: Request) -> dict:
         ], "gmail_connected": (gmail.status(database)["connected"]
                                       or getattr(request.app.state, "free_mail_bridge", False)),
         "ai": ai_pipeline.status(),
-        "auto_import": bool(request.app.state.backup
-                            and gmail._auto_import_enabled()),
-        "note": ("Бесплатный Apps Script собирает поставщиков в Drive; "
-                 "SLP забирает Excel при открытой странице и при ручном сборе."
-                 if getattr(request.app.state, "free_mail_bridge", False) else
-                 "Подтверждённые Excel загружаются автоматически; "
-                 "на проверку попадают только спорные данные."
-                 if request.app.state.backup and gmail._auto_import_enabled()
-                 else "Автозагрузка отключена до настройки постоянного хранения."
-                 if gmail.status(database)["connected"]
-                 else "Для автоматической обработки нужно подключить OAuth владельца."),
+        "auto_import": False,
+        "note": ("Почта работает в режиме редакторского подтверждения: "
+                 "новые Excel попадают в уведомления и изменяют расписание "
+                 "только после нажатия «Добавить в расписание»."
+                 if (gmail.status(database)["connected"]
+                     or getattr(request.app.state, "free_mail_bridge", False))
+                 else "Для получения расписаний с почты нужно подключить Gmail/Drive."),
     }
 
 
@@ -857,7 +869,7 @@ def _notification_items(database: SLPDatabase, limit: int = 80) -> list[dict]:
     for row in mail_rows:
         items.append({
             "kind": "mail", "id": f"mail:{row['id']}",
-            "level": "attention" if row["status"] == "review" else "info",
+            "level": "attention",
             "title": (
                 (row["detected_channel"] or "Письмо требует проверки") +
                 (" · " + row["filename"] if row["filename"] else "")
@@ -924,9 +936,7 @@ def notifications(request: Request, limit: int = 80):
 def gmail_status(request: Request):
     current_user(request)
     result = gmail.status(request.app.state.database)
-    result["auto_import"] = bool(
-        request.app.state.backup and gmail._auto_import_enabled()
-    )
+    result["auto_import"] = False
     if request.app.state.free_mail_bridge:
         # Apps Script is authorized by the owner, not Cloud Run Gmail OAuth.
         # Gmail sending remains disabled in the free read-only bridge.
@@ -987,12 +997,12 @@ async def gmail_sync(request: Request):
             if request.app.state.free_mail_bridge:
                 result = await asyncio.to_thread(
                     freebridge.sync_inbox, request.app.state.database,
-                    allow_auto_import=bool(request.app.state.backup)
+                    allow_auto_import=False
                 )
             else:
                 result = await asyncio.to_thread(
                     gmail.sync_inbox, request.app.state.database,
-                    allow_auto_import=bool(request.app.state.backup)
+                    allow_auto_import=False
                 )
         except freebridge.FreeDriveError as exc:
             raise HTTPException(502, str(exc)) from exc
@@ -1038,7 +1048,7 @@ async def scheduled_gmail_sync(request: Request):
         try:
             result = await asyncio.to_thread(
                 gmail.sync_inbox, request.app.state.database,
-                allow_auto_import=bool(request.app.state.backup)
+                allow_auto_import=False
             )
         except (gmail.GmailTransportError, gmail.GmailNotConfigured) as exc:
             raise _gmail_failure(exc) from exc
@@ -1101,7 +1111,7 @@ async def scheduled_refresh(request: Request):
             try:
                 results["gmail"] = await asyncio.to_thread(
                     gmail.sync_inbox, request.app.state.database,
-                    allow_auto_import=True,
+                    allow_auto_import=False,
                 )
             except (gmail.GmailTransportError, gmail.GmailNotConfigured) as exc:
                 results["errors"].append("gmail: " + type(exc).__name__)
@@ -1190,50 +1200,72 @@ async def send_test_request(request: Request, options: MailRequest):
 async def collect(request: Request, options: CollectOptions):
     current_user(request)
     origin_guard(request)
-    # One-button flow: first look for newly arrived mail, but never import
-    # attachments before the editor approves the supplier file.
-    if (request.app.state.free_mail_bridge
-            or gmail.status(request.app.state.database)["connected"]):
-        async with request.app.state.collect_lock:
-            try:
-                importer = (freebridge.sync_inbox if request.app.state.free_mail_bridge
-                            else gmail.sync_inbox)
-                mail_sync = await asyncio.to_thread(
-                    importer, request.app.state.database,
-                    allow_auto_import=bool(request.app.state.backup)
-                )
-            except freebridge.FreeDriveError as exc:
-                # Do not hide missing schedules behind a successful collection.
-                raise HTTPException(502, "Gmail/Drive: " + str(exc)) from exc
-            except (gmail.GmailTransportError, gmail.GmailNotConfigured):
-                mail_sync = {"new_attachments": 0, "requires_review": 0}
-            if mail_sync.get("new_attachments") or mail_sync.get("requires_review"):
-                await _save_state(request)
-    status = _source_status(request)
-    # Pending Gmail/Drive notices are editorial work, not a parser lock.
-    # Website/API sources must refresh independently even when a supplier
-    # attachment is waiting for approval.
-    if status["missing_channels"] and not options.allow_partial:
-        raise HTTPException(409, {
-            "message": "Нет актуальных Excel некоторых телеканалов. Собрать без них?",
-            "missing_channels": status["missing_channels"],
-            "requires_approval": False,
-        })
+    database = request.app.state.database
+
+    # One button means one complete pass: external parsers first, then mail.
+    # Mail is deliberately scanned last so a newly arrived supplier file is
+    # immediately visible in Notifications, while only previously approved
+    # supplier snapshots can affect the published schedule.
+    result = {
+        "ok": True,
+        "errors": [],
+        "official_sources": None,
+        "vsetv": None,
+        "mail": None,
+    }
+
     async with request.app.state.collect_lock:
         try:
-            await request.app.state.schedule.refresh()
-            vsetv = await refresh_vsetv_web_sources(request.app.state.database)
-            if request.app.state.backup:
-                await asyncio.to_thread(request.app.state.backup.save)
+            refreshed = await request.app.state.schedule.refresh()
+            result["official_sources"] = {
+                "run_id": getattr(refreshed, "run_id", ""),
+                "event_count": database.active_event_count(),
+            }
         except Exception as exc:
-            raise HTTPException(502, "Ошибка обновления или сохранения: "
-                                + type(exc).__name__) from exc
-    db = request.app.state.database
-    return {"ok": True, "event_count": db.active_event_count(),
-            "durable_storage": bool(request.app.state.backup),
-            "last_run": db.latest_agent_run(),
-            "vsetv": vsetv,
-            "pending_mail_channels": status["pending_channels"]}
+            result["errors"].append(
+                "Основные сайты: " + type(exc).__name__
+            )
+
+        try:
+            result["vsetv"] = await refresh_vsetv_web_sources(database)
+        except Exception as exc:
+            result["errors"].append(
+                "Дополнительные телегиды: " + type(exc).__name__
+            )
+
+        mail_available = (
+            request.app.state.free_mail_bridge
+            or gmail.status(database)["connected"]
+        )
+        if mail_available:
+            try:
+                importer = (
+                    freebridge.sync_inbox
+                    if request.app.state.free_mail_bridge
+                    else gmail.sync_inbox
+                )
+                result["mail"] = await asyncio.to_thread(
+                    importer, database, allow_auto_import=False
+                )
+            except freebridge.FreeDriveError as exc:
+                result["errors"].append("Почта/Drive: " + str(exc)[:160])
+            except (gmail.GmailTransportError, gmail.GmailNotConfigured) as exc:
+                result["errors"].append("Почта: " + str(exc)[:160])
+
+        if request.app.state.backup:
+            try:
+                await asyncio.to_thread(request.app.state.backup.save)
+            except Exception as exc:
+                result["errors"].append(
+                    "Сохранение: " + type(exc).__name__
+                )
+
+    result["ok"] = not bool(result["errors"])
+    result["event_count"] = len(event_rows(database, "", ""))
+    result["durable_storage"] = bool(request.app.state.backup)
+    result["last_run"] = database.latest_agent_run()
+    result["pending_mail_channels"] = _source_status(request)["pending_channels"]
+    return result
 
 
 

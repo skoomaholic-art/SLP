@@ -293,9 +293,8 @@ function renderSources(data){
  }
  node.append(grid);
  const mail=document.createElement("p");mail.className="muted-small";
- mail.textContent=data.gmail_connected?(data.auto_import?
-   "Gmail подключён. Однозначные расписания обрабатываются автоматически.":
-   "Gmail подключён. Для автоматического импорта нужно постоянное хранилище."):
+ mail.textContent=data.gmail_connected?
+   "Gmail подключён. Новые EPG попадают в уведомления и применяются только после подтверждения редактора. Принятая почта имеет приоритет над совпавшими данными с сайтов.":
    "Gmail пока не подключён. Файлы загружаются вручную.";node.append(mail);
  const ai=document.createElement("p");ai.className="muted-small";
  const aiStatus=data.ai||{};
@@ -378,12 +377,11 @@ async function loadMailStatus(){
    "Бесплатный Apps Script указан, но его работа ещё не подтверждена. Запусти setup в Apps Script и нажми Проверить почту.":
    !status.archiver_active?
    "Связь с Google Drive подтверждена, но ежечасный сбор Gmail не подтверждён. Проверь запуск setup и журнал Apps Script.":
-   "Gmail и ежечасный сбор Apps Script подтверждены. Новые EPG хранятся в Drive; SLP загружает их при открытии страницы и каждые 15 минут, пока она открыта."):
+   "Gmail и ежечасный сбор Apps Script подтверждены. Новые EPG попадают в уведомления. В расписание они входят только после твоего подтверждения."):
   !status.configured?
   "Gmail OAuth пока не настроен. Нужны секреты клиента и постоянное хранилище.":
-  status.connected?(status.auto_import?
-   "Gmail подключён ("+status.email+"). Подтверждённые Excel загружаются автоматически; противоречия отправляются на проверку.":
-   "Gmail подключён ("+status.email+"). Автоматический импорт ожидает постоянное GCS-хранилище."):
+  status.connected?
+   "Gmail подключён ("+status.email+"). Новые Excel ждут ручного подтверждения и после принятия имеют приоритет над совпавшими данными с сайтов.":
   "OAuth настроен, но владелец ещё не авторизовал Gmail.";
  $("gmailConnect").classList.toggle("hide",status.bridge_mode||!status.configured||!state.gmailAdmin);
  $("mailCheck").classList.toggle("hide",!status.connected&&!status.bridge_mode);
@@ -450,7 +448,7 @@ async function loadMailNotices(){
     }catch(e){diff.textContent=e.message}
     finally{preview.disabled=false}
    });
-   const approve=document.createElement("button");approve.textContent="Загрузить в расписание";
+   const approve=document.createElement("button");approve.textContent="Добавить в расписание";
    approve.addEventListener("click",()=>manageNotice(notice.id,"approve"));
    controls.append(preview,approve);
    item.append(diff);
@@ -472,7 +470,11 @@ async function manageNotice(id,action){
   if(action==="approve"&&result.status==="superseded"){
    msg(result.message||"Устаревшее письмо закрыто. Используется более новое расписание.","success");
   }else if(action==="approve"){
-   msg("Расписание загружено: "+result.channel+". LIVE: "+result.live_events,"success");
+   const changes=result.changes||{};
+   msg("Почтовая сетка применена: "+result.channel+
+     ". Новых событий: "+(changes.new||0)+
+     ". Обновлено времени: "+(changes.time_changed||0)+
+     ". Почта теперь имеет приоритет для совпавших событий.","success");
   }else{
    msg("Уведомление закрыто.","success");
   }
@@ -485,10 +487,8 @@ async function checkGmail(silent=false){
  try{
   const result=await api("/api/gmail/sync","POST",{});
   if(!silent||result.new_attachments)msg("Новых вложений: "+result.new_attachments+
-     ". Автоматически загружено: "+result.auto_imported+
-     ". Требуют проверки: "+result.requires_review+".","success");
-  if(result.auto_imported){await load();}
-  else await loadMailNotices();
+     ". В уведомлениях на проверку: "+result.requires_review+".","success");
+  await loadMailNotices();
   if(state.gmailBridge&&!state.gmailConnected)await loadMailStatus();
  }catch(e){if(!silent)msg(e.message,"error")}
  finally{$("mailCheck").disabled=false}
@@ -633,22 +633,50 @@ $("loginForm").addEventListener("submit",async event=>{
    $("loginMessage").textContent="";$("loginPassword").value="";showApp(data.user);
  }catch(e){$("loginMessage").textContent=e.message}
 });
-$("collect").addEventListener("click",async()=>{
- msg("Собираю источники, это может занять несколько минут...");
- $("collect").disabled=true;
- try{
-  let result;
-  try{result=await api("/api/collect","POST",{allow_partial:false})}
-  catch(e){
-   if(e.status!==409)throw e;
-   const missing=(e.detail?.missing_channels||[]).join(", ");
-   if(!confirm("Нет актуальных Excel: "+missing+". Собрать по доступным источникам?")){msg("Сбор отменён");return}
-   result=await api("/api/collect","POST",{allow_partial:true});
+const COLLECTION_QUOTES=[
+ ["Я терпел неудачи снова и снова. Именно поэтому я добился успеха.","Майкл Джордан"],
+ ["Ты не реализуешь сто процентов бросков, которые не делаешь.","Уэйн Гретцки"],
+ ["Ненавидел каждую минуту тренировок, но говорил себе: не сдавайся.","Мухаммед Али"],
+ ["Чемпионы продолжают играть, пока не сделают как надо.","Билли Джин Кинг"],
+ ["Я тренировался четыре года, чтобы пробежать девять секунд.","Усэйн Болт"],
+ ["Удача тут ни при чём. За результатом стоят годы работы.","Серена Уильямс"]
+];
+function startCollectTicker(){
+ let index=0,showQuote=true;
+ const paint=()=>{
+  if(showQuote){
+   const [quote,author]=COLLECTION_QUOTES[index%COLLECTION_QUOTES.length];
+   msg("«"+quote+"» - "+author);
+   index++;
+  }else{
+   msg("Ещё собираю: проверяю сайты, телегиды и почту...");
   }
-  msg("Сбор завершён. Записей источников: "+result.event_count+
-      (result.durable_storage?". Архив сохранён.":". ВНИМАНИЕ: архив временный, постоянное хранилище не подключено."),"success");
+  showQuote=!showQuote;
+ };
+ paint();
+ return setInterval(paint,4200);
+}
+$("collect").addEventListener("click",async()=>{
+ $("collect").disabled=true;
+ const ticker=startCollectTicker();
+ try{
+  const result=await api("/api/collect","POST",{allow_partial:true});
+  const mail=result.mail||{};
+  const mailText=(mail.new_attachments||0)?
+    " Новых писем в уведомлениях: "+mail.new_attachments+".":"";
+  if(result.ok){
+   msg("Сбор завершён успешно. Событий в итоговой сетке: "+result.event_count+"."+mailText,"success");
+  }else{
+   msg("Сбор завершён с ошибками: "+(result.errors||[]).join("; ")+
+      ". Итоговая сетка сохранена по доступным источникам."+mailText,"error");
+  }
   await load();
- }catch(e){msg(e.message,"error")}finally{$("collect").disabled=false}
+ }catch(e){
+  msg("Сбор не завершён: "+e.message,"error");
+ }finally{
+  clearInterval(ticker);
+  $("collect").disabled=false;
+ }
 });
 $("export").addEventListener("click",async()=>{
  const url="/api/export"+(state.date?"?start="+encodeURIComponent(state.date)+"&end="+encodeURIComponent(state.date):"");
