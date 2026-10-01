@@ -90,6 +90,10 @@ class WebTests(unittest.TestCase):
         self.assertNotEqual(logos["KHL PRIME"], logos["KHL HD"])
         self.assertNotEqual(logos["SETANTA SPORTS 1"], logos["SETANTA SPORTS 2"])
         self.assertNotEqual(logos["EUROSPORT 1"], logos["EUROSPORT 2"])
+        self.assertIn(".day.today", index)
+        self.assertIn('const today=kzToday();', index)
+        self.assertIn('date:""', index)
+        self.assertIn('id="allDates">Все даты<', index)
 
     def test_source_inventory_covers_exact_14_channels_without_duplicate_web_cards(self):
         with tempfile.TemporaryDirectory() as directory:
