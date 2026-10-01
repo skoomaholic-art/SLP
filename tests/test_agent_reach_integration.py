@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from services import agent_reach_web
 from verifiers.broadcast_occurrence import _extract_matching_pages
@@ -7,7 +7,7 @@ from verifiers.broadcast_occurrence import _extract_matching_pages
 
 class AgentReachBridgeTests(unittest.IsolatedAsyncioTestCase):
     async def test_async_bridge_uses_agent_reach_web_channel(self):
-        fake_channel = unittest.mock.Mock()
+        fake_channel = Mock()
         fake_channel.read.return_value = "# Sports schedule\nLIVE 20:00 Team A - Team B"
 
         with patch.object(agent_reach_web, "WebChannel", return_value=fake_channel):
