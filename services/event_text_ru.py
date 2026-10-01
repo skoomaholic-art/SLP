@@ -372,6 +372,11 @@ def normalize_event_fields(*, title: str, sport: str, tournament: str) -> dict[s
         r"\1. ",
         result_title,
     ).strip()
+    result_title = re.sub(
+        r"^\(([^)]+)\)$",
+        r"\1",
+        result_title,
+    ).strip()
 
     # A tournament can arrive as "УЕФА Лига наций" from one source and
     # "Лига наций УЕФА" from another. Use one stable order for matching.
