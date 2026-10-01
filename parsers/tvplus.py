@@ -9,7 +9,7 @@ from urllib.parse import urlencode
 
 import aiohttp
 
-from services.channel_registry import TVPLUS_CHANNELS
+from services.channel_registry import CHANNELS
 from services.event_contract import build_sport_event
 from services.live_evidence import classify_live_evidence
 from services.time_logic import KZ_TIMEZONE
@@ -32,37 +32,43 @@ class TVPlusChannel:
     source: str = SOURCE
 
 
-TARGET_CHANNELS = (
-    TVPlusChannel("KHL HD", TVPLUS_CHANNELS["KHL HD"], "Хоккей"),
-    TVPlusChannel("KHL Prime", TVPLUS_CHANNELS["KHL Prime"], "Хоккей"),
-    TVPlusChannel("Q Arena", TVPLUS_CHANNELS["Q Arena"]),
-    TVPlusChannel("Q Football", TVPLUS_CHANNELS["Q Football"], "Футбол"),
-    TVPlusChannel("Q League", TVPLUS_CHANNELS["Q League"]),
-    TVPlusChannel("Setanta Sports 1", TVPLUS_CHANNELS["Setanta Sports 1"]),
-    TVPlusChannel("Setanta Sports 2", TVPLUS_CHANNELS["Setanta Sports 2"]),
-    TVPlusChannel("Setanta Sports KZ", TVPLUS_CHANNELS["Setanta Sports KZ"]),
-    TVPlusChannel("viju+ Sport", TVPLUS_CHANNELS["viju+ Sport"]),
-    TVPlusChannel("МАТЧ! Планета", TVPLUS_CHANNELS["МАТЧ! Планета"]),
-    # Both have a separate official-site parser, retained as independent
-    # evidence rather than replaced by this provider's TV guide.
-    TVPlusChannel("Qazsport", TVPLUS_CHANNELS["Qazsport"]),
-    TVPlusChannel("Sport+ Qazaqstan", TVPLUS_CHANNELS["Sport+ Qazaqstan"]),
+def _tvplus_channel_from_registry(channel) -> TVPlusChannel:
+    if channel.guide_backend == "mobikino":
+        return TVPlusChannel(
+            channel.tvplus_name,
+            channel.tvplus_id,
+            channel.sport_hint,
+            api_base=MOBIKINO_API_BASE,
+            web_base=MOBIKINO_WEB_BASE,
+            source=MOBIKINO_SOURCE,
+        )
+    return TVPlusChannel(
+        channel.tvplus_name,
+        channel.tvplus_id,
+        channel.sport_hint,
+    )
+
+
+ALL_GUIDE_CHANNELS = tuple(
+    _tvplus_channel_from_registry(channel)
+    for channel in CHANNELS
+    if channel.tvplus_id
+)
+
+TARGET_CHANNELS = tuple(
+    channel
+    for channel in ALL_GUIDE_CHANNELS
+    if channel.source == SOURCE
+)
+
+EUROSPORT_CHANNELS = tuple(
+    channel
+    for channel in ALL_GUIDE_CHANNELS
+    if channel.source == MOBIKINO_SOURCE
 )
 
 Q_CHANNEL_NAMES = frozenset({"Q Arena", "Q Football", "Q League"})
 
-EUROSPORT_CHANNELS = (
-    TVPlusChannel(
-        "Eurosport", TVPLUS_CHANNELS["Eurosport"],
-        api_base=MOBIKINO_API_BASE, web_base=MOBIKINO_WEB_BASE,
-        source=MOBIKINO_SOURCE,
-    ),
-    TVPlusChannel(
-        "Eurosport 2", TVPLUS_CHANNELS["Eurosport 2"],
-        api_base=MOBIKINO_API_BASE, web_base=MOBIKINO_WEB_BASE,
-        source=MOBIKINO_SOURCE,
-    ),
-)
 
 SPORT_PREFIXES = (
     ("Пляжный волейбол", "Пляжный волейбол"),
@@ -310,7 +316,7 @@ async def fetch_tvplus_schedules(target_dates: Iterable[date | datetime | str]) 
     errors: list[str] = []
 
     async with aiohttp.ClientSession(headers=headers, timeout=timeout, connector=connector) as session:
-        channels = TARGET_CHANNELS + EUROSPORT_CHANNELS
+        channels = ALL_GUIDE_CHANNELS
         schedule_ids_by_api: dict[str, dict[str, str]] = {}
         for api_base in sorted({channel.api_base for channel in channels}):
             try:

@@ -19,6 +19,8 @@ on:
       - "services/editorial_store.py"
       - "services/gmail_integration.py"
       - "services/vsetv_sources.py"
+      - "services/channel_registry.py"
+      - "services/source_routing.py"
       - "services/agent_reach_web.py"
       - "storage/database.py"
       - "scripts/cloudrun_users.py"
