@@ -287,22 +287,41 @@ def event_rows(
         records if include_inactive else apply_supplier_overlay(records)
     )
 
+    def slot_rank(record: dict) -> tuple:
+        source = str(record.get("source") or "")
+        supplier = source.startswith("email_epg_")
+        official_direct = source in {"qazsport", "sportplus"}
+        verified_web = source.startswith("web_vsetv_")
+        return (
+            int(record["active"]),
+            int(supplier),
+            int(official_direct),
+            int(verified_web),
+            int(bool(record.get("tournament"))),
+            -len(str(record.get("title") or "")),
+        )
+
     exact: dict[tuple, dict] = {}
     for record in current_records:
-        key = (
-            record["date"], record["time"], record["channel"],
-            normalize_match_text(record["title"]),
-            normalize_match_text(record["tournament"]),
-            normalize_match_text(record["sport"]),
-        )
+        # One linear TV channel cannot carry two different LIVE broadcasts at
+        # the exact same minute. Different source wording for the same slot is
+        # therefore one broadcast, not two separate cards. Keep archive mode
+        # granular so historical source versions remain inspectable.
+        if include_inactive:
+            key = (
+                record["date"], record["time"], record["channel"],
+                normalize_match_text(record["title"]),
+                normalize_match_text(record["tournament"]),
+                normalize_match_text(record["sport"]),
+            )
+        else:
+            key = (
+                record["date"],
+                record["time"],
+                record["channel"],
+            )
         old = exact.get(key)
-        if old is None or (
-            int(record["active"]),
-            int(str(record["source"]).startswith("email_epg_")),
-        ) > (
-            int(old["active"]),
-            int(str(old["source"]).startswith("email_epg_")),
-        ):
+        if old is None or slot_rank(record) > slot_rank(old):
             exact[key] = record
 
     groups: list[list[dict]] = []
@@ -427,6 +446,7 @@ async def lifespan(application: FastAPI):
         RuntimeParserOrchestrator(database=database)
     )
     application.state.collect_lock = asyncio.Lock()
+    application.state.collect_task = None
     application.state.collect_progress = {
         "running": False,
         "phase": "idle",
