@@ -53,6 +53,15 @@ _PHRASES = (
     (r"\bСуға\s+секіру\b", "Прыжки в воду"),
     (r"\bКомандалық\s+жарыс\b", "Командные соревнования"),
     (r"\bЖекелей\s+жарыс\b", "Личные соревнования"),
+    (r"\bӘлем\s+чемпионаты\b", "Чемпионат мира"),
+    (r"\bАлем\s+чемпионаты\b", "Чемпионат мира"),
+    (r"\bІріктеу\b", "Отборочный этап"),
+    (r"\bИріктеу\b", "Отборочный этап"),
+    (r"\bИриктеу\b", "Отборочный этап"),
+    (r"\bКүрес\s*\(\s*Еркін\s+күрес\s*,\s*Әйелдер\s+күресі\s*\)", "Вольная борьба. Женщины"),
+    (r"\bЕркін\s+күрес\b", "Вольная борьба"),
+    (r"\bӘйелдер\s+күресі\b", "Женщины"),
+    (r"\bКүрес\b", "Борьба"),
     (r"\bӘйелдер\b", "Женщины"),
     (r"\b(?:Айелдер|Айелде|Әйелде)\b", "Женщины"),
     (r"\bЕрлер\b", "Мужчины"),
@@ -168,6 +177,10 @@ _PROTECTED_LATIN_PHRASES = (
     (re.compile(r"(?iu)\bAlash\s+Pride\b"), "ALASH PRIDE"),
 )
 
+_PRESERVE_CYRILLIC_UPPER = {
+    "УЕФА", "ФИФА", "КХЛ", "НХЛ", "НБА", "ММА", "АФК", "КДЖ",
+}
+
 _PROPER_CASE_WORDS = {
     "казахстан": "Казахстан",
     "казахстана": "Казахстана",
@@ -266,6 +279,30 @@ def _transliterate_remaining_latin(text: str) -> str:
     return text
 
 
+def _normalize_mixed_caps(text: str) -> str:
+    """Fix source shouting inside otherwise mixed-case titles.
+
+    Example: "ЖАС КЫРАН 2010 - Кайрат 2010" -> "Жас Кыран 2010 - Кайрат 2010".
+    Known abbreviations stay uppercase.
+    """
+    token_re = re.compile(r"(?<![\w])([А-ЯЁӘҒҚҢӨҰҮІҺ]{2,})(?![\w])")
+
+    def repl(match: re.Match[str]) -> str:
+        token = match.group(1)
+        if token in _PRESERVE_CYRILLIC_UPPER:
+            return token
+        lowered = token.lower()
+        return lowered[:1].upper() + lowered[1:]
+
+    text = token_re.sub(repl, text)
+    text = re.sub(
+        r"(?iu)\b(\d+)-Й\s+Тур\b",
+        lambda m: f"{m.group(1)}-й тур",
+        text,
+    )
+    return text
+
+
 def _normalize_all_caps(text: str) -> str:
     if re.fullmatch(r"(?iu)\s*ALASH\s+PRIDE(?:\s+\d+)?\s*", text):
         return re.sub(
@@ -318,6 +355,7 @@ def to_russian_text(value: str) -> str:
     text = text.translate(_KZ_TRANSLIT)
     text = _transliterate_remaining_latin(text)
     text = _normalize_all_caps(text)
+    text = _normalize_mixed_caps(text)
     text = re.sub(r"\s{2,}", " ", text)
     text = re.sub(r"\s+([,.:;)])", r"\1", text)
     text = re.sub(r"([(])\s+", r"\1", text)

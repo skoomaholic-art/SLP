@@ -84,6 +84,46 @@ class EventTextRussianTests(unittest.TestCase):
         self.assertEqual(result["title"], "ALASH PRIDE 131")
         self.assertEqual(result["sport"], "ММА")
 
+    def test_qazsport_world_championship_and_qualification_translate_cleanly(self):
+        result = normalize_event_fields(
+            title="Әлем чемпионаты. Іріктеу",
+            sport="Дзюдо",
+            tournament="",
+        )
+        self.assertEqual(result["sport"], "Дзюдо")
+        self.assertEqual(result["tournament"], "Чемпионат мира")
+        self.assertEqual(result["title"], "Отборочный этап")
+
+    def test_qazsport_wrestling_phrase_translates_cleanly(self):
+        result = normalize_event_fields(
+            title="Күрес (Еркін күрес, Әйелдер күресі). Іріктеу",
+            sport="Күрес",
+            tournament="XX Жазғы Азия Ойындары",
+        )
+        self.assertEqual(result["sport"], "Борьба")
+        self.assertEqual(result["tournament"], "XX Летние Азиатские игры")
+        self.assertEqual(
+            result["title"],
+            "Вольная борьба. Женщины. Отборочный этап",
+        )
+
+    def test_mixed_caps_team_names_are_normalized_without_translation(self):
+        first = normalize_event_fields(
+            title="ЖАС КЫРАН 2010 - Кайрат 2010",
+            sport="Футбол",
+            tournament="КДЖ лига. 20-Й ТУР",
+        )
+        self.assertEqual(first["title"], "Жас Кыран 2010 - Кайрат 2010")
+        self.assertEqual(first["tournament"], "КДЖ лига. 20-й тур")
+
+        second = normalize_event_fields(
+            title="ТОБЫЛ 2009 - Актобе 2009",
+            sport="Футбол",
+            tournament="КДЖ лига. 20-Й ТУР",
+        )
+        self.assertEqual(second["title"], "Тобыл 2009 - Актобе 2009")
+        self.assertEqual(second["tournament"], "КДЖ лига. 20-й тур")
+
     def test_real_betis_is_not_mistaken_for_standalone_bet_word(self):
         self.assertEqual(
             strip_bookmakers("Real Betis - Barcelona"),

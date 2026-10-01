@@ -92,7 +92,10 @@ details.sources summary{cursor:pointer;font-weight:700;font-size:16px}
 .template-bar input{width:min(100%,400px)}
 
 footer{margin:25px 0;color:var(--muted);font-size:12px}
-#message{white-space:pre-line}\n</style>
+#message{white-space:pre-line}
+.collection-quote{display:block;margin-top:14px;font-style:italic;line-height:1.55}
+.collection-quote .quote-author{display:block;margin-top:5px}
+</style>
 </head>
 <body>
 <header>
@@ -686,8 +689,43 @@ const COLLECTION_QUOTES=[
  ["Нет оправдания тому, чтобы кто-то работал больше тебя.","Дерек Джитер"],
  ["Каким бы хорошим ты ни был, всегда можно стать лучше.","Тайгер Вудс"],
  ["Я всегда верил, что если вложить работу, результат придёт.","Майкл Джордан"],
- ["Давление - это привилегия.","Билли Джин Кинг"]
+ ["Давление - это привилегия.","Билли Джин Кинг"],
+ ["Успех - не случайность. Это тяжёлая работа и настойчивость.","Пеле"],
+ ["Каждый день - возможность стать немного лучше.","Роджер Федерер"],
+ ["Нужно принимать трудные моменты и продолжать работать.","Рафаэль Надаль"],
+ ["Сила рождается, когда продолжаешь идти после неудачи.","Новак Джокович"],
+ ["Не бойся неудачи. Это часть пути к успеху.","Леброн Джеймс"],
+ ["Работа начинается там, где заканчиваются оправдания.","Стефен Карри"],
+ ["Если хочешь быть лучшим, нужно делать то, чего другие не делают.","Майкл Фелпс"],
+ ["Победа начинается с веры в то, что она возможна.","Симона Байлз"],
+ ["Главное - никогда не переставать бросать себе вызов.","Линдси Вонн"],
+ ["Я всегда стараюсь превратить давление в энергию.","Наоми Осака"],
+ ["Никогда не сдавайся, каким бы трудным ни был путь.","Льюис Хэмилтон"],
+ ["Чтобы выиграть, сначала нужно поверить, что можешь.","Айртон Сенна"],
+ ["Скорость ничего не значит без контроля.","Валентино Росси"],
+ ["Чем тяжелее борьба, тем ценнее победа.","Рафаэль Надаль"],
+ ["Ты соревнуешься прежде всего с самим собой.","Роджер Федерер"],
+ ["Настоящий чемпион поднимается после падения.","Мэнни Пакьяо"],
+ ["Нужно быть готовым работать, когда никто не смотрит.","Сидни Кросби"],
+ ["Каждая тренировка - это ещё один шаг к цели.","Кэти Ледеки"],
+ ["Сомнения исчезают только после работы.","Элиуд Кипчоге"],
+ ["Пределы существуют, пока ты в них веришь.","Арманд Дюплантис"]
 ]
+function showCollectionMessage(technical,extra=""){
+ const n=$("message");n.replaceChildren();n.className="notice";
+ const tech=document.createElement("div");tech.textContent=technical;n.append(tech);
+ if(extra){
+  const more=document.createElement("div");more.style.marginTop="14px";more.textContent=extra;n.append(more);
+ }
+}
+function showCollectionQuote(technical,quote,author){
+ const n=$("message");n.replaceChildren();n.className="notice";
+ const tech=document.createElement("div");tech.textContent=technical;n.append(tech);
+ const em=document.createElement("em");em.className="collection-quote";
+ const quoteLine=document.createElement("span");quoteLine.textContent="«"+quote+"»";em.append(quoteLine);
+ const authorLine=document.createElement("span");authorLine.className="quote-author";
+ authorLine.textContent="(с) "+author;em.append(authorLine);n.append(em);
+}
 function startCollectTicker(){
  let index=0,showQuote=true,current="Запускаю полный сбор...",detail="";
  let stopped=false;
@@ -696,15 +734,15 @@ function startCollectTicker(){
   const technical=detail?current+"\n"+detail:current;
   if(showQuote){
    const [quote,author]=COLLECTION_QUOTES[index%COLLECTION_QUOTES.length];
-   msg(technical+"\n\n«"+quote+"» - "+author);
+   showCollectionQuote(technical,quote,author);
   }else{
-   msg(technical+"\n\nЕщё собираю...");
+   showCollectionMessage(technical,"Ещё собираю...");
   }
  };
  const flip=setInterval(()=>{
   if(showQuote)index++;
   showQuote=!showQuote;paint();
- },10000);
+ },12000);
  const poll=setInterval(async()=>{
   try{
    const status=await api("/api/collect/status");
