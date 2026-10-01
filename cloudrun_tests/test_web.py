@@ -101,6 +101,8 @@ class WebTests(unittest.TestCase):
         self.assertIn('authorLine.textContent="(с) "+author', index)
         self.assertIn('replace(/\\.+$/,"")', index)
         self.assertIn('api("/api/collect/status")', index)
+        self.assertIn('await api("/api/collect","POST"', index)
+        self.assertIn("status.result", index)
         self.assertIn("Ещё собираю...", index)
         self.assertIn("const combined=new Map()", index)
         self.assertNotIn('[...(data.websites||[]),...(data.excel||[])]', index)
@@ -167,31 +169,44 @@ class WebTests(unittest.TestCase):
             self.assertEqual(item["status"], "error")
             self.assertIn("тайм-аут соединения", item["error_reason"])
 
-    def test_collect_is_not_blocked_by_pending_gmail_notice(self):
+    def test_collect_is_background_and_not_blocked_by_pending_gmail_notice(self):
         with tempfile.TemporaryDirectory() as directory:
             database = SLPDatabase(Path(directory) / "sport.db")
             refresh = AsyncMock(return_value=SimpleNamespace())
-            request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+            state = SimpleNamespace(
                 database=database,
                 backup=None,
                 collect_lock=asyncio.Lock(),
+                collect_task=None,
+                collect_progress={},
                 free_mail_bridge=False,
                 schedule=SimpleNamespace(refresh=refresh),
-            )))
+            )
+            request = SimpleNamespace(app=SimpleNamespace(state=state))
+
+            async def scenario():
+                response = await web.collect(
+                    request,
+                    web.CollectOptions(allow_partial=False),
+                )
+                self.assertTrue(response["accepted"])
+                self.assertFalse(response["already_running"])
+                self.assertIsNotNone(state.collect_task)
+                await state.collect_task
+                return state.collect_progress["result"]
+
             with patch.object(web, "current_user", return_value={"role": "editor"}), \
                  patch.object(web, "origin_guard"), \
                  patch.object(web.gmail, "status", return_value={"connected": False}), \
-                 patch.object(web, "_source_status", return_value={
-                     "pending_channels": ["SPORT+ Qazaqstan"],
-                     "missing_channels": ["SETANTA SPORTS 1"],
-                 }), \
+                 patch.object(web.gmail, "list_notices", return_value=[{
+                     "status": "pending",
+                     "detected_channel": "SPORT+ Qazaqstan",
+                 }]), \
                  patch.object(
                      web, "refresh_vsetv_web_sources",
                      new=AsyncMock(return_value={"stats": []}),
                  ):
-                result = asyncio.run(
-                    web.collect(request, web.CollectOptions(allow_partial=False))
-                )
+                result = asyncio.run(scenario())
             self.assertTrue(result["ok"])
             self.assertEqual(
                 result["pending_mail_channels"],
@@ -208,33 +223,77 @@ class WebTests(unittest.TestCase):
                 "requires_review": 2,
                 "auto_imported": 0,
             }
-            request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
+            state = SimpleNamespace(
                 database=database,
                 backup=None,
                 collect_lock=asyncio.Lock(),
+                collect_progress={},
                 free_mail_bridge=False,
                 schedule=SimpleNamespace(refresh=refresh),
-            )))
-            with patch.object(web, "current_user", return_value={"role": "editor"}), \
-                 patch.object(web, "origin_guard"), \
-                 patch.object(web.gmail, "status", return_value={"connected": True}), \
+            )
+            with patch.object(web.gmail, "status", return_value={"connected": True}), \
                  patch.object(web.gmail, "sync_inbox", return_value=mail_result) as sync, \
-                 patch.object(web, "_source_status", return_value={
-                     "pending_channels": ["SETANTA SPORTS 2"],
-                     "missing_channels": ["SETANTA SPORTS 1"],
-                 }), \
+                 patch.object(web.gmail, "list_notices", return_value=[]), \
                  patch.object(
                      web, "refresh_vsetv_web_sources",
                      new=AsyncMock(return_value={"stats": []}),
                  ):
                 result = asyncio.run(
-                    web.collect(request, web.CollectOptions(allow_partial=False))
+                    web._run_collection(SimpleNamespace(state=state))
                 )
             self.assertTrue(result["ok"])
             self.assertEqual(result["mail"]["new_attachments"], 2)
             sync.assert_called_once()
             self.assertFalse(sync.call_args.kwargs["allow_auto_import"])
             refresh.assert_awaited_once()
+
+    def test_same_qazsport_slot_is_canonicalized_and_deduplicated(self):
+        with tempfile.TemporaryDirectory() as folder:
+            database = SLPDatabase(Path(folder) / "sports.db")
+
+            def event(title, tournament, source):
+                return {
+                    "source": source,
+                    "source_url": "https://example.test/program",
+                    "date": "2026-10-01",
+                    "time": "23:35",
+                    "channel": "QAZSPORT",
+                    "sport": "Футбол",
+                    "tournament": tournament,
+                    "title": title,
+                    "raw_title": title,
+                    "is_live": True,
+                    "is_live_broadcast": True,
+                }
+
+            database.upsert_source_snapshot(
+                run_id="qazsport-direct",
+                source="qazsport",
+                scope_date="2026-10-01",
+                events=[event(
+                    "Дания - Португалия",
+                    "Лига наций УЕФА",
+                    "qazsport",
+                )],
+            )
+            database.upsert_source_snapshot(
+                run_id="tvguide-copy",
+                source="tvguide",
+                scope_date="2026-10-01",
+                events=[event(
+                    "Лига наций УЕФА Дания - Португалия",
+                    "Лига наций УЕФА Дания - Португалия",
+                    "tvguide",
+                )],
+            )
+
+            rows = web.event_rows(database, "2026-10-01", "2026-10-01")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["title"], "Дания - Португалия")
+            self.assertEqual(rows[0]["tournament"], "Лига наций УЕФА")
+            self.assertEqual(rows[0]["sport"], "Футбол")
+            self.assertEqual(rows[0]["channel"], "QAZSPORT HD")
+            self.assertEqual(rows[0]["broadcasts"][0]["source"], "qazsport")
 
     def test_supplier_mail_overrides_matching_scrape_and_supplements_missing_event(self):
         with tempfile.TemporaryDirectory() as folder:
