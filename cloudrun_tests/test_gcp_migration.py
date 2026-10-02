@@ -67,9 +67,8 @@ class GoogleCloudMigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             database = SLPDatabase(Path(directory) / "sport.db")
             fake_manifest = {
-                "nextOffset": 0,
-                "hasMore": False,
-                "items": [],
+                "files": [],
+                "lastScan": "2026-10-02T06:00:00+05:00",
             }
             with patch.object(
                 bridge,
