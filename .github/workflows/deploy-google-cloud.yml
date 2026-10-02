@@ -173,7 +173,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gcloud run deploy "$SERVICE"             --project="$PROJECT_ID"             --region="$REGION"             --image="$IMAGE"             --service-account="$RUNTIME_SA"             --allow-unauthenticated             --cpu=1             --memory=1Gi             --concurrency=20             --min=1             --max=1             --no-cpu-throttling             --timeout=900             --set-env-vars="SPORT_GCS_BUCKET=$BUCKET,SPORT_GCS_OBJECT=sport-epg/slp-web.db,SPORT_TEMPLATE_OBJECT=sport-epg/template.xlsx,SPORT_FREE_SCRIPT_URL=https://script.google.com/macros/s/AKfycbwxn8PedNYTGeGO-2Ml-Uqz1sGXpd1ywD89UCcbYJm9aeYHW6KAw0-QwrQlEK0SU03B/exec,SPORT_SCHEDULER_SERVICE_ACCOUNT=$SCHEDULER_SA,SLP_PLAYWRIGHT_FALLBACK=true,OPENSERP_BASE_URL=$OPENSERP_URL,OPENSERP_AUTH_AUDIENCE=$OPENSERP_URL"             --set-secrets="SPORT_WEB_SECRET=slp-web-secret:latest,SPORT_WEB_USERS=slp-web-users:latest,SPORT_FREE_SCRIPT_KEY=slp-free-script-key:latest"
+          gcloud run deploy "$SERVICE"             --project="$PROJECT_ID"             --region="$REGION"             --image="$IMAGE"             --service-account="$RUNTIME_SA"             --allow-unauthenticated             --ingress=all             --default-url             --cpu=1             --memory=1Gi             --concurrency=20             --min=1             --max=1             --no-cpu-throttling             --timeout=900             --set-env-vars="SPORT_GCS_BUCKET=$BUCKET,SPORT_GCS_OBJECT=sport-epg/slp-web.db,SPORT_TEMPLATE_OBJECT=sport-epg/template.xlsx,SPORT_FREE_SCRIPT_URL=https://script.google.com/macros/s/AKfycbwxn8PedNYTGeGO-2Ml-Uqz1sGXpd1ywD89UCcbYJm9aeYHW6KAw0-QwrQlEK0SU03B/exec,SPORT_SCHEDULER_SERVICE_ACCOUNT=$SCHEDULER_SA,SLP_PLAYWRIGHT_FALLBACK=true,OPENSERP_BASE_URL=$OPENSERP_URL,OPENSERP_AUTH_AUDIENCE=$OPENSERP_URL"             --set-secrets="SPORT_WEB_SECRET=slp-web-secret:latest,SPORT_WEB_USERS=slp-web-users:latest,SPORT_FREE_SCRIPT_KEY=slp-free-script-key:latest"
 
       - name: Bind stable public Cloud Run URL
         shell: bash
@@ -198,6 +198,8 @@ jobs:
           gcloud run services update "$SERVICE" \
             --project="$PROJECT_ID" \
             --region="$REGION" \
+            --ingress=all \
+            --default-url \
             --update-env-vars="SPORT_PUBLIC_URL=$SERVICE_URL" \
             --quiet
 
