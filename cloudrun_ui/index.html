@@ -730,7 +730,7 @@ function startCollectTicker(){
    current=status.message||current;detail=status.detail||"";
    paint();
   }catch(e){}
- },1400);
+ },3000);
  paint();
  return ()=>{
   stopped=true;clearInterval(flip);clearInterval(poll);
@@ -740,11 +740,28 @@ $("collect").addEventListener("click",async()=>{
  $("collect").disabled=true;
  const stopTicker=startCollectTicker();
  try{
-  await api("/api/collect","POST",{allow_partial:true});
+  let started=false;
+  for(let attempt=0;attempt<5;attempt++){
+   try{
+    await api("/api/collect","POST",{allow_partial:true});
+    started=true;break;
+   }catch(e){
+    if(e.status!==429)throw e;
+    showCollectionMessage("Cloud Run занят, повторяю запуск...","Сбор не отменён");
+    await new Promise(resolve=>setTimeout(resolve,1200*(attempt+1)));
+   }
+  }
+  if(!started)throw new Error("Cloud Run занят. Попробуйте ещё раз через несколько секунд.");
   let result=null;
-  for(let attempt=0;attempt<800;attempt++){
-   await new Promise(resolve=>setTimeout(resolve,1500));
-   const status=await api("/api/collect/status");
+  for(let attempt=0;attempt<500;attempt++){
+   await new Promise(resolve=>setTimeout(resolve,3000));
+   let status;
+   try{
+    status=await api("/api/collect/status");
+   }catch(e){
+    if(e.status===429)continue;
+    throw e;
+   }
    if(!status.running&&status.result){
     result=status.result;
     break;
