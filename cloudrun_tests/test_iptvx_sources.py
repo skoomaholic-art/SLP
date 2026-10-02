@@ -38,12 +38,12 @@ class IptvxSourceTests(unittest.TestCase):
         self.assertEqual(stats["channels"]["Q LEAGUE"]["candidates"], 1)
 
     def test_gzip_extensionless_xmltv_is_decoded(self):
-        xml = b"""<tv>
+        xml = """<tv>
           <programme start="20261002150000 +0300" channel="eurosport1">
             <title>Теннис. ATP 500. Полуфинал</title>
             <category>Теннис</category>
           </programme>
-        </tv>"""
+        </tv>""".encode("utf-8")
         events, stats = parse_iptvx_xml(gzip.compress(xml))
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["channel"], "EUROSPORT 1")
