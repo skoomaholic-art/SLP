@@ -1090,7 +1090,7 @@ async def gmail_sync(request: Request):
             if request.app.state.free_mail_bridge:
                 result = await asyncio.to_thread(
                     freebridge.sync_inbox, request.app.state.database,
-                    allow_auto_import=False
+                    allow_auto_import=False, refresh_archive=True
                 )
             else:
                 result = await asyncio.to_thread(
@@ -1139,10 +1139,21 @@ async def scheduled_gmail_sync(request: Request):
         raise HTTPException(403, "Неизвестный сервисный аккаунт")
     async with request.app.state.collect_lock:
         try:
-            result = await asyncio.to_thread(
-                gmail.sync_inbox, request.app.state.database,
-                allow_auto_import=False
-            )
+            if request.app.state.free_mail_bridge:
+                result = await asyncio.to_thread(
+                    freebridge.sync_inbox,
+                    request.app.state.database,
+                    allow_auto_import=False,
+                    refresh_archive=True,
+                )
+            else:
+                result = await asyncio.to_thread(
+                    gmail.sync_inbox,
+                    request.app.state.database,
+                    allow_auto_import=False,
+                )
+        except freebridge.FreeDriveError as exc:
+            raise HTTPException(502, str(exc)) from exc
         except (gmail.GmailTransportError, gmail.GmailNotConfigured) as exc:
             raise _gmail_failure(exc) from exc
         # Only existing SLP editorial notices are sent; never mail bodies or Excel.
@@ -1382,16 +1393,19 @@ async def _run_collection(application: FastAPI) -> dict:
             )
             if mail_available:
                 try:
-                    importer = (
-                        freebridge.sync_inbox
-                        if application.state.free_mail_bridge
-                        else gmail.sync_inbox
-                    )
-                    result["mail"] = await asyncio.to_thread(
-                        importer,
-                        database,
-                        allow_auto_import=False,
-                    )
+                    if application.state.free_mail_bridge:
+                        result["mail"] = await asyncio.to_thread(
+                            freebridge.sync_inbox,
+                            database,
+                            allow_auto_import=False,
+                            refresh_archive=True,
+                        )
+                    else:
+                        result["mail"] = await asyncio.to_thread(
+                            gmail.sync_inbox,
+                            database,
+                            allow_auto_import=False,
+                        )
                 except freebridge.FreeDriveError as exc:
                     result["errors"].append(
                         "Почта/Drive: " + str(exc)[:160]
