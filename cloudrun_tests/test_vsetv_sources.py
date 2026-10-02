@@ -87,6 +87,7 @@ class VseTVSourceTests(unittest.TestCase):
         self.assertEqual(WEB_CHANNEL_IDS["МАТЧ! ПЛАНЕТА"], 32)
         self.assertEqual(WEB_CHANNEL_IDS["viju+ Sport"], 332)
         self.assertEqual(CHANNEL_IDS["Setanta Sports 1"], 771)
+        self.assertEqual(WEB_CHANNEL_IDS["Setanta Qazaqstan"], 1197)
 
     def test_one_specific_live_badge_and_moscow_midnight_rollover(self):
         raw = {

@@ -20,6 +20,7 @@ class Channel:
     official_site: str = ""
     supplier_source: str = ""
     secondary_guide: str = ""
+    iptvx_id: str = ""
     guide_backend: str = "tvplus"
     sport_hint: str = ""
 
@@ -32,6 +33,7 @@ CHANNELS = (
         "Setanta Sports 1",
         771,
         supplier_source="email_epg_setanta1",
+        iptvx_id="setanta1-kz",
     ),
     Channel(
         "SETANTA SPORTS 2",
@@ -40,12 +42,16 @@ CHANNELS = (
         "Setanta Sports 2",
         984,
         supplier_source="email_epg_setanta2",
+        iptvx_id="setanta2-kz",
     ),
     Channel(
         "SETANTA SPORTS KZ",
         "Setanta Sports KZ",
         "5f9984409e0766c2417d4073",
+        "Setanta Qazaqstan",
+        1197,
         supplier_source="email_epg_setantakz",
+        iptvx_id="setanta-kz",
     ),
     Channel(
         "QAZSPORT HD",
@@ -53,6 +59,7 @@ CHANNELS = (
         "5d385e7355153152ba34f5f2",
         official_site="https://qazsporttv.kz/ru/program",
         supplier_source="email_epg_qazsport",
+        iptvx_id="kazsport",
     ),
     Channel(
         "SPORT+ Qazaqstan",
@@ -60,18 +67,21 @@ CHANNELS = (
         "650a658f983c40152a652d79",
         official_site="https://sportplustv.kz/ru/tvguide",
         supplier_source="email_epg_sportplus",
+        iptvx_id="sport-plus-kz",
     ),
     Channel(
         "Q LEAGUE",
         "Q League",
         "64507c71071b52869ab93ab3",
         supplier_source="email_epg_qleague",
+        iptvx_id="q-sport-ext",
     ),
     Channel(
         "Q FOOTBALL",
         "Q Football",
         "6642f1b03816a50602c38f66",
         supplier_source="email_epg_qfootball",
+        iptvx_id="q-football-kz",
         sport_hint="Футбол",
     ),
     Channel(
@@ -79,6 +89,7 @@ CHANNELS = (
         "Q Arena",
         "5f4d1b72387cfb655279442f",
         supplier_source="email_epg_qarena",
+        iptvx_id="qsport-kz",
     ),
     Channel(
         "EUROSPORT 1",
@@ -86,6 +97,7 @@ CHANNELS = (
         "559d211778d72701950089f9",
         "EUROSPORT 1",
         535,
+        iptvx_id="eurosport1",
         guide_backend="mobikino",
     ),
     Channel(
@@ -94,6 +106,7 @@ CHANNELS = (
         "559d22f678d7270195008a26",
         "EUROSPORT 2",
         1082,
+        iptvx_id="eurosport2",
         guide_backend="mobikino",
     ),
     Channel(
@@ -102,6 +115,7 @@ CHANNELS = (
         "5d38606a551531590a663470",
         "viju+ Sport",
         332,
+        iptvx_id="viasat-sport",
     ),
     Channel(
         "KHL HD",
@@ -125,6 +139,7 @@ CHANNELS = (
         "5d385ea755153152ba34f60e",
         "МАТЧ! ПЛАНЕТА",
         32,
+        iptvx_id="match-planeta",
     ),
 )
 
@@ -146,6 +161,7 @@ VSETV_CHANNELS = {
         "viju+ Sport",
         "Setanta Sports 1",
         "Setanta Sports 2",
+        "Setanta Qazaqstan",
     )
 }
 TVPLUS_CHANNELS = {
@@ -154,3 +170,10 @@ TVPLUS_CHANNELS = {
     if channel.tvplus_id
 }
 CHANNEL_BY_NAME = {channel.name: channel for channel in CHANNELS}
+
+
+IPTVX_CHANNELS = {
+    channel.name: channel.iptvx_id
+    for channel in CHANNELS
+    if channel.iptvx_id
+}

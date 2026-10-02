@@ -41,6 +41,9 @@ from services.event_text_ru import normalize_event_fields, strip_bookmakers
 from services.source_routing import route_for_channel, runtime_source_names
 from services.supplier_overlay import apply_supplier_overlay
 from services.vsetv_sources import WEB_CHANNEL_IDS, refresh_vsetv_web_sources
+from services.iptvx_sources import refresh_iptvx_sources
+from services.event_api_validation import validate_events_with_public_apis
+from services.channel_normalization import canonical_channel_name
 from services.browser_schedule import browser_fallback_enabled, install_browser_for_python_runtime
 from services.epg_excel import (MAX_WORKBOOK_BYTES, InvalidEPG, import_parsed_epg,
                                imported_epg_status, imported_official_epg_status,
@@ -167,33 +170,7 @@ def clean(value: str) -> str:
 
 
 def channel_name(name: str) -> str:
-    raw = " ".join(str(name or "").split()).strip()
-    key = raw.casefold()
-    aliases = {
-        "qazsport": "QAZSPORT HD",
-        "qazsport hd": "QAZSPORT HD",
-        "setanta 1": "SETANTA SPORTS 1",
-        "setanta sports 1": "SETANTA SPORTS 1",
-        "setanta 2": "SETANTA SPORTS 2",
-        "setanta sports 2": "SETANTA SPORTS 2",
-        "setanta kz": "SETANTA SPORTS KZ",
-        "setanta sports kz": "SETANTA SPORTS KZ",
-        "setanta sports kazakhstan": "SETANTA SPORTS KZ",
-        "eurosport": "EUROSPORT 1",
-        "eurosport 1": "EUROSPORT 1",
-        "eurosport 2": "EUROSPORT 2",
-        "khl prime": "KHL PRIME",
-        "khl hd": "KHL HD",
-        "матч! планета": "МАТЧ! ПЛАНЕТА",
-        "матч планета": "МАТЧ! ПЛАНЕТА",
-        "sport+ qazaqstan": "SPORT+ Qazaqstan",
-        "sport+ kazakhstan": "SPORT+ Qazaqstan",
-        "q league": "Q LEAGUE",
-        "q arena": "Q ARENA",
-        "q football": "Q FOOTBALL",
-        "viju+ sport": "viju+ Sport",
-    }
-    return aliases.get(key, raw)
+    return canonical_channel_name(name)
 
 
 def event_rows(
@@ -291,12 +268,14 @@ def event_rows(
         source = str(record.get("source") or "")
         supplier = source.startswith("email_epg_")
         official_direct = source in {"qazsport", "sportplus"}
-        verified_web = source.startswith("web_vsetv_")
+        verified_vsetv = source.startswith("web_vsetv_")
+        verified_iptvx = source.startswith("web_iptvx_")
         return (
             int(record["active"]),
             int(supplier),
             int(official_direct),
-            int(verified_web),
+            int(verified_vsetv),
+            int(verified_iptvx),
             int(bool(record.get("tournament"))),
             -len(str(record.get("title") or "")),
         )
@@ -1414,6 +1393,8 @@ async def _run_collection(application: FastAPI) -> dict:
         "source_warnings": [],
         "official_sources": None,
         "vsetv": None,
+        "iptvx": None,
+        "event_api_validation": None,
         "mail": None,
     }
 
@@ -1452,8 +1433,8 @@ async def _run_collection(application: FastAPI) -> dict:
                 phase="fallbacks",
                 message="Проверяю резервные телегиды и LIVE-подтверждения",
                 detail=(
-                    "VseTV, Championat, Agent Reach и доступные "
-                    "подтверждающие страницы"
+                    "VseTV, iptvX XMLTV, Championat, Agent Reach и "
+                    "публичные API подтверждения событий"
                 ),
             )
             try:
@@ -1461,6 +1442,23 @@ async def _run_collection(application: FastAPI) -> dict:
             except Exception as exc:
                 result["errors"].append(
                     "Дополнительные телегиды: " + type(exc).__name__
+                )
+
+            try:
+                result["iptvx"] = await refresh_iptvx_sources(database)
+            except Exception as exc:
+                result["source_warnings"].append(
+                    "iptvX: " + type(exc).__name__
+                )
+
+            try:
+                candidates = event_rows(database, "", "")
+                result["event_api_validation"] = await validate_events_with_public_apis(
+                    candidates
+                )
+            except Exception as exc:
+                result["source_warnings"].append(
+                    "Проверка спортивных API: " + type(exc).__name__
                 )
 
             _set_collect_progress(

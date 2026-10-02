@@ -33,6 +33,8 @@ def _fallbacks(
     for value in extra:
         if value and value not in result:
             result.append(value)
+    if channel.iptvx_id and "iptvx_xmltv" not in result:
+        result.append("iptvx_xmltv")
     if channel.vsetv_id is not None and "vsetv_live_badge" not in result:
         result.append("vsetv_live_badge")
     guide = _guide_transport(channel)
@@ -40,6 +42,8 @@ def _fallbacks(
         result.append(guide)
     return tuple(result)
 
+
+EVENT_API_CONFIRMATIONS = ("espn_public", "thesportsdb")
 
 ROUTES = {
     "SETANTA SPORTS 1": ChannelRoute(
@@ -172,6 +176,20 @@ ROUTES = {
 }
 
 
+ROUTES = {
+    name: ChannelRoute(
+        channel=route.channel,
+        primary_transport=route.primary_transport,
+        fallback_transports=route.fallback_transports,
+        confirmation_transports=tuple(dict.fromkeys(
+            route.confirmation_transports + EVENT_API_CONFIRMATIONS
+        )),
+        agent_reach_role=route.agent_reach_role,
+    )
+    for name, route in ROUTES.items()
+}
+
+
 def route_for_channel(channel_name: str) -> ChannelRoute:
     return ROUTES[channel_name]
 
@@ -184,6 +202,8 @@ def runtime_source_names(channel: Channel) -> tuple[str, ...]:
         names.append("sportplus")
     if channel.vsetv_id is not None:
         names.append("web_vsetv_" + str(channel.vsetv_id))
+    if channel.iptvx_id:
+        names.append("web_iptvx_" + channel.iptvx_id)
     if channel.tvplus_id:
         names.append("tvguide")
     return tuple(names)
