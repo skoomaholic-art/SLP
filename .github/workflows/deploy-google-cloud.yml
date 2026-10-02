@@ -34,7 +34,7 @@ permissions:
 
 concurrency:
   group: slp-google-cloud-production
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
