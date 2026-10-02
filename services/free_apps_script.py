@@ -360,7 +360,15 @@ def sync_inbox(
         ).fetchone()
     client = ScriptClient()
     if refresh_archive:
-        client.scan()
+        try:
+            client.scan()
+        except FreeDriveError as exc:
+            # Backward compatibility with the currently published Apps Script
+            # revision. Older bridge deployments do not know the authenticated
+            # "scan" operation yet; in that case continue with the latest
+            # hourly manifest instead of failing the entire SLP collection.
+            if "unknown operation" not in str(exc).casefold():
+                raise
     offset = int(saved["next_offset"]) if saved else 0
     created = reviewed = auto_imported = 0
     visited = set()
