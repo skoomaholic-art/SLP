@@ -33,7 +33,7 @@ CHANNELS = (
         "Setanta Sports 1",
         771,
         supplier_source="email_epg_setanta1",
-        iptvx_id="setanta1-kz",
+        iptvx_id="setanta-sports",
     ),
     Channel(
         "SETANTA SPORTS 2",
@@ -42,7 +42,7 @@ CHANNELS = (
         "Setanta Sports 2",
         984,
         supplier_source="email_epg_setanta2",
-        iptvx_id="setanta2-kz",
+        iptvx_id="setanta-sports-plus",
     ),
     Channel(
         "SETANTA SPORTS KZ",
@@ -123,6 +123,7 @@ CHANNELS = (
         "56cf2d9c4e2e67121b9d66ee",
         "KHL HD",
         1641,
+        iptvx_id="kxl",
         sport_hint="Хоккей",
     ),
     Channel(
@@ -131,6 +132,7 @@ CHANNELS = (
         "56cf2e264e2e67121b9d66fb",
         "KHL PRIME",
         806,
+        iptvx_id="kxl-hd",
         sport_hint="Хоккей",
     ),
     Channel(

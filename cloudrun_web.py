@@ -42,7 +42,7 @@ from services.event_text_ru import normalize_event_fields, strip_bookmakers
 from services.source_routing import route_for_channel, runtime_source_names
 from services.supplier_overlay import apply_supplier_overlay
 from services.vsetv_sources import WEB_CHANNEL_IDS, refresh_vsetv_web_sources
-from services.iptvx_sources import refresh_iptvx_sources
+from services.iptvx_sources import page_url_for, refresh_iptvx_sources
 from services.event_api_validation import validate_events_with_public_apis
 from services.channel_normalization import canonical_channel_name
 from services.browser_schedule import browser_fallback_enabled, install_browser_for_python_runtime
@@ -802,6 +802,7 @@ def _source_status(request: Request) -> dict:
             "guide_sources": sources,
             "official_site": channel.official_site,
             "secondary_guide": channel.secondary_guide,
+            "iptvx_page": page_url_for(channel.name),
             "provider_channel_id": channel.tvplus_id or None,
             "source_verified": bool(count),
             "supplier_expected": bool(channel.supplier_source),

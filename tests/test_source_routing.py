@@ -101,8 +101,11 @@ class SourceRoutingTests(unittest.TestCase):
         self.assertTrue(
             any(name.startswith("web_iptvx_") for name in by_name["QAZSPORT HD"])
         )
-        self.assertFalse(
+        self.assertTrue(
             any(name.startswith("web_iptvx_") for name in by_name["KHL PRIME"])
+        )
+        self.assertTrue(
+            any(name.startswith("web_iptvx_") for name in by_name["KHL HD"])
         )
 
 
