@@ -49,6 +49,13 @@ _PAGE_URL = {
     channel: PAGE_BASE_URL + "/" + tvg_id
     for channel, tvg_id in IPTVX_CHANNELS.items()
 }
+# Retired ids from the first aggregate-XML integration. Successful direct-page
+# refreshes deactivate these snapshots in the current window so stale rows
+# cannot survive a channel-id correction.
+_LEGACY_SOURCES = {
+    "SETANTA SPORTS 1": ("web_iptvx_setanta1-kz",),
+    "SETANTA SPORTS 2": ("web_iptvx_setanta2-kz",),
+}
 
 _MONTHS = {
     "января": 1,
@@ -523,6 +530,16 @@ async def refresh_iptvx_sources(database) -> dict:
         for event in events:
             by_day[event["date"]].append(event)
             scope_days.add(event["date"])
+
+        if channel in direct and scope_days:
+            for legacy_source in _LEGACY_SOURCES.get(channel, ()):
+                for day in sorted(scope_days):
+                    database.upsert_source_snapshot(
+                        run_id=run_id,
+                        source=legacy_source,
+                        scope_date=day,
+                        events=[],
+                    )
 
         if not scope_days:
             database.record_parser_run(
