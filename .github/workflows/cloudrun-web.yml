@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "Dockerfile"
+      - "Dockerfile.openserp"
       - ".dockerignore"
       - "requirements.txt"
       - "requirements-cloudrun.txt"
@@ -13,6 +14,7 @@ on:
       - "parsers/championat.py"
       - "parsers/qazsport_complete.py"
       - "verifiers/broadcast_occurrence.py"
+      - "verifiers/web_search.py"
       - "services/epg_excel.py"
       - "services/official_supplier_excel.py"
       - "services/editorial_export.py"
@@ -27,6 +29,8 @@ on:
       - "storage/database.py"
       - "scripts/cloudrun_users.py"
       - ".github/workflows/cloudrun-web.yml"
+      - ".github/workflows/deploy-google-cloud.yml"
+      - "infra/gcp/**"
   workflow_dispatch:
 
 jobs:
