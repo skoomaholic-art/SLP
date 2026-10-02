@@ -490,8 +490,11 @@ async def lifespan(application: FastAPI):
     application.state.collect_progress = {
         "running": False,
         "phase": "idle",
-        "message": "Сбор ещё не запускался",
-        "detail": "",
+        "message": "Текущая сетка загружена",
+        "detail": (
+            "Нажмите «Собрать расписание», чтобы вручную обновить сайты, API "
+            f"и почту · Событий в базе: {database.active_event_count()}"
+        ),
         "updated_at": datetime.now(KZ_TIMEZONE).isoformat(timespec="seconds"),
     }
     browser_install_task = None
@@ -1563,8 +1566,8 @@ def collect_status(request: Request):
     return dict(getattr(request.app.state, "collect_progress", {
         "running": False,
         "phase": "idle",
-        "message": "Сбор ещё не запускался",
-        "detail": "",
+        "message": "Текущая сетка загружена",
+        "detail": "Нажмите «Собрать расписание», чтобы вручную обновить источники",
     }))
 
 

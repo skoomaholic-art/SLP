@@ -51,6 +51,7 @@ _PHRASES = (
     (r"\bК[өо]ркем\s+гимнастика\b", "Художественная гимнастика"),
     (r"\bСадақ\s+ату\b", "Стрельба из лука"),
     (r"\bСуға\s+секіру\b", "Прыжки в воду"),
+    (r"\bГрек(?:о)?[-\s]?рим(?:ская)?\s+(?:к[үу]рес[іи]|борьба)\b", "Греко-римская борьба"),
     (r"\bКомандалық\s+жарыс\b", "Командные соревнования"),
     (r"\bЖекелей\s+жарыс\b", "Личные соревнования"),
     (r"\bӘлем\s+чемпионаты\b", "Чемпионат мира"),
@@ -186,6 +187,11 @@ _CANONICAL_TOURNAMENT_PREFIXES = (
 def _canonicalize_tournament_order(text: str) -> str:
     value = str(text or "")
     value = re.sub(
+        r"(?iu)^ХХ(?=\s+Летние\s+Азиатские\s+игры\b)",
+        "XX",
+        value,
+    )
+    value = re.sub(
         r"(?iu)^УЕФА\s+Лига\s+наций\b",
         "Лига наций УЕФА",
         value,
@@ -248,6 +254,12 @@ _PROPER_CASE_WORDS = {
     "нба": "НБА",
     "мма": "ММА",
 }
+
+
+def _restore_protected_brand_case(text: str) -> str:
+    value = re.sub(r"(?iu)\bALASH\s+PRIDE\b", "ALASH PRIDE", str(text or ""))
+    value = re.sub(r"(?iu)\bACA(?=\s*\d)", "ACA", value)
+    return value
 
 
 def strip_bookmakers(value: str) -> str:
@@ -408,6 +420,7 @@ def to_russian_text(value: str) -> str:
     text = _transliterate_remaining_latin(text)
     text = _normalize_all_caps(text)
     text = _normalize_mixed_caps(text)
+    text = _restore_protected_brand_case(text)
     text = re.sub(r"\s{2,}", " ", text)
     text = re.sub(r"\s+([,.:;)])", r"\1", text)
     text = re.sub(r"([(])\s+", r"\1", text)
@@ -492,6 +505,30 @@ def normalize_event_fields(*, title: str, sport: str, tournament: str) -> dict[s
     result_tournament = _canonicalize_tournament_order(
         result_tournament
     )
+
+    demographic = re.match(
+        r"(?iu)^(Женщины|Мужчины|Девушки|Юноши)\b(?:\s*[,.:;-]\s*(.*))?$",
+        result_title,
+    )
+    if demographic and result_sport:
+        group = demographic.group(1).capitalize()
+        remainder = (demographic.group(2) or "").strip(" .,:;-")
+        specific = re.match(
+            r"(?iu)^(Греко-римская борьба|Вольная борьба)\b(?:[.,]\s*)?(.*)$",
+            remainder,
+        )
+        if specific:
+            discipline = specific.group(1)
+            tail = (specific.group(2) or "").strip(" .,:;-")
+            result_title = f"{discipline}. {group}"
+            if tail:
+                result_title += ". " + tail
+        else:
+            result_title = f"{result_sport}. {group}"
+            if remainder:
+                result_title += ". " + remainder
+
+    result_title = _restore_protected_brand_case(result_title)
 
     return {
         "title": strip_bookmakers(result_title),

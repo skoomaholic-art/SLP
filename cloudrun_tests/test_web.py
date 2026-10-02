@@ -108,6 +108,21 @@ class WebTests(unittest.TestCase):
         self.assertNotIn('[...(data.websites||[]),...(data.excel||[])]', index)
         self.assertIn('approve.textContent="Добавить в расписание"', index)
 
+    def test_idle_status_and_event_cards_are_contextual(self):
+        index = (
+            Path(__file__).resolve().parents[1] /
+            "cloudrun_ui" / "index.html"
+        ).read_text()
+        web_source = (
+            Path(__file__).resolve().parents[1] /
+            "cloudrun_web.py"
+        ).read_text()
+        self.assertIn("function eventMeta(ev)", index)
+        self.assertIn('label.textContent=eventMeta(ev)', index)
+        self.assertNotIn("Сбор ещё не запускался", web_source)
+        self.assertIn("Текущая сетка загружена", web_source)
+        self.assertIn("Событий в базе:", web_source)
+
     def test_source_inventory_covers_exact_14_channels_without_duplicate_web_cards(self):
         with tempfile.TemporaryDirectory() as directory:
             database = SLPDatabase(Path(directory) / "sport.db")
