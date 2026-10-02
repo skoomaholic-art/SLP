@@ -5,26 +5,16 @@ on:
   workflow_dispatch:
     inputs:
       confirmation:
-        description: "Type DEPLOY to release this branch to Google Cloud production"
+        description: "Type DEPLOY to release the production branch to Google Cloud"
         required: true
         type: string
-  push:
+  workflow_run:
+    workflows:
+      - "SLP v2 CI"
+    types:
+      - completed
     branches:
       - feature/free-apps-script-gmail-drive
-    paths:
-      - "Dockerfile"
-      - ".dockerignore"
-      - "requirements.txt"
-      - "requirements-cloudrun.txt"
-      - "cloudrun_web.py"
-      - "cloudrun_ui/**"
-      - "agents/**"
-      - "parsers/**"
-      - "services/**"
-      - "verifiers/**"
-      - "storage/**"
-      - "integrations/google_apps_script/**"
-      - ".github/workflows/deploy-google-cloud.yml"
 
 permissions:
   contents: read
@@ -49,12 +39,20 @@ env:
 
 jobs:
   deploy:
-    if: github.event_name == 'push' || inputs.confirmation == 'DEPLOY'
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.confirmation == 'DEPLOY') ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: feature/free-apps-script-gmail-drive
+
+      - name: Resolve production commit
+        shell: bash
+        run: echo "SOURCE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - uses: actions/setup-python@v5
         with:
@@ -94,7 +92,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          OPEN_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/slp-openserp:${GITHUB_SHA}"
+          OPEN_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/slp-openserp:${SOURCE_SHA}"
           echo "OPEN_IMAGE=$OPEN_IMAGE" >> "$GITHUB_ENV"
           docker build -f Dockerfile.openserp -t "$OPEN_IMAGE" .
           docker push "$OPEN_IMAGE"
@@ -174,7 +172,7 @@ PY
         shell: bash
         run: |
           set -euo pipefail
-          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/slp-web:${GITHUB_SHA}"
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/slp-web:${SOURCE_SHA}"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
           docker build -t "$IMAGE" .
           docker push "$IMAGE"
