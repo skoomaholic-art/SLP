@@ -546,8 +546,9 @@ async def lifespan(application: FastAPI):
 app = FastAPI(title="SLP Sport EPG Web", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 
-@app.get("/healthz")
-def healthz(request: Request):
+@app.get("/health")
+@app.get("/healthz", include_in_schema=False)
+def health(request: Request):
     database = request.app.state.database
     return {"status": "ok", "runtime": "web", "telegram_polling": False,
             "events": database.active_event_count(),
