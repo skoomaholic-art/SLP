@@ -290,7 +290,7 @@ function renderSources(data){
   const excelReceived=!!(excel&&excel.imported_at);
   const origins=[];
   if(excelReceived)origins.push("Excel");
-  if(parsing)origins.push("парсинг");
+  if(parsing)origins.push("парсинга");
 
   const row=document.createElement("div");row.className="source-item";
   const logo=channelLogo(entry.channel);if(logo)row.append(logo);
@@ -304,7 +304,7 @@ function renderSources(data){
     parsing?web.checked_at:"",
     excelReceived?excel.imported_at:""
    ));
-   state.textContent="Данные получены: "+origins.join(" + ")+(stamp?" · "+stamp:"");
+   state.textContent="Данные получены с "+origins.join(" + ")+(stamp?" · "+stamp:"");
   }else{
    state.textContent="Данные не найдены";
   }
@@ -741,14 +741,14 @@ $("collect").addEventListener("click",async()=>{
  const stopTicker=startCollectTicker();
  try{
   let started=false;
-  for(let attempt=0;attempt<5;attempt++){
+  for(let attempt=0;attempt<8;attempt++){
    try{
     await api("/api/collect","POST",{allow_partial:true});
     started=true;break;
    }catch(e){
     if(e.status!==429)throw e;
     showCollectionMessage("Cloud Run занят, повторяю запуск...","Сбор не отменён");
-    await new Promise(resolve=>setTimeout(resolve,1200*(attempt+1)));
+    await new Promise(resolve=>setTimeout(resolve,Math.min(6000,1200*(attempt+1))));
    }
   }
   if(!started)throw new Error("Cloud Run занят. Попробуйте ещё раз через несколько секунд.");
