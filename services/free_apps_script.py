@@ -81,7 +81,7 @@ class ScriptClient:
         ).hexdigest()
 
     def _call(self, operation: str, *, argument: str = "",
-              content: dict | None = None) -> dict:
+              content: dict | None = None, timeout_seconds: int = 32) -> dict:
         timestamp = str(int(time.time() * 1000))
         method = "POST" if content is not None else "GET"
         body = None
@@ -107,7 +107,7 @@ class ScriptClient:
                      "User-Agent": "SLP-FreeDrive-Bridge/1.0"},
         )
         try:
-            with urlopen(request, timeout=32) as response:
+            with urlopen(request, timeout=timeout_seconds) as response:
                 raw = response.read(MAX_HTTP_BYTES + 1)
         except (URLError, HTTPError, OSError) as exc:
             raise FreeDriveError(
@@ -148,6 +148,12 @@ class ScriptClient:
             "version": 1, "ciphertext": ciphertext,
             "previousSha": previous_sha,
         })
+
+    def scan(self) -> dict:
+        # Force Apps Script to scan Gmail immediately instead of waiting for
+        # the hourly trigger. A busy mailbox can take longer than the normal
+        # manifest/file request timeout.
+        return self._call("scan", timeout_seconds=300)
 
     def manifest(self, offset: int) -> dict:
         return self._call("manifest", argument=str(offset))
@@ -322,8 +328,18 @@ def health(database) -> dict:
             "script_last_scan_at": scan}
 
 
-def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
-    """Incremental ingest of already-archived files, no Gmail OAuth or GCS."""
+def sync_inbox(
+    database,
+    *,
+    allow_auto_import: bool = True,
+    refresh_archive: bool = False,
+) -> dict:
+    """Incremental ingest of archived supplier mail.
+
+    refresh_archive=True asks Apps Script to scan Gmail immediately before the
+    manifest is read, so a manual SLP collection does not wait for the hourly
+    Apps Script trigger.
+    """
     gmail.init_gmail_schema(database)
     with database._connect() as conn:
         conn.execute(
@@ -343,6 +359,8 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
             "SELECT next_offset FROM free_bridge_cursor WHERE id=1"
         ).fetchone()
     client = ScriptClient()
+    if refresh_archive:
+        client.scan()
     offset = int(saved["next_offset"]) if saved else 0
     created = reviewed = auto_imported = 0
     visited = set()

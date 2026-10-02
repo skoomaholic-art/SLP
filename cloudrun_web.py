@@ -423,20 +423,60 @@ class BucketSnapshot:
             Path(backup_path).unlink(missing_ok=True)
 
 
+def _prepare_primary_storage():
+    """Prefer GCS on Google Cloud while keeping Apps Script as mail transport.
+
+    If the GCS database object is empty on the first Google Cloud boot and the
+    legacy Apps Script/Drive bridge is configured, restore the existing Drive
+    snapshot once and immediately migrate it into GCS. After that, GCS is the
+    authoritative database backup and Apps Script is used only for mail/Excel.
+    """
+    if GCS_BUCKET:
+        bucket = BucketSnapshot(GCS_BUCKET)
+        if bucket.generation == 0 and freebridge.enabled():
+            drive = freebridge.FreeDriveSnapshot(DB_PATH)
+            if not getattr(drive, "initialized_empty", False) and DB_PATH.exists():
+                bucket.save()
+        return bucket
+    if freebridge.enabled():
+        return freebridge.FreeDriveSnapshot(DB_PATH)
+    return None
+
+
+def _migrate_template_to_gcs_if_needed() -> None:
+    if not (GCS_BUCKET and freebridge.enabled()):
+        return
+    try:
+        from google.cloud import storage
+        blob = storage.Client().bucket(GCS_BUCKET).blob(TEMPLATE_OBJECT)
+        if blob.exists():
+            return
+        result = freebridge.ScriptClient().template()
+        if not result.get("exists"):
+            return
+        raw = base64.b64decode(result["data"], validate=True)
+        if not raw or len(raw) > 12 * 1024 * 1024:
+            return
+        if hashlib.sha256(raw).hexdigest() != result.get("sha256"):
+            return
+        blob.upload_from_string(
+            raw,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            if_generation_match=0,
+        )
+    except Exception:
+        import logging
+        logging.getLogger("uvicorn.error").exception(
+            "SLP template migration Drive -> GCS failed"
+        )
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if freebridge.enabled() and GCS_BUCKET:
-        raise RuntimeError(
-            "Бесплатный Drive и платный GCS одновременно не настраиваются"
-        )
-    # Restore encrypted SQLite from the owner's private Drive BEFORE schema
-    # initialization, never accept an empty DB after a failed restore.
-    application.state.backup = (
-        freebridge.FreeDriveSnapshot(DB_PATH) if freebridge.enabled()
-        else BucketSnapshot(GCS_BUCKET) if GCS_BUCKET else None
-    )
+    application.state.backup = _prepare_primary_storage()
     application.state.free_mail_bridge = freebridge.enabled()
+    _migrate_template_to_gcs_if_needed()
     database = SLPDatabase(DB_PATH)
     initialize_epg_imports(database)
     gmail.init_gmail_schema(database)
@@ -509,6 +549,75 @@ def healthz(request: Request):
     return {"status": "ok", "runtime": "web", "telegram_polling": False,
             "events": database.active_event_count(),
             "durable_storage": bool(request.app.state.backup)}
+
+
+@app.get("/api/migration/snapshot")
+async def migration_snapshot(request: Request):
+    """One-time Render -> Google Cloud database transfer.
+
+    Disabled unless SPORT_ENABLE_GCP_MIGRATION=true. Access requires a Google
+    OIDC token issued to the configured Google Cloud deployer service account.
+    The response is a gzip-compressed SQLite online backup; no environment
+    secrets are returned.
+    """
+    if os.getenv("SPORT_ENABLE_GCP_MIGRATION", "").casefold() not in {
+        "1", "true", "yes",
+    }:
+        raise HTTPException(404, "Migration endpoint disabled")
+    allowed = os.getenv("SPORT_MIGRATION_SERVICE_ACCOUNT", "").strip()
+    audience = PUBLIC_URL + "/api/migration/snapshot"
+    if not allowed or not PUBLIC_URL:
+        raise HTTPException(503, "Migration identity is not configured")
+    authorization = request.headers.get("authorization", "")
+    if not authorization.startswith("Bearer ") or len(authorization) > 8192:
+        raise HTTPException(401, "Google OIDC token required")
+    try:
+        from google.oauth2 import id_token
+        from google.auth.transport.requests import Request as GoogleRequest
+        claims = await asyncio.to_thread(
+            id_token.verify_oauth2_token,
+            authorization[7:],
+            GoogleRequest(),
+            audience,
+        )
+    except Exception:
+        raise HTTPException(401, "Google OIDC token rejected") from None
+    if (
+        str(claims.get("email") or "").casefold() != allowed.casefold()
+        or not claims.get("email_verified", False)
+    ):
+        raise HTTPException(403, "Unknown migration identity")
+
+    import gzip
+    with tempfile.NamedTemporaryFile(
+        dir=DB_PATH.parent, suffix=".db", delete=False,
+    ) as tmp:
+        snapshot_path = Path(tmp.name)
+    try:
+        source = sqlite3.connect(DB_PATH)
+        target = sqlite3.connect(snapshot_path)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+            source.close()
+        with sqlite3.connect(snapshot_path) as checked:
+            quick = checked.execute("PRAGMA quick_check").fetchone()
+        if not quick or quick[0] != "ok":
+            raise HTTPException(500, "SQLite snapshot failed integrity check")
+        raw = await asyncio.to_thread(snapshot_path.read_bytes)
+        packed = await asyncio.to_thread(gzip.compress, raw, 6)
+        return Response(
+            content=packed,
+            media_type="application/gzip",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Disposition": 'attachment; filename="slp-render.db.gz"',
+                "X-SLP-SHA256": hashlib.sha256(raw).hexdigest(),
+            },
+        )
+    finally:
+        snapshot_path.unlink(missing_ok=True)
 
 
 @app.get("/")
@@ -1050,7 +1159,7 @@ async def gmail_sync(request: Request):
             if request.app.state.free_mail_bridge:
                 result = await asyncio.to_thread(
                     freebridge.sync_inbox, request.app.state.database,
-                    allow_auto_import=False
+                    allow_auto_import=False, refresh_archive=True
                 )
             else:
                 result = await asyncio.to_thread(
@@ -1099,10 +1208,21 @@ async def scheduled_gmail_sync(request: Request):
         raise HTTPException(403, "Неизвестный сервисный аккаунт")
     async with request.app.state.collect_lock:
         try:
-            result = await asyncio.to_thread(
-                gmail.sync_inbox, request.app.state.database,
-                allow_auto_import=False
-            )
+            if request.app.state.free_mail_bridge:
+                result = await asyncio.to_thread(
+                    freebridge.sync_inbox,
+                    request.app.state.database,
+                    allow_auto_import=False,
+                    refresh_archive=True,
+                )
+            else:
+                result = await asyncio.to_thread(
+                    gmail.sync_inbox,
+                    request.app.state.database,
+                    allow_auto_import=False,
+                )
+        except freebridge.FreeDriveError as exc:
+            raise HTTPException(502, str(exc)) from exc
         except (gmail.GmailTransportError, gmail.GmailNotConfigured) as exc:
             raise _gmail_failure(exc) from exc
         # Only existing SLP editorial notices are sent; never mail bodies or Excel.
@@ -1160,12 +1280,24 @@ async def scheduled_refresh(request: Request):
             )
         except Exception as exc:
             results["errors"].append("vsetv: " + type(exc).__name__)
-        if gmail.status(request.app.state.database)["connected"]:
+        if (request.app.state.free_mail_bridge
+                or gmail.status(request.app.state.database)["connected"]):
             try:
-                results["gmail"] = await asyncio.to_thread(
-                    gmail.sync_inbox, request.app.state.database,
-                    allow_auto_import=False,
-                )
+                if request.app.state.free_mail_bridge:
+                    results["gmail"] = await asyncio.to_thread(
+                        freebridge.sync_inbox,
+                        request.app.state.database,
+                        allow_auto_import=False,
+                        refresh_archive=True,
+                    )
+                else:
+                    results["gmail"] = await asyncio.to_thread(
+                        gmail.sync_inbox,
+                        request.app.state.database,
+                        allow_auto_import=False,
+                    )
+            except freebridge.FreeDriveError as exc:
+                results["errors"].append("gmail_bridge: " + type(exc).__name__)
             except (gmail.GmailTransportError, gmail.GmailNotConfigured) as exc:
                 results["errors"].append("gmail: " + type(exc).__name__)
         await _save_state(request)
@@ -1342,16 +1474,19 @@ async def _run_collection(application: FastAPI) -> dict:
             )
             if mail_available:
                 try:
-                    importer = (
-                        freebridge.sync_inbox
-                        if application.state.free_mail_bridge
-                        else gmail.sync_inbox
-                    )
-                    result["mail"] = await asyncio.to_thread(
-                        importer,
-                        database,
-                        allow_auto_import=False,
-                    )
+                    if application.state.free_mail_bridge:
+                        result["mail"] = await asyncio.to_thread(
+                            freebridge.sync_inbox,
+                            database,
+                            allow_auto_import=False,
+                            refresh_archive=True,
+                        )
+                    else:
+                        result["mail"] = await asyncio.to_thread(
+                            gmail.sync_inbox,
+                            database,
+                            allow_auto_import=False,
+                        )
                 except freebridge.FreeDriveError as exc:
                     result["errors"].append(
                         "Почта/Drive: " + str(exc)[:160]
@@ -1479,6 +1614,19 @@ def template_status(request: Request):
     if local and local.is_file():
         return {"available": True, "location": "local", "name": local.name,
                 "message": "Постоянство локального файла зависит от диска хостинга"}
+    if GCS_BUCKET:
+        try:
+            from google.cloud import storage
+            blob = storage.Client().bucket(GCS_BUCKET).blob(TEMPLATE_OBJECT)
+            return {
+                "available": bool(blob.exists()),
+                "location": "gcs",
+                "name": TEMPLATE_OBJECT if blob.exists() else "",
+                "message": "Шаблон хранится в Google Cloud Storage",
+            }
+        except Exception as exc:
+            return {"available": False, "location": "error",
+                    "message": type(exc).__name__}
     if request.app.state.free_mail_bridge:
         try:
             result = freebridge.ScriptClient().template()
@@ -1491,18 +1639,9 @@ def template_status(request: Request):
         except freebridge.FreeDriveError as exc:
             return {"available": False, "location": "error",
                     "message": str(exc)[:180]}
-    if not GCS_BUCKET:
-        return {"available": False, "location": "not_configured",
-                "message": ("Настройте SPORT_TEMPLATE_PATH или постоянное хранилище"
-                            if not local else "По SPORT_TEMPLATE_PATH файл пока не найден")}
-    try:
-        from google.cloud import storage
-        blob = storage.Client().bucket(GCS_BUCKET).blob(TEMPLATE_OBJECT)
-        return {"available": bool(blob.exists()), "location": "gcs",
-                "name": TEMPLATE_OBJECT if blob.exists() else ""}
-    except Exception as exc:
-        return {"available": False, "location": "error",
-                "message": type(exc).__name__}
+    return {"available": False, "location": "not_configured",
+            "message": ("Настройте SPORT_TEMPLATE_PATH или постоянное хранилище"
+                        if not local else "По SPORT_TEMPLATE_PATH файл пока не найден")}
 
 
 @app.post("/api/template")
@@ -1510,8 +1649,8 @@ async def upload_template(request: Request, upload: UploadFile = File(...)):
     require_admin(request)
     origin_guard(request)
     local_target = _local_template_path()
-    if (not local_target and not request.app.state.free_mail_bridge
-            and (not GCS_BUCKET or not request.app.state.backup)):
+    if (not local_target and not GCS_BUCKET
+            and not request.app.state.free_mail_bridge):
         raise HTTPException(503, "Настройте постоянное хранилище или локальный путь")
     if not str(upload.filename or "").casefold().endswith(".xlsx"):
         raise HTTPException(422, "Требуется XLSX-шаблон")
@@ -1564,7 +1703,7 @@ async def upload_template(request: Request, upload: UploadFile = File(...)):
             "bytes": len(raw), "destination": "local",
             "warning": "Без постоянного тома шаблон исчезнет при перезапуске сервера",
         }
-    if request.app.state.free_mail_bridge:
+    if request.app.state.free_mail_bridge and not GCS_BUCKET:
         try:
             async with request.app.state.collect_lock:
                 client = freebridge.ScriptClient()
@@ -1607,6 +1746,15 @@ def load_template():
     local = _local_template_path()
     if local and local.is_file():
         return load_workbook(local)
+    if GCS_BUCKET:
+        try:
+            from google.cloud import storage
+            raw = storage.Client().bucket(GCS_BUCKET).blob(
+                TEMPLATE_OBJECT
+            ).download_as_bytes()
+            return load_workbook(BytesIO(raw))
+        except Exception:
+            pass
     if freebridge.enabled():
         try:
             result = freebridge.ScriptClient().template()
@@ -1619,13 +1767,6 @@ def load_template():
             return load_workbook(BytesIO(raw))
         except freebridge.FreeDriveError as exc:
             raise HTTPException(503, "Drive: " + str(exc)) from exc
-    if GCS_BUCKET:
-        try:
-            from google.cloud import storage
-            raw = storage.Client().bucket(GCS_BUCKET).blob(TEMPLATE_OBJECT).download_as_bytes()
-            return load_workbook(BytesIO(raw))
-        except Exception:
-            pass
     raise HTTPException(503, "Загрузите утверждённый Excel-шаблон в SPORT_TEMPLATE_PATH "
                         "или Google Cloud Storage: " + TEMPLATE_OBJECT)
 

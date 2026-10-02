@@ -1,0 +1,186 @@
+name: Deploy SLP to Google Cloud
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type DEPLOY to release this branch to Google Cloud production"
+        required: true
+        type: string
+  push:
+    branches:
+      - feature/free-apps-script-gmail-drive
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "requirements.txt"
+      - "requirements-cloudrun.txt"
+      - "cloudrun_web.py"
+      - "cloudrun_ui/**"
+      - "agents/**"
+      - "parsers/**"
+      - "services/**"
+      - "verifiers/**"
+      - "storage/**"
+      - "integrations/google_apps_script/**"
+      - ".github/workflows/deploy-google-cloud.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: slp-google-cloud-production
+  cancel-in-progress: false
+
+env:
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+  REGION: ${{ vars.GCP_REGION }}
+  BUCKET: ${{ vars.GCP_BUCKET }}
+  WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+  DEPLOYER_SA: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+  RUNTIME_SA: ${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}
+  SCHEDULER_SA: ${{ vars.GCP_SCHEDULER_SERVICE_ACCOUNT }}
+  SERVICE: slp-web
+  AR_REPO: slp
+
+jobs:
+  deploy:
+    if: github.event_name == 'push' || inputs.confirmation == 'DEPLOY'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Validate Google Cloud bootstrap variables
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in PROJECT_ID PROJECT_NUMBER REGION BUCKET WIF_PROVIDER DEPLOYER_SA RUNTIME_SA SCHEDULER_SA; do
+            value="${!name:-}"
+            if [ -z "$value" ]; then
+              echo "::error::Missing GitHub repository variable $name"
+              exit 1
+            fi
+          done
+
+      - name: Install dependencies and run web regression
+        run: |
+          python -m pip install -r requirements.txt -r requirements-cloudrun.txt
+          python -m compileall -q cloudrun_web.py services integrations/google_apps_script cloudrun_tests
+          PYTHONPATH=. python -m unittest discover -s cloudrun_tests -p "test_*.py" -v
+
+      - name: Authenticate to Google Cloud with GitHub OIDC
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOYER_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Artifact Registry Docker auth
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Migrate current Render SQLite to GCS once
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET="gs://$BUCKET/sport-epg/slp-web.db"
+          MIGRATION_URL="https://slp-web.onrender.com/api/migration/snapshot"
+          if gcloud storage ls "$TARGET" >/dev/null 2>&1; then
+            echo "GCS database already exists; migration is not repeated."
+          else
+            ID_TOKEN="$(gcloud auth print-identity-token               --audiences="$MIGRATION_URL"               --include-email)"
+            curl --fail --silent --show-error               -H "Authorization: Bearer $ID_TOKEN"               "$MIGRATION_URL"               -o /tmp/slp-render.db.gz
+            python - <<'PY'
+import gzip, hashlib, sqlite3
+from pathlib import Path
+packed = Path("/tmp/slp-render.db.gz").read_bytes()
+raw = gzip.decompress(packed)
+target = Path("/tmp/slp-render.db")
+target.write_bytes(raw)
+with sqlite3.connect(target) as db:
+    row = db.execute("PRAGMA quick_check").fetchone()
+if not row or row[0] != "ok":
+    raise SystemExit("Render SQLite snapshot failed quick_check")
+print("migrated_bytes=", len(raw))
+print("sha256=", hashlib.sha256(raw).hexdigest())
+PY
+            gcloud storage cp /tmp/slp-render.db "$TARGET"
+          fi
+
+      - name: Build and push exact production image
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/slp-web:${GITHUB_SHA}"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Deploy Cloud Run web service
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run deploy "$SERVICE"             --project="$PROJECT_ID"             --region="$REGION"             --image="$IMAGE"             --service-account="$RUNTIME_SA"             --allow-unauthenticated             --cpu=1             --memory=1Gi             --concurrency=1             --min=1             --max=1             --no-cpu-throttling             --timeout=900             --set-env-vars="SPORT_GCS_BUCKET=$BUCKET,SPORT_GCS_OBJECT=sport-epg/slp-web.db,SPORT_TEMPLATE_OBJECT=sport-epg/template.xlsx,SPORT_FREE_SCRIPT_URL=https://script.google.com/macros/s/AKfycbwxn8PedNYTGeGO-2Ml-Uqz1sGXpd1ywD89UCcbYJm9aeYHW6KAw0-QwrQlEK0SU03B/exec,SPORT_SCHEDULER_SERVICE_ACCOUNT=$SCHEDULER_SA,SLP_PLAYWRIGHT_FALLBACK=true"             --set-secrets="SPORT_WEB_SECRET=slp-web-secret:latest,SPORT_WEB_USERS=slp-web-users:latest,SPORT_FREE_SCRIPT_KEY=slp-free-script-key:latest"
+
+      - name: Discover stable Cloud Run URL and bind application origin
+        shell: bash
+        run: |
+          set -euo pipefail
+          SERVICE_URL="$(gcloud run services describe "$SERVICE"             --project="$PROJECT_ID"             --region="$REGION"             --format='value(status.url)')"
+          test -n "$SERVICE_URL"
+          echo "SERVICE_URL=$SERVICE_URL" >> "$GITHUB_ENV"
+
+          gcloud run services update "$SERVICE"             --project="$PROJECT_ID"             --region="$REGION"             --update-env-vars="SPORT_PUBLIC_URL=$SERVICE_URL"             --quiet
+
+      - name: Allow scheduler identity to invoke service
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run services add-iam-policy-binding "$SERVICE"             --project="$PROJECT_ID"             --region="$REGION"             --member="serviceAccount:$SCHEDULER_SA"             --role="roles/run.invoker"             --quiet
+
+      - name: Configure 15-minute mail scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          NAME="slp-gmail-sync"
+          URI="$SERVICE_URL/api/jobs/gmail-sync"
+          if gcloud scheduler jobs describe "$NAME" --location="$REGION" --project="$PROJECT_ID" >/dev/null 2>&1; then
+            gcloud scheduler jobs update http "$NAME"               --project="$PROJECT_ID"               --location="$REGION"               --schedule="*/15 * * * *"               --uri="$URI"               --http-method=POST               --oidc-service-account-email="$SCHEDULER_SA"               --oidc-token-audience="$URI"               --attempt-deadline=10m
+          else
+            gcloud scheduler jobs create http "$NAME"               --project="$PROJECT_ID"               --location="$REGION"               --schedule="*/15 * * * *"               --uri="$URI"               --http-method=POST               --oidc-service-account-email="$SCHEDULER_SA"               --oidc-token-audience="$URI"               --attempt-deadline=10m
+          fi
+
+      - name: Verify Cloud Run health and web UI
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent "$SERVICE_URL/healthz" > /tmp/health.json; then
+              break
+            fi
+            sleep 4
+          done
+          cat /tmp/health.json
+          grep -q '"status":"ok"' /tmp/health.json
+          grep -q '"durable_storage":true' /tmp/health.json
+          curl --fail --silent "$SERVICE_URL/" >/tmp/index.html
+          grep -q "SLP" /tmp/index.html
+
+      - name: Deployment summary
+        run: |
+          echo "### Google Cloud production" >> "$GITHUB_STEP_SUMMARY"
+          echo "- URL: $SERVICE_URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Image: $IMAGE" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Project: $PROJECT_ID" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Region: $REGION" >> "$GITHUB_STEP_SUMMARY"
+          echo "- GCS: gs://$BUCKET/sport-epg/" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Gmail scan: every 15 minutes + manual on-demand scan" >> "$GITHUB_STEP_SUMMARY"
