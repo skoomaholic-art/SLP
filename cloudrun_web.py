@@ -1052,13 +1052,20 @@ async def apply_notification(request: Request, notice_id: int):
             raise HTTPException(
                 409, "Для этого уведомления нет автоматического изменения"
             )
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+        storage_ids = [storage_id]
+        for candidate_id in evidence.get("storage_ids") or []:
+            candidate_id = str(candidate_id or "")
+            if candidate_id and candidate_id not in storage_ids:
+                storage_ids.append(candidate_id)
         try:
-            editorial.apply_edit(
-                request.app.state.database,
-                storage_id=storage_id,
-                values=patch,
-                username=user["username"],
-            )
+            for target_id in storage_ids:
+                editorial.apply_edit(
+                    request.app.state.database,
+                    storage_id=target_id,
+                    values=patch,
+                    username=user["username"],
+                )
         except editorial.EditorialError as exc:
             raise HTTPException(422, str(exc)) from exc
         result = important_notifications.mark_applied(

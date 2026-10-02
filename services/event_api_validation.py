@@ -83,20 +83,21 @@ def _match_score(candidate: dict, external: dict) -> float:
     return identity
 
 
-def _candidate_storage_id(candidate: dict) -> str:
+def _candidate_storage_ids(candidate: dict) -> list[str]:
+    values: list[str] = []
     direct = str(candidate.get("source_record_id") or "")
     if direct:
-        return direct
-    broadcasts = candidate.get("broadcasts") or []
-    active = next(
-        (item for item in broadcasts if item.get("active") and item.get("source_record_id")),
-        None,
-    )
-    selected = active or next(
-        (item for item in broadcasts if item.get("source_record_id")),
-        {},
-    )
-    return str(selected.get("source_record_id") or "")
+        values.append(direct)
+    for item in candidate.get("broadcasts") or []:
+        storage_id = str(item.get("source_record_id") or "")
+        if storage_id and storage_id not in values:
+            values.append(storage_id)
+    return values
+
+
+def _candidate_storage_id(candidate: dict) -> str:
+    values = _candidate_storage_ids(candidate)
+    return values[0] if values else ""
 
 
 def _provider_label(provider: str) -> str:
@@ -183,6 +184,8 @@ async def _espn_events(session, dates: list[str]) -> list[dict]:
                     ),
                     "",
                 )
+                if not source_url:
+                    source_url = f"{url}?dates={compact}"
                 result.append({
                     "provider": "espn_public",
                     "id": str(raw.get("id") or ""),
@@ -213,7 +216,8 @@ def _expanded_dates(values: list[str]) -> list[str]:
 
 
 def _build_discrepancy(candidate: dict, external: dict, identity_score: float) -> dict | None:
-    storage_id = _candidate_storage_id(candidate)
+    storage_ids = _candidate_storage_ids(candidate)
+    storage_id = storage_ids[0] if storage_ids else ""
     if not storage_id:
         return None
 
@@ -296,6 +300,7 @@ def _build_discrepancy(candidate: dict, external: dict, identity_score: float) -
             "external_league": external.get("league"),
             "external_start_at": external.get("start_at"),
             "external_status": status_text,
+            "storage_ids": storage_ids,
         },
     }
 
