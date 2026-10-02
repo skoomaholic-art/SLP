@@ -184,11 +184,19 @@ function doGet(e) {
     var p = e.parameter || {}, op = String(p.op || ""), arg = "";
     if (op === "manifest") arg = String(p.offset || "0");
     else if (op === "file") arg = String(p.id || "");
-    else if (op !== "backup" && op !== "template") {
+    else if (op !== "backup" && op !== "template" && op !== "scan") {
       return slpJson_({ok:false,error:"unknown operation"});
     }
     if (!slpAuthorize_("GET", p.ts, op, arg, p.sig)) {
       return slpJson_({ok:false,error:"unauthorized"});
+    }
+    if (op === "scan") {
+      syncMailbox();
+      return slpJson_({
+        ok:true,
+        scanned:true,
+        lastScan:slpProps_().getProperty("SLP_LAST_SCAN_AT") || ""
+      });
     }
     if (op === "template") {
       var templateId = slpProps_().getProperty("SLP_TEMPLATE_ID");
