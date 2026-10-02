@@ -43,6 +43,7 @@ env:
   RUNTIME_SA: ${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}
   SCHEDULER_SA: ${{ vars.GCP_SCHEDULER_SERVICE_ACCOUNT }}
   SERVICE: slp-web
+  OPENSERP_SERVICE: slp-openserp
   AR_REPO: slp
 
 jobs:
@@ -88,6 +89,58 @@ jobs:
       - name: Configure Artifact Registry Docker auth
         run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
+      - name: Build and push private OpenSERP image
+        shell: bash
+        run: |
+          set -euo pipefail
+          OPEN_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/slp-openserp:${GITHUB_SHA}"
+          echo "OPEN_IMAGE=$OPEN_IMAGE" >> "$GITHUB_ENV"
+          docker build -f Dockerfile.openserp -t "$OPEN_IMAGE" .
+          docker push "$OPEN_IMAGE"
+
+      - name: Deploy private Cloud Run OpenSERP
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run deploy "$OPENSERP_SERVICE" \
+            --project="$PROJECT_ID" \
+            --region="$REGION" \
+            --image="$OPEN_IMAGE" \
+            --service-account="$RUNTIME_SA" \
+            --no-allow-unauthenticated \
+            --port=7000 \
+            --cpu=1 \
+            --memory=1Gi \
+            --concurrency=20 \
+            --min=1 \
+            --max=2 \
+            --timeout=120 \
+            --quiet
+
+          OPENSERP_URL="$(gcloud run services describe "$OPENSERP_SERVICE" \
+            --project="$PROJECT_ID" \
+            --region="$REGION" \
+            --format='value(status.url)')"
+          test -n "$OPENSERP_URL"
+          echo "OPENSERP_URL=$OPENSERP_URL" >> "$GITHUB_ENV"
+
+          for member in "$RUNTIME_SA" "$DEPLOYER_SA"; do
+            gcloud run services add-iam-policy-binding "$OPENSERP_SERVICE" \
+              --project="$PROJECT_ID" \
+              --region="$REGION" \
+              --member="serviceAccount:$member" \
+              --role="roles/run.invoker" \
+              --quiet
+          done
+
+          OPEN_TOKEN="$(gcloud auth print-identity-token \
+            --audiences="$OPENSERP_URL" \
+            --include-email)"
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer $OPEN_TOKEN" \
+            "$OPENSERP_URL/health" >/tmp/openserp-health.json
+          cat /tmp/openserp-health.json
+
       - name: Migrate current Render SQLite to GCS once
         shell: bash
         run: |
@@ -129,7 +182,7 @@ PY
         shell: bash
         run: |
           set -euo pipefail
-          gcloud run deploy "$SERVICE"             --project="$PROJECT_ID"             --region="$REGION"             --image="$IMAGE"             --service-account="$RUNTIME_SA"             --allow-unauthenticated             --cpu=1             --memory=1Gi             --concurrency=1             --min=1             --max=1             --no-cpu-throttling             --timeout=900             --set-env-vars="SPORT_GCS_BUCKET=$BUCKET,SPORT_GCS_OBJECT=sport-epg/slp-web.db,SPORT_TEMPLATE_OBJECT=sport-epg/template.xlsx,SPORT_FREE_SCRIPT_URL=https://script.google.com/macros/s/AKfycbwxn8PedNYTGeGO-2Ml-Uqz1sGXpd1ywD89UCcbYJm9aeYHW6KAw0-QwrQlEK0SU03B/exec,SPORT_SCHEDULER_SERVICE_ACCOUNT=$SCHEDULER_SA,SLP_PLAYWRIGHT_FALLBACK=true"             --set-secrets="SPORT_WEB_SECRET=slp-web-secret:latest,SPORT_WEB_USERS=slp-web-users:latest,SPORT_FREE_SCRIPT_KEY=slp-free-script-key:latest"
+          gcloud run deploy "$SERVICE"             --project="$PROJECT_ID"             --region="$REGION"             --image="$IMAGE"             --service-account="$RUNTIME_SA"             --allow-unauthenticated             --cpu=1             --memory=1Gi             --concurrency=1             --min=1             --max=1             --no-cpu-throttling             --timeout=900             --set-env-vars="SPORT_GCS_BUCKET=$BUCKET,SPORT_GCS_OBJECT=sport-epg/slp-web.db,SPORT_TEMPLATE_OBJECT=sport-epg/template.xlsx,SPORT_FREE_SCRIPT_URL=https://script.google.com/macros/s/AKfycbwxn8PedNYTGeGO-2Ml-Uqz1sGXpd1ywD89UCcbYJm9aeYHW6KAw0-QwrQlEK0SU03B/exec,SPORT_SCHEDULER_SERVICE_ACCOUNT=$SCHEDULER_SA,SLP_PLAYWRIGHT_FALLBACK=true,OPENSERP_BASE_URL=$OPENSERP_URL,OPENSERP_AUTH_AUDIENCE=$OPENSERP_URL"             --set-secrets="SPORT_WEB_SECRET=slp-web-secret:latest,SPORT_WEB_USERS=slp-web-users:latest,SPORT_FREE_SCRIPT_KEY=slp-free-script-key:latest"
 
       - name: Discover stable Cloud Run URL and bind application origin
         shell: bash
@@ -183,4 +236,5 @@ PY
           echo "- Project: $PROJECT_ID" >> "$GITHUB_STEP_SUMMARY"
           echo "- Region: $REGION" >> "$GITHUB_STEP_SUMMARY"
           echo "- GCS: gs://$BUCKET/sport-epg/" >> "$GITHUB_STEP_SUMMARY"
+          echo "- OpenSERP: $OPENSERP_URL (private Cloud Run)" >> "$GITHUB_STEP_SUMMARY"
           echo "- Gmail scan: every 15 minutes + manual on-demand scan" >> "$GITHUB_STEP_SUMMARY"
