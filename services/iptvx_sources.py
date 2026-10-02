@@ -574,85 +574,87 @@ async def _page_fallback(
 
 
 async def refresh_iptvx_sources(database) -> dict:
-    """Fetch XMLTV once, filter 14 ids, then persist per-channel snapshots."""
-    if not XML_URL:
+    """Fetch the 14 editor-approved channel pages in parallel and persist them.
+
+    The per-channel HTML pages are intentionally the production primary source.
+    They are small, stable, human-checkable, and avoid downloading the very
+    large aggregate XMLTV file inside Cloud Run. The aggregate XML remains
+    available to tests/diagnostics through parse_iptvx_xml, but it is not on the
+    interactive collection critical path.
+    """
+    if not PAGE_BASE_URL:
         return {"status": "disabled", "sources": [], "stats": {}}
 
     timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
-    semaphore = asyncio.Semaphore(4)
-    xml_error = ""
-    xml_stats: dict = {}
-    events: list[dict] = []
-    fallback: dict[str, tuple[list[dict], dict]] = {}
-    fallback_failures: dict[str, str] = {}
-
+    semaphore = asyncio.Semaphore(6)
+    page_results: dict[str, tuple[list[dict], dict]] = {}
+    failures: dict[str, str] = {}
     headers = {
         "User-Agent": "Mozilla/5.0 SLP/2.0",
-        "Accept": "application/xml,text/xml,*/*",
+        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
         "Accept-Encoding": "gzip, deflate",
     }
+
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-        try:
-            raw = await _fetch_bytes(
-                session, XML_URL,
-                maximum=MAX_XML_BYTES,
-                semaphore=semaphore,
-            )
-            events, xml_stats = parse_iptvx_xml(raw)
-        except Exception as exc:
-            xml_error = type(exc).__name__ + ": " + str(exc)[:160]
-            fallback, fallback_failures = await _page_fallback(
-                session, semaphore
-            )
+        async def load(channel: str, page_id: str):
+            url = page_url_for(channel)
+            try:
+                raw = await _fetch_bytes(
+                    session,
+                    url,
+                    maximum=MAX_PAGE_BYTES,
+                    semaphore=semaphore,
+                )
+                page_results[channel] = parse_iptvx_page(
+                    raw,
+                    channel=channel,
+                    page_id=page_id,
+                    source_url=url,
+                )
+            except Exception as exc:
+                failures[channel] = (
+                    type(exc).__name__ + ": " + str(exc)[:180]
+                )
+
+        await asyncio.gather(*(
+            load(channel, page_id)
+            for channel, page_id in IPTVX_CHANNELS.items()
+        ))
 
     today = datetime.now(KZ_TIMEZONE).date()
     first_day = today - timedelta(days=1)
     last_day = today + timedelta(days=8)
-    run_id = "iptvx-" + datetime.now(KZ_TIMEZONE).strftime("%Y%m%d%H%M%S%f")
-
-    by_channel: dict[str, list[dict]] = defaultdict(list)
-    for event in events:
-        by_channel[event["channel"]].append(event)
-
+    run_id = "iptvx-pages-" + datetime.now(KZ_TIMEZONE).strftime(
+        "%Y%m%d%H%M%S%f"
+    )
     source_stats = []
+
     for channel, page_id in IPTVX_CHANNELS.items():
         source = _SOURCE[channel]
-        mode = "xmltv"
-        error = ""
-        channel_events = by_channel.get(channel, [])
-        channel_meta = (
-            (xml_stats.get("channels") or {}).get(channel, {})
-            if not xml_error else {}
+        events, meta = page_results.get(
+            channel,
+            ([], {"programmes": 0, "candidates": 0, "filtered": 0, "days": []}),
         )
-        scope_days = set(channel_meta.get("days") or [])
-
-        if xml_error:
-            mode = "page_fallback"
-            error = xml_error
-            page_events, page_meta = fallback.get(
-                channel, ([], {"days": []})
-            )
-            channel_events = page_events
-            scope_days = set(page_meta.get("days") or [])
-            if channel in fallback_failures:
-                error += "; page: " + fallback_failures[channel]
-
-        channel_events = [
-            event for event in channel_events
-            if first_day.isoformat() <= event["date"] <= last_day.isoformat()
-        ]
+        error = failures.get(channel, "")
         scope_days = {
-            day for day in scope_days
+            day for day in (meta.get("days") or [])
             if first_day.isoformat() <= day <= last_day.isoformat()
         }
-        by_day: dict[str, list[dict]] = defaultdict(list)
-        for event in channel_events:
-            by_day[event["date"]].append(event)
-            scope_days.add(event["date"])
+        events = [
+            event for event in events
+            if first_day.isoformat() <= str(event.get("date") or "")
+            <= last_day.isoformat()
+        ]
 
-        # Always retire the old wrong Setanta ids when the new source was
-        # successfully read for the current window.
-        if scope_days and (not xml_error or channel in fallback):
+        by_day: dict[str, list[dict]] = defaultdict(list)
+        for event in events:
+            event_day = str(event.get("date") or "")
+            by_day[event_day].append(event)
+            scope_days.add(event_day)
+
+        # A successful page read owns its visible dates, even if a particular
+        # date has no sports candidate after editorial/replay filtering.
+        if channel in page_results:
             for legacy_source in _LEGACY_SOURCES.get(channel, ()):
                 for day in sorted(scope_days):
                     database.upsert_source_snapshot(
@@ -667,16 +669,18 @@ async def refresh_iptvx_sources(database) -> dict:
                 run_id=run_id,
                 source=source,
                 scope_date=today.isoformat(),
-                status="warning",
+                status="error" if error else "warning",
                 event_count=0,
                 previous_count=None,
-                error=error or "channel_not_present_in_current_feed",
+                error=error or "no_current_schedule_days",
                 details={
                     "provider": "iptvx",
-                    "mode": mode,
+                    "mode": "direct_channel_page",
                     "page_id": page_id,
-                    "xml_url": XML_URL,
                     "page_url": page_url_for(channel),
+                    "programmes": int(meta.get("programmes") or 0),
+                    "candidates": int(meta.get("candidates") or 0),
+                    "filtered": int(meta.get("filtered") or 0),
                 },
             )
         else:
@@ -702,18 +706,12 @@ async def refresh_iptvx_sources(database) -> dict:
                     error="" if rows else "no_sports_candidates",
                     details={
                         "provider": "iptvx",
-                        "mode": mode,
+                        "mode": "direct_channel_page",
                         "page_id": page_id,
-                        "xml_url": XML_URL,
                         "page_url": page_url_for(channel),
-                        "programmes": channel_meta.get("programmes", 0),
-                        "candidates": channel_meta.get(
-                            "candidates", len(channel_events)
-                        ),
-                        "explicit_live": channel_meta.get(
-                            "explicit_live", 0
-                        ),
-                        "filtered": channel_meta.get("filtered", 0),
+                        "programmes": int(meta.get("programmes") or 0),
+                        "candidates": int(meta.get("candidates") or len(events)),
+                        "filtered": int(meta.get("filtered") or 0),
                     },
                 )
 
@@ -721,73 +719,92 @@ async def refresh_iptvx_sources(database) -> dict:
             "channel": channel,
             "page_id": page_id,
             "page_url": page_url_for(channel),
-            "mode": mode,
-            "events": len(channel_events),
+            "mode": "direct_channel_page",
+            "events": len(events),
+            "programmes": int(meta.get("programmes") or 0),
             "days": sorted(scope_days),
             "error": error,
         })
 
     return {
-        "status": "ok" if not xml_error else "warning",
-        "source": "xmltv_whitelist",
-        "xml_url": XML_URL,
+        "status": "ok" if not failures else "warning",
+        "source": "direct_channel_pages",
+        "page_base": PAGE_BASE_URL,
         "sources": source_stats,
-        "xml_stats": xml_stats,
-        "xml_error": xml_error,
-        "page_fallback_failures": fallback_failures,
+        "failed_pages": failures,
+        "total_events": sum(item["events"] for item in source_stats),
     }
 
 
 async def probe_iptvx_source() -> dict:
-    """Non-mutating production connectivity probe for the iptvX XMLTV feed."""
+    """Probe the exact production path: the 14 direct channel pages."""
     timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
-    semaphore = asyncio.Semaphore(1)
+    semaphore = asyncio.Semaphore(6)
     headers = {
         "User-Agent": "Mozilla/5.0 SLP/2.0",
-        "Accept": "application/xml,text/xml,*/*",
+        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
         "Accept-Encoding": "gzip, deflate",
     }
-    try:
-        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-            raw = await _fetch_bytes(
-                session,
-                XML_URL,
-                maximum=MAX_XML_BYTES,
-                semaphore=semaphore,
-            )
-        events, stats = parse_iptvx_xml(raw)
-        today = datetime.now(KZ_TIMEZONE).date()
-        first_day = today - timedelta(days=1)
-        last_day = today + timedelta(days=8)
-        current_counts: dict[str, int] = defaultdict(int)
-        for event in events:
-            event_day = str(event.get("date") or "")
-            if first_day.isoformat() <= event_day <= last_day.isoformat():
-                current_counts[str(event.get("channel") or "")] += 1
+    today = datetime.now(KZ_TIMEZONE).date()
+    first_day = today - timedelta(days=1)
+    last_day = today + timedelta(days=8)
+    channels: dict[str, dict] = {}
 
-        channels = {}
-        for channel, page_id in IPTVX_CHANNELS.items():
-            meta = (stats.get("channels") or {}).get(channel, {})
-            channels[channel] = {
-                "page_id": page_id,
-                "programmes": int(meta.get("programmes") or 0),
-                "candidates": int(meta.get("candidates") or 0),
-                "current_window_candidates": int(current_counts.get(channel, 0)),
-                "days": list(meta.get("days") or []),
-            }
-        return {
-            "status": "ok",
-            "xml_url": XML_URL,
-            "payload_bytes": len(raw),
-            "mapped": int(stats.get("mapped") or 0),
-            "candidates": int(stats.get("candidates") or 0),
-            "explicit_live": int(stats.get("explicit_live") or 0),
-            "channels": channels,
-        }
-    except Exception as exc:
-        return {
-            "status": "error",
-            "xml_url": XML_URL,
-            "error": type(exc).__name__ + ": " + str(exc)[:240],
-            "channels": {},
-        }
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        async def load(channel: str, page_id: str):
+            url = page_url_for(channel)
+            try:
+                raw = await _fetch_bytes(
+                    session,
+                    url,
+                    maximum=MAX_PAGE_BYTES,
+                    semaphore=semaphore,
+                )
+                events, meta = parse_iptvx_page(
+                    raw,
+                    channel=channel,
+                    page_id=page_id,
+                    source_url=url,
+                )
+                current = [
+                    event for event in events
+                    if first_day.isoformat()
+                    <= str(event.get("date") or "")
+                    <= last_day.isoformat()
+                ]
+                channels[channel] = {
+                    "status": "ok",
+                    "page_id": page_id,
+                    "payload_bytes": len(raw),
+                    "programmes": int(meta.get("programmes") or 0),
+                    "candidates": int(meta.get("candidates") or len(events)),
+                    "current_window_candidates": len(current),
+                    "days": list(meta.get("days") or []),
+                }
+            except Exception as exc:
+                channels[channel] = {
+                    "status": "error",
+                    "page_id": page_id,
+                    "error": type(exc).__name__ + ": " + str(exc)[:200],
+                }
+
+        await asyncio.gather(*(
+            load(channel, page_id)
+            for channel, page_id in IPTVX_CHANNELS.items()
+        ))
+
+    failures = {
+        channel: item.get("error", "")
+        for channel, item in channels.items()
+        if item.get("status") != "ok"
+    }
+    return {
+        "status": "ok" if not failures else "warning",
+        "source": "direct_channel_pages",
+        "channels": channels,
+        "failed_pages": failures,
+        "total_current_window_candidates": sum(
+            int(item.get("current_window_candidates") or 0)
+            for item in channels.values()
+        ),
+    }
