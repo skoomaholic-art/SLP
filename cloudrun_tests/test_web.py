@@ -108,6 +108,21 @@ class WebTests(unittest.TestCase):
         self.assertNotIn('[...(data.websites||[]),...(data.excel||[])]', index)
         self.assertIn('approve.textContent="Добавить в расписание"', index)
 
+    def test_source_cards_are_compact_and_collection_retries_429(self):
+        index = (
+            Path(__file__).resolve().parents[1] /
+            "cloudrun_ui" / "index.html"
+        ).read_text()
+        self.assertIn("function sourceStamp(value)", index)
+        self.assertIn('"Данные получены: "+origins.join(" + ")', index)
+        self.assertIn('state.textContent="Данные не найдены"', index)
+        self.assertNotIn('webState.textContent="Парсинг: "', index)
+        self.assertNotIn('mailState.textContent="Почта/Excel: "', index)
+        self.assertNotIn("Gmail подключён. Новые EPG попадают", index)
+        self.assertIn("if(e.status!==429)throw e", index)
+        self.assertIn("if(e.status===429)continue", index)
+        self.assertIn("setTimeout(resolve,3000)", index)
+
     def test_idle_status_and_event_cards_are_contextual(self):
         index = (
             Path(__file__).resolve().parents[1] /
