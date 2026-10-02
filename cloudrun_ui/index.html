@@ -548,6 +548,16 @@ function renderCalendar(){
   btn.textContent=day;btn.addEventListener("click",()=>{state.date=key;renderCalendar();renderEvents()});root.append(btn);
  }
 }
+function eventMeta(ev){
+ const title=String(ev.title||"").toLocaleLowerCase("ru-RU");
+ const sport=String(ev.sport||"").trim();
+ const sportKey=sport.toLocaleLowerCase("ru-RU");
+ const sportAlreadyInTitle=!!sportKey&&(
+   title.includes(sportKey)||
+   (sportKey==="борьба"&&title.includes("борьба"))
+ );
+ return [sportAlreadyInTitle?"":sport,ev.tournament].filter(Boolean).join(" · ");
+}
 function makeEvent(ev){
  const outer=document.createElement("article");outer.className="event";
  const top=document.createElement("div");top.className="item-top";
@@ -555,7 +565,7 @@ function makeEvent(ev){
  const flag=document.createElement("span");flag.className="badge "+ev.status;flag.textContent=ev.archived?"Нет в актуальной сетке":ev.status==="past"?"Прошло":ev.status==="live"?"Сейчас LIVE":"Скоро";
  top.append(time,flag);
  const title=document.createElement("div");title.className="name";title.textContent=ev.title;
- const label=document.createElement("div");label.className="muted-small";label.textContent=[ev.sport,ev.tournament].filter(Boolean).join(" · ");
+ const label=document.createElement("div");label.className="muted-small";label.textContent=eventMeta(ev);
  const ch=document.createElement("div");ch.className="channel";
  for(const channel of ev.channels)ch.append(channelPill(channel));
  outer.append(top,title,label,ch);
