@@ -114,12 +114,13 @@ class WebTests(unittest.TestCase):
             "cloudrun_ui" / "index.html"
         ).read_text()
         self.assertIn("function sourceStamp(value)", index)
-        self.assertIn('"Данные получены: "+origins.join(" + ")', index)
+        self.assertIn('"Данные получены с "+origins.join(" + ")', index)
         self.assertIn('state.textContent="Данные не найдены"', index)
         self.assertNotIn('webState.textContent="Парсинг: "', index)
         self.assertNotIn('mailState.textContent="Почта/Excel: "', index)
         self.assertNotIn("Gmail подключён. Новые EPG попадают", index)
         self.assertIn("if(e.status!==429)throw e", index)
+        self.assertIn("attempt<8", index)
         self.assertIn("if(e.status===429)continue", index)
         self.assertIn("setTimeout(resolve,3000)", index)
 
