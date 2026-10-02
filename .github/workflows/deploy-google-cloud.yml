@@ -221,6 +221,40 @@ jobs:
             gcloud scheduler jobs create http "$NAME"               --project="$PROJECT_ID"               --location="$REGION"               --schedule="*/15 * * * *"               --uri="$URI"               --http-method=POST               --oidc-service-account-email="$SCHEDULER_SA"               --oidc-token-audience="$URI"               --attempt-deadline=10m
           fi
 
+      - name: Configure hourly iptvX refresh
+        shell: bash
+        run: |
+          set -euo pipefail
+          NAME="slp-iptvx-refresh"
+          URI="$SERVICE_URL/api/jobs/iptvx-refresh"
+          if gcloud scheduler jobs describe "$NAME" --location="$REGION" --project="$PROJECT_ID" >/dev/null 2>&1; then
+            gcloud scheduler jobs update http "$NAME" \
+              --project="$PROJECT_ID" \
+              --location="$REGION" \
+              --schedule="7 * * * *" \
+              --time-zone="Asia/Almaty" \
+              --uri="$URI" \
+              --http-method=POST \
+              --oidc-service-account-email="$SCHEDULER_SA" \
+              --oidc-token-audience="$URI" \
+              --attempt-deadline=10m
+          else
+            gcloud scheduler jobs create http "$NAME" \
+              --project="$PROJECT_ID" \
+              --location="$REGION" \
+              --schedule="7 * * * *" \
+              --time-zone="Asia/Almaty" \
+              --uri="$URI" \
+              --http-method=POST \
+              --oidc-service-account-email="$SCHEDULER_SA" \
+              --oidc-token-audience="$URI" \
+              --attempt-deadline=10m
+          fi
+          # Populate production immediately; do not wait for the next hourly tick.
+          gcloud scheduler jobs run "$NAME" \
+            --project="$PROJECT_ID" \
+            --location="$REGION"
+
       - name: Verify Cloud Run health and web UI
         shell: bash
         run: |
@@ -258,6 +292,30 @@ jobs:
           curl --fail --silent "$ACTIVE_URL/" >/tmp/index.html
           grep -q "SLP" /tmp/index.html
           echo "ACTIVE_URL=$ACTIVE_URL" >> "$GITHUB_ENV"
+
+      - name: Verify iptvX rows reached SQLite
+        shell: bash
+        run: |
+          set -euo pipefail
+          READY=0
+          for attempt in $(seq 1 48); do
+            code="$(curl --silent --show-error --max-time 10 \
+              --output /tmp/iptvx-storage.json \
+              --write-out '%{http_code}' \
+              "$ACTIVE_URL/health/iptvx/storage" || true)"
+            echo "iptvx storage attempt=$attempt http=$code"
+            if [ "$code" = "200" ] && grep -q '"ready_channels":14' /tmp/iptvx-storage.json; then
+              READY=1
+              cat /tmp/iptvx-storage.json
+              break
+            fi
+            sleep 5
+          done
+          if [ "$READY" != "1" ]; then
+            echo "::error::iptvX rows did not reach production SQLite"
+            cat /tmp/iptvx-storage.json 2>/dev/null || true
+            exit 1
+          fi
 
       - name: Deployment summary
         run: |

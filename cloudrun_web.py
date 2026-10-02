@@ -37,7 +37,7 @@ from services import assistant_bridge
 from services import ai_pipeline
 from services import editorial_store as editorial
 from services import editorial_notifications as important_notifications
-from services.channel_registry import CHANNELS
+from services.channel_registry import CHANNELS, IPTVX_CHANNELS
 from services.event_text_ru import normalize_event_fields, strip_bookmakers
 from services.source_routing import route_for_channel, runtime_source_names
 from services.supplier_overlay import apply_supplier_overlay
@@ -550,6 +550,44 @@ def health(request: Request):
 async def health_iptvx(request: Request):
     """Aggregate-only connectivity probe; exposes no user or mailbox data."""
     return await probe_iptvx_source()
+
+
+@app.get("/health/iptvx/storage")
+def health_iptvx_storage(request: Request):
+    """Aggregate-only proof that direct iptvX rows reached production SQLite."""
+    database = request.app.state.database
+    today = datetime.now(KZ_TIMEZONE).date()
+    first = (today - timedelta(days=1)).isoformat()
+    last = (today + timedelta(days=8)).isoformat()
+    expected = {
+        channel: "web_iptvx_" + page_id
+        for channel, page_id in IPTVX_CHANNELS.items()
+    }
+    with database._connect() as conn:
+        rows = conn.execute(
+            "SELECT source,channel,COUNT(*) AS n FROM events "
+            "WHERE active=1 AND event_date>=? AND event_date<=? "
+            "AND source LIKE 'web_iptvx_%' "
+            "GROUP BY source,channel",
+            (first, last),
+        ).fetchall()
+    counts = {
+        (str(row["source"]), canonical_channel_name(str(row["channel"]))):
+        int(row["n"])
+        for row in rows
+    }
+    channels = {
+        channel: counts.get((source, channel), 0)
+        for channel, source in expected.items()
+    }
+    ready = sum(1 for value in channels.values() if value > 0)
+    return {
+        "status": "ok" if ready == len(expected) else "partial",
+        "ready_channels": ready,
+        "expected_channels": len(expected),
+        "stored_current_window": sum(channels.values()),
+        "channels": channels,
+    }
 
 
 @app.get("/api/migration/snapshot")
@@ -1222,6 +1260,39 @@ async def scheduled_gmail_sync(request: Request):
                 or result.get("cursor_advanced") or bridge["delivered"]):
             await _save_state(request)
         result["assistant_notifications"] = bridge
+    return result
+
+
+@app.post("/api/jobs/iptvx-refresh")
+async def scheduled_iptvx_refresh(request: Request):
+    """Authenticated lightweight refresh for the 14 direct iptvX pages."""
+    if not request.app.state.backup:
+        raise HTTPException(503, "Для фонового обновления нужен постоянный GCS")
+    allowed = os.getenv("SPORT_SCHEDULER_SERVICE_ACCOUNT", "").strip()
+    if not allowed or not PUBLIC_URL:
+        raise HTTPException(503, "Cloud Scheduler ещё не настроен")
+    authorization = request.headers.get("authorization", "")
+    if not authorization.startswith("Bearer ") or len(authorization) > 8192:
+        raise HTTPException(401, "Требуется OIDC-токен Cloud Scheduler")
+    audience = PUBLIC_URL + "/api/jobs/iptvx-refresh"
+    try:
+        from google.oauth2 import id_token
+        from google.auth.transport.requests import Request as GoogleRequest
+        claims = await asyncio.to_thread(
+            id_token.verify_oauth2_token,
+            authorization[7:],
+            GoogleRequest(),
+            audience,
+        )
+    except Exception:
+        raise HTTPException(401, "OIDC-токен не прошёл проверку") from None
+    if not claims.get("email_verified") or (
+        str(claims.get("email") or "").casefold() != allowed.casefold()
+    ):
+        raise HTTPException(403, "Неизвестный сервисный аккаунт")
+    async with request.app.state.collect_lock:
+        result = await refresh_iptvx_sources(request.app.state.database)
+        await _save_state(request)
     return result
 
 
