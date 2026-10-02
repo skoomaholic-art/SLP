@@ -1,19 +1,91 @@
 from datetime import datetime
 import unittest
 
-from services.iptvx_sources import parse_iptvx_page, parse_iptvx_xml, page_url_for
+from services.iptvx_sources import (
+    page_url_for,
+    parse_iptvx_page,
+    parse_iptvx_xml,
+)
 
 
 class IptvxSourceTests(unittest.TestCase):
-    def test_direct_page_parses_editor_supplied_channel_and_converts_msk_to_kz(self):
+    def test_xmltv_accepts_whitelisted_sports_candidate_without_live_tag(self):
+        xml = """<?xml version="1.0" encoding="UTF-8"?>
+        <tv>
+          <programme start="20261002190000 +0300" stop="20261002210000 +0300"
+                     channel="q-sport-ext">
+            <title>Футбол. Премьер-лига. Астана - Кайрат</title>
+            <category>Спорт</category>
+          </programme>
+          <programme start="20261002210000 +0300" stop="20261002220000 +0300"
+                     channel="q-sport-ext">
+            <title>Обзор тура</title>
+            <category>Спорт</category>
+          </programme>
+        </tv>"""
+        events, stats = parse_iptvx_xml(xml)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["channel"], "Q LEAGUE")
+        self.assertEqual(events[0]["date"], "2026-10-02")
+        self.assertEqual(events[0]["time"], "21:00")
+        self.assertEqual(events[0]["live_state"], "candidate")
+        self.assertEqual(
+            events[0]["live_evidence_method"],
+            "iptvx_sports_channel_candidate",
+        )
+        self.assertEqual(stats["channels"]["Q LEAGUE"]["programmes"], 2)
+        self.assertEqual(stats["channels"]["Q LEAGUE"]["candidates"], 1)
+
+    def test_xmltv_explicit_live_remains_high_confidence(self):
+        xml = """<tv>
+          <programme start="20261002150000 +0300" stop="20261002170000 +0300"
+                     channel="eurosport1">
+            <title>LIVE Теннис. ATP 500. Полуфинал</title>
+            <category>Теннис</category>
+          </programme>
+        </tv>"""
+        events, stats = parse_iptvx_xml(xml)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["channel"], "EUROSPORT 1")
+        self.assertEqual(events[0]["time"], "17:00")
+        self.assertEqual(events[0]["live_state"], "live")
+        self.assertEqual(events[0]["live_confidence"], "high")
+        self.assertEqual(stats["explicit_live"], 1)
+
+    def test_xmltv_ignores_unapproved_channel(self):
+        xml = """<tv>
+          <programme start="20261002150000 +0300" channel="random-channel">
+            <title>Футбол. Команда A - Команда B</title>
+            <category>Спорт</category>
+          </programme>
+        </tv>"""
+        events, stats = parse_iptvx_xml(xml)
+        self.assertEqual(events, [])
+        self.assertEqual(stats["mapped"], 0)
+
+    def test_xmltv_source_url_is_human_checkable_channel_page(self):
+        xml = """<tv>
+          <programme start="20261002150000 +0300" channel="match-planeta">
+            <title>Хоккей. Динамо - Спартак</title>
+            <category>Спорт</category>
+          </programme>
+        </tv>"""
+        events, _ = parse_iptvx_xml(xml)
+        self.assertEqual(
+            events[0]["source_url"],
+            "https://epg.iptvx.one/id/match-planeta",
+        )
+        self.assertEqual(events[0]["provider_source"], "iptvx_xmltv")
+
+    def test_page_fallback_parses_programme_rows(self):
         html = """
         <main>
           <p><u>tvg-id="setanta-sports"</u></p>
           <h3>Пятница, 02 октября 2026 г.</h3>
           <section>
-            <p>20:30 Футбол. АПЛ. Арсенал – Ливерпуль</p>
-            <p>22:45 Футбол. АПЛ. Обзор тура</p>
-            <p>23:30 Баскетбол. Евролига. Реал Мадрид – Барселона</p>
+            <p>20:30 Футбол. АПЛ. Арсенал - Ливерпуль</p>
+            <p>22:45 Обзор тура</p>
+            <p>23:30 Баскетбол. Евролига. Реал - Барселона</p>
           </section>
         </main>
         """
@@ -24,25 +96,10 @@ class IptvxSourceTests(unittest.TestCase):
             source_url="https://epg.iptvx.one/id/setanta-sports",
         )
         self.assertEqual(len(events), 2)
-        self.assertEqual(events[0]["channel"], "SETANTA SPORTS 1")
-        self.assertEqual(events[0]["date"], "2026-10-02")
         self.assertEqual(events[0]["time"], "22:30")
-        self.assertEqual(events[0]["estimated_broadcast_end"], "00:45")
-        self.assertEqual(events[0]["estimated_broadcast_end_date"], "2026-10-03")
         self.assertEqual(events[1]["date"], "2026-10-03")
         self.assertEqual(events[1]["time"], "01:30")
         self.assertEqual(stats["programmes"], 3)
-        self.assertEqual(stats["sport_candidates"], 2)
-        self.assertEqual(stats["filtered"], 1)
-
-    def test_direct_page_rejects_wrong_tvg_id(self):
-        html = '<p><u>tvg-id="other"</u></p><h3>Пятница, 02 октября 2026 г.</h3>'
-        with self.assertRaisesRegex(ValueError, "iptvx_page_id_mismatch"):
-            parse_iptvx_page(
-                html,
-                channel="SETANTA SPORTS 1",
-                page_id="setanta-sports",
-            )
 
     def test_exact_editor_urls_are_registered(self):
         expected = {
@@ -66,42 +123,6 @@ class IptvxSourceTests(unittest.TestCase):
                 page_url_for(channel),
                 "https://epg.iptvx.one/id/" + page_id,
             )
-
-    def test_only_explicit_live_rows_are_emitted(self):
-        xml = """<?xml version="1.0" encoding="UTF-8"?>
-        <tv>
-          <programme start="20261002190000 +0300" stop="20261002210000 +0300"
-                     channel="setanta-kz">
-            <title>LIVE Футбол. АПЛ. Арсенал - Ливерпуль</title>
-            <category>Футбол</category>
-          </programme>
-          <programme start="20261002210000 +0300" channel="setanta-kz">
-            <title>Обзор матчей АПЛ</title>
-            <category>Футбол</category>
-          </programme>
-        </tv>"""
-        events, stats = parse_iptvx_xml(xml)
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]["channel"], "SETANTA SPORTS KZ")
-        self.assertEqual(events[0]["date"], "2026-10-02")
-        self.assertEqual(events[0]["time"], "21:00")
-        self.assertEqual(events[0]["estimated_broadcast_end"], "23:00")
-        self.assertEqual(stats["mapped"], 2)
-        self.assertEqual(stats["live"], 1)
-        self.assertEqual(stats["unconfirmed"], 1)
-
-    def test_live_icon_is_accepted_as_provider_evidence(self):
-        xml = """<tv>
-          <programme start="20261002150000 +0300" channel="eurosport1">
-            <title>Теннис. ATP 500. Полуфинал</title>
-            <category>Теннис</category>
-            <icon src="https://example.test/ico_live.gif"/>
-          </programme>
-        </tv>"""
-        events, _ = parse_iptvx_xml(xml)
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]["channel"], "EUROSPORT 1")
-        self.assertEqual(events[0]["time"], "17:00")
 
 
 if __name__ == "__main__":

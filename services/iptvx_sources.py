@@ -1,12 +1,11 @@
-"""Direct iptvX|one channel-page collector for SLP.
+"""iptvX|one XMLTV collector for the 14 SLP sports channels.
 
-Primary source: the exact per-channel pages supplied by the editor:
-https://epg.iptvx.one/id/{tvg-id}
+Primary source:
+    https://iptvx.one/EPG_NOARCH
 
-The aggregate XMLTV feed is retained only as a fail-safe when an individual
-page is unavailable. Channel pages do not expose a reliable LIVE flag, so SLP
-keeps only concrete sports-programme rows and rejects obvious replay/editorial
-content. External event validation remains a separate safety layer.
+The feed is fetched once per collection and filtered by the editor-approved
+tvg-id whitelist. The per-channel pages remain source/control URLs and are used
+only as a fallback if the XMLTV feed is unavailable.
 """
 from __future__ import annotations
 
@@ -32,12 +31,12 @@ from services.time_logic import KZ_TIMEZONE
 PAGE_BASE_URL = os.getenv(
     "IPTVX_PAGE_BASE_URL", "https://epg.iptvx.one/id"
 ).strip().rstrip("/")
-XML_FALLBACK_URL = os.getenv(
+XML_URL = os.getenv(
     "IPTVX_EPG_URL", "https://iptvx.one/EPG_NOARCH"
 ).strip()
-REQUEST_TIMEOUT_SECONDS = 35
+REQUEST_TIMEOUT_SECONDS = 45
 MAX_PAGE_BYTES = 3 * 1024 * 1024
-MAX_XML_BYTES = 80 * 1024 * 1024
+MAX_XML_BYTES = 100 * 1024 * 1024
 MSK_TIMEZONE = timezone(timedelta(hours=3))
 
 ID_TO_CHANNEL = {tvg_id: channel for channel, tvg_id in IPTVX_CHANNELS.items()}
@@ -49,27 +48,15 @@ _PAGE_URL = {
     channel: PAGE_BASE_URL + "/" + tvg_id
     for channel, tvg_id in IPTVX_CHANNELS.items()
 }
-# Retired ids from the first aggregate-XML integration. Successful direct-page
-# refreshes deactivate these snapshots in the current window so stale rows
-# cannot survive a channel-id correction.
 _LEGACY_SOURCES = {
     "SETANTA SPORTS 1": ("web_iptvx_setanta1-kz",),
     "SETANTA SPORTS 2": ("web_iptvx_setanta2-kz",),
 }
 
 _MONTHS = {
-    "января": 1,
-    "февраля": 2,
-    "марта": 3,
-    "апреля": 4,
-    "мая": 5,
-    "июня": 6,
-    "июля": 7,
-    "августа": 8,
-    "сентября": 9,
-    "октября": 10,
-    "ноября": 11,
-    "декабря": 12,
+    "января": 1, "февраля": 2, "марта": 3, "апреля": 4,
+    "мая": 5, "июня": 6, "июля": 7, "августа": 8,
+    "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12,
 }
 _DAY_RE = re.compile(
     r"(?iu)(?:понедельник|вторник|среда|четверг|пятница|"
@@ -77,12 +64,28 @@ _DAY_RE = re.compile(
     r"([а-яё]+)\s+(\d{4})\s*г\.?"
 )
 _PROGRAM_RE = re.compile(r"^\s*(\d{1,2}:\d{2})\s+(.+?)\s*$")
+_MATCH_LIKE_RE = re.compile(
+    r"(?iu)\S+\s+(?:[-–—:]|vs\.?|v\.)\s+\S+"
+)
+_NON_EVENT_RE = re.compile(
+    r"(?iu)\b(?:новости|news|студия|studio|журнал|magazine|"
+    r"документальн|documentary|дайджест|digest|интервью|interview|"
+    r"топ[- ]?10|лучшие моменты|highlights?|обзор|review|повтор|replay|"
+    r"классика|archive|архив|превью|preview|анонс|promo)\b"
+)
 
 _SPORT_INFERENCE = (
-    (re.compile(r"(?iu)\b(?:ATP|WTA)\b"), "Теннис"),
-    (re.compile(r"(?iu)\b(?:UFC|MMA|ММА)\b"), "ММА"),
-    (re.compile(r"(?iu)\b(?:КХЛ|KHL)\b"), "Хоккей"),
-    (re.compile(r"(?iu)\b(?:F1|Формула[- ]?1|WRC|WEC)\b"), "Автоспорт"),
+    (re.compile(r"(?iu)\b(?:футбол|football|soccer|АПЛ|EPL|ЛЧ|UCL)\b"), "Футбол"),
+    (re.compile(r"(?iu)\b(?:хоккей|КХЛ|KHL|NHL)\b"), "Хоккей"),
+    (re.compile(r"(?iu)\b(?:баскетбол|NBA|Евролига|EuroLeague)\b"), "Баскетбол"),
+    (re.compile(r"(?iu)\b(?:ATP|WTA|теннис|tennis)\b"), "Теннис"),
+    (re.compile(r"(?iu)\b(?:UFC|MMA|ММА|бокс|boxing)\b"), "ММА"),
+    (re.compile(r"(?iu)\b(?:F1|Формула[- ]?1|WRC|WEC|MotoGP)\b"), "Автоспорт"),
+    (re.compile(r"(?iu)\b(?:волейбол|volleyball)\b"), "Волейбол"),
+    (re.compile(r"(?iu)\b(?:гандбол|handball)\b"), "Гандбол"),
+    (re.compile(r"(?iu)\b(?:биатлон|biathlon|лыж|ski)\b"), "Зимний спорт"),
+    (re.compile(r"(?iu)\b(?:снукер|snooker)\b"), "Снукер"),
+    (re.compile(r"(?iu)\b(?:велоспорт|cycling|велогон)\b"), "Велоспорт"),
 )
 
 
@@ -133,191 +136,184 @@ def _parse_day(value: str) -> date | None:
         return None
 
 
+def _channel_hint(channel: str) -> str:
+    item = CHANNEL_BY_NAME.get(channel)
+    return str(item.sport_hint or "") if item else ""
+
+
 def _infer_sport(raw_title: str, normalized_sport: str, channel: str) -> str:
-    if normalized_sport:
+    if normalized_sport and normalized_sport.casefold() not in {"спорт", "sports"}:
         return normalized_sport
-    hint = str((CHANNEL_BY_NAME.get(channel) or object()).sport_hint or "") \
-        if channel in CHANNEL_BY_NAME else ""
+    hint = _channel_hint(channel)
     if hint:
         return hint
     for pattern, sport in _SPORT_INFERENCE:
         if pattern.search(raw_title):
             return sport
-    return ""
+    return normalized_sport if normalized_sport else ""
 
 
-def _looks_like_sport(raw_title: str, sport: str) -> bool:
+def _looks_like_sport(
+    raw_title: str,
+    *,
+    sport: str,
+    categories: list[str],
+) -> bool:
     if sport:
         return True
+    category_text = " ".join(categories).casefold()
+    if any(marker in category_text for marker in (
+        "спорт", "sport", "football", "soccer", "hockey", "tennis",
+        "basketball", "boxing", "mma", "racing",
+    )):
+        return True
     upper = " ".join(str(raw_title or "").upper().split())
-    return any(marker in upper for marker in SPORT_TEXT_MARKERS)
+    if any(marker in upper for marker in SPORT_TEXT_MARKERS):
+        return True
+    return bool(_MATCH_LIKE_RE.search(raw_title))
 
 
-def parse_iptvx_page(
-    html: bytes | str,
+def _candidate_event(
     *,
     channel: str,
     page_id: str,
-    source_url: str | None = None,
-) -> tuple[list[dict], dict]:
-    """Parse one exact iptvX channel page.
+    raw_title: str,
+    subtitle: str,
+    desc: str,
+    categories: list[str],
+    start_source: datetime,
+    stop_source: datetime | None,
+    evidence,
+    provider_source: str,
+) -> dict | None:
+    combined_title = raw_title or subtitle
+    if not combined_title:
+        return None
 
-    Page times are displayed in the source's MSK EPG convention. They are
-    converted once to Asia/Almaty.
-    """
-    if isinstance(html, bytes):
-        text = html.decode("utf-8", errors="replace")
-    else:
-        text = str(html or "")
-    soup = BeautifulSoup(text, "html.parser")
-
-    tvg_marker = soup.find(
-        "u", string=re.compile(r"tvg-id\s*=\s*[\"']?" + re.escape(page_id), re.I)
+    normalized = normalize_event_fields(
+        title=combined_title,
+        sport=categories[0] if categories else "",
+        tournament="",
     )
-    if tvg_marker is None:
-        raise ValueError("iptvx_page_id_mismatch")
-
-    raw_rows: list[dict] = []
-    source_days: set[date] = set()
-    for heading in soup.find_all("h3"):
-        source_day = _parse_day(heading.get_text(" ", strip=True))
-        if source_day is None:
-            continue
-        section = heading.find_next_sibling("section")
-        if section is None:
-            continue
-        source_days.add(source_day)
-        for paragraph in section.find_all("p", recursive=False):
-            value = " ".join(paragraph.get_text(" ", strip=True).split())
-            match = _PROGRAM_RE.match(value)
-            if not match:
-                continue
-            try:
-                hour, minute = [int(part) for part in match.group(1).split(":")]
-                start_msk = datetime(
-                    source_day.year, source_day.month, source_day.day,
-                    hour, minute, tzinfo=MSK_TIMEZONE,
-                )
-            except (ValueError, TypeError):
-                continue
-            raw_rows.append({
-                "start_msk": start_msk,
-                "raw_title": match.group(2).strip(),
-            })
-
-    raw_rows.sort(key=lambda item: item["start_msk"])
-    events: list[dict] = []
-    filtered = 0
-    for index, row in enumerate(raw_rows):
-        raw_title = row["raw_title"]
-        explicit = classify_live_evidence(raw_title)
-        if explicit.state == "not_live":
-            filtered += 1
-            continue
-
-        normalized = normalize_event_fields(
-            title=raw_title,
-            sport="",
-            tournament="",
-        )
-        sport = _infer_sport(raw_title, normalized["sport"], channel)
-        event_title = normalized["title"] or raw_title
-        candidate = {
-            "raw_title": raw_title,
-            "title": event_title,
-            "sport": sport,
-            "tournament": normalized["tournament"],
-        }
-        if (
-            not _looks_like_sport(raw_title, sport)
-            or event_is_editorial_or_replay(candidate)
-        ):
-            filtered += 1
-            continue
-
-        start_msk = row["start_msk"]
-        start_kz = start_msk.astimezone(KZ_TIMEZONE)
-        event = {
-            "source": _SOURCE[channel],
-            "source_url": source_url or page_url_for(channel),
-            "provider_source": "iptvx_page",
-            "provider_channel_id": page_id,
-            "channel": channel,
-            "date": start_kz.date().isoformat(),
-            "time": start_kz.strftime("%H:%M"),
-            "source_start_at": start_msk.isoformat(),
-            "timezone": "Asia/Almaty",
-            "time_normalization": "iptvx_msk_page_to_kz",
-            "title": event_title,
-            "raw_title": raw_title,
-            "sport": sport,
-            "tournament": normalized["tournament"],
-            "is_sport_event": True,
-            "is_live": True,
-            "is_live_broadcast": True,
-            "live_state": "live" if explicit.is_live else "candidate",
-            "live_evidence_method": (
-                "provider_live_text"
-                if explicit.is_live
-                else "iptvx_channel_page_schedule"
-            ),
-            "live_evidence_value": (
-                explicit.value if explicit.is_live else page_id
-            ),
-            "live_confidence": "high" if explicit.is_live else "candidate",
-        }
-
-        if index + 1 < len(raw_rows):
-            next_start = raw_rows[index + 1]["start_msk"]
-            if next_start > start_msk:
-                end_kz = next_start.astimezone(KZ_TIMEZONE)
-                event["estimated_broadcast_end_date"] = end_kz.date().isoformat()
-                event["estimated_broadcast_end"] = end_kz.strftime("%H:%M")
-                event["end_estimation_method"] = "provider_epg"
-
-        events.append(event)
-
-    kz_days: set[str] = set()
-    for source_day in source_days:
-        # MSK 00:00-23:59 maps across two KZ calendar dates.
-        kz_days.add(
-            datetime(
-                source_day.year, source_day.month, source_day.day,
-                0, 0, tzinfo=MSK_TIMEZONE,
-            ).astimezone(KZ_TIMEZONE).date().isoformat()
-        )
-        kz_days.add(
-            datetime(
-                source_day.year, source_day.month, source_day.day,
-                23, 59, tzinfo=MSK_TIMEZONE,
-            ).astimezone(KZ_TIMEZONE).date().isoformat()
-        )
-
-    return events, {
-        "programmes": len(raw_rows),
-        "sport_candidates": len(events),
-        "filtered": filtered,
-        "source_days": sorted(day.isoformat() for day in source_days),
-        "kz_days": sorted(kz_days),
+    sport = _infer_sport(combined_title, normalized["sport"], channel)
+    event_title = normalized["title"] or combined_title
+    candidate = {
+        "raw_title": combined_title,
+        "title": event_title,
+        "sport": sport,
+        "tournament": normalized["tournament"],
     }
+
+    if evidence.state == "not_live":
+        return None
+    if _NON_EVENT_RE.search(" ".join([combined_title, subtitle, desc])):
+        return None
+    if event_is_editorial_or_replay(candidate):
+        return None
+    if not _looks_like_sport(
+        combined_title,
+        sport=sport,
+        categories=categories,
+    ):
+        return None
+
+    start = start_source.astimezone(KZ_TIMEZONE)
+    stop = stop_source.astimezone(KZ_TIMEZONE) if stop_source else None
+    event = {
+        "source": _SOURCE[channel],
+        # Keep the human-checkable channel page on the event/source button.
+        "source_url": page_url_for(channel),
+        "provider_source": provider_source,
+        "provider_channel_id": page_id,
+        "channel": channel,
+        "date": start.date().isoformat(),
+        "time": start.strftime("%H:%M"),
+        "source_start_at": start_source.isoformat(),
+        "timezone": "Asia/Almaty",
+        "time_normalization": "xmltv_offset_to_kz",
+        "title": event_title,
+        "raw_title": combined_title,
+        "sport": sport,
+        "tournament": normalized["tournament"],
+        "is_sport_event": True,
+        "is_live": True,
+        "is_live_broadcast": True,
+        "live_state": "live" if evidence.is_live else "candidate",
+        "live_evidence_method": (
+            "provider_live_text"
+            if evidence.is_live
+            else "iptvx_sports_channel_candidate"
+        ),
+        "live_evidence_value": (
+            evidence.value if evidence.is_live else page_id
+        ),
+        "live_confidence": "high" if evidence.is_live else "candidate",
+    }
+    if stop and stop > start:
+        event["estimated_broadcast_end_date"] = stop.date().isoformat()
+        event["estimated_broadcast_end"] = stop.strftime("%H:%M")
+        event["end_estimation_method"] = "provider_epg"
+    return event
 
 
 def parse_iptvx_xml(raw: bytes | str) -> tuple[list[dict], dict]:
-    """Fail-safe XML parser. Only explicit LIVE evidence is accepted here."""
+    """Parse the XMLTV feed for only the 14 editor-approved sports channels.
+
+    Explicit LIVE is preferred, but it is not mandatory. On these whitelisted
+    sports channels a concrete sports programme is accepted as a candidate
+    unless it is explicitly not-live, editorial, a replay, or a highlights
+    programme. This avoids the previous failure mode where valid schedules were
+    discarded simply because the XMLTV row omitted a LIVE tag.
+    """
     payload = raw.encode("utf-8") if isinstance(raw, str) else raw
     root = ET.fromstring(payload)
     events: list[dict] = []
-    stats = {"programmes": 0, "mapped": 0, "live": 0, "unconfirmed": 0}
+    channel_stats = {
+        channel: {
+            "programmes": 0,
+            "candidates": 0,
+            "explicit_live": 0,
+            "filtered": 0,
+            "days": set(),
+        }
+        for channel in IPTVX_CHANNELS
+    }
+    stats = {
+        "programmes": 0,
+        "mapped": 0,
+        "candidates": 0,
+        "explicit_live": 0,
+        "filtered": 0,
+        "channels": channel_stats,
+    }
 
     for programme in root.iter():
         if _local_name(programme.tag) != "programme":
             continue
         stats["programmes"] += 1
-        tvg_id = str(programme.attrib.get("channel") or "").strip()
-        channel = ID_TO_CHANNEL.get(tvg_id)
+        page_id = str(programme.attrib.get("channel") or "").strip()
+        channel = ID_TO_CHANNEL.get(page_id)
         if not channel:
             continue
+
         stats["mapped"] += 1
+        per_channel = channel_stats[channel]
+        per_channel["programmes"] += 1
+
+        try:
+            start_source = _xmltv_datetime(programme.attrib.get("start", ""))
+        except ValueError:
+            per_channel["filtered"] += 1
+            stats["filtered"] += 1
+            continue
+        start_kz = start_source.astimezone(KZ_TIMEZONE)
+        per_channel["days"].add(start_kz.date().isoformat())
+
+        stop_raw = str(programme.attrib.get("stop") or "").strip()
+        try:
+            stop_source = _xmltv_datetime(stop_raw) if stop_raw else None
+        except ValueError:
+            stop_source = None
 
         title = _text(programme, "title")
         subtitle = _text(programme, "sub-title")
@@ -343,68 +339,133 @@ def parse_iptvx_xml(raw: bytes | str) -> tuple[list[dict], dict]:
             asset_hints=asset_hints,
             live_asset_patterns=("ico_live", "/live", "live."),
         )
-        if not evidence.is_live:
-            stats["unconfirmed"] += 1
-            continue
 
-        normalized = normalize_event_fields(
-            title=title or subtitle,
-            sport=categories[0] if categories else "",
-            tournament="",
+        event = _candidate_event(
+            channel=channel,
+            page_id=page_id,
+            raw_title=title,
+            subtitle=subtitle,
+            desc=desc,
+            categories=categories,
+            start_source=start_source,
+            stop_source=stop_source,
+            evidence=evidence,
+            provider_source="iptvx_xmltv",
         )
-        sport = _infer_sport(title or subtitle, normalized["sport"], channel)
-        event_title = normalized["title"] or title or subtitle
-        if not event_title:
+        if event is None:
+            per_channel["filtered"] += 1
+            stats["filtered"] += 1
             continue
-        start_source = _xmltv_datetime(programme.attrib.get("start", ""))
-        start = start_source.astimezone(KZ_TIMEZONE)
-        stop_raw = str(programme.attrib.get("stop") or "").strip()
-        stop = (
-            _xmltv_datetime(stop_raw).astimezone(KZ_TIMEZONE)
-            if stop_raw else None
-        )
 
-        event = {
-            "source": _SOURCE[channel],
-            "source_url": XML_FALLBACK_URL,
-            "provider_source": "iptvx_xml_fallback",
-            "provider_channel_id": tvg_id,
-            "channel": channel,
-            "date": start.date().isoformat(),
-            "time": start.strftime("%H:%M"),
-            "source_start_at": start_source.isoformat(),
-            "timezone": "Asia/Almaty",
-            "time_normalization": "xmltv_offset_to_kz",
-            "title": event_title,
-            "raw_title": title or subtitle,
-            "sport": sport,
-            "tournament": normalized["tournament"],
-            "is_sport_event": bool(sport or categories),
-            "is_live": True,
-            "is_live_broadcast": True,
-            "live_state": "live",
-            "live_evidence_method": (
-                "provider_live_text"
-                if evidence.method.endswith("_text")
-                else "provider_live_asset"
-            ),
-            "live_evidence_value": evidence.value,
-            "live_confidence": "high",
-        }
-        if stop and stop > start:
-            event["estimated_broadcast_end_date"] = stop.date().isoformat()
-            event["estimated_broadcast_end"] = stop.strftime("%H:%M")
-            event["end_estimation_method"] = "provider_epg"
-
-        if (
-            not event["is_sport_event"]
-            or event_is_editorial_or_replay(event)
-        ):
-            continue
         events.append(event)
-        stats["live"] += 1
+        per_channel["candidates"] += 1
+        stats["candidates"] += 1
+        if evidence.is_live:
+            per_channel["explicit_live"] += 1
+            stats["explicit_live"] += 1
 
+    for values in channel_stats.values():
+        values["days"] = sorted(values["days"])
     return events, stats
+
+
+def parse_iptvx_page(
+    html: bytes | str,
+    *,
+    channel: str,
+    page_id: str,
+    source_url: str | None = None,
+) -> tuple[list[dict], dict]:
+    """Fallback parser for the public human-readable channel page."""
+    text = (
+        html.decode("utf-8", errors="replace")
+        if isinstance(html, bytes)
+        else str(html or "")
+    )
+    soup = BeautifulSoup(text, "html.parser")
+    page_text = " ".join(soup.stripped_strings)
+    if page_id.casefold() not in page_text.casefold():
+        raise ValueError("iptvx_page_id_mismatch")
+
+    raw_rows: list[dict] = []
+    source_days: set[date] = set()
+    for heading in soup.find_all(["h2", "h3", "h4"]):
+        source_day = _parse_day(heading.get_text(" ", strip=True))
+        if source_day is None:
+            continue
+        source_days.add(source_day)
+        node = heading.find_next()
+        while node is not None:
+            if node.name in {"h2", "h3", "h4"} and node is not heading:
+                break
+            if node.name in {"p", "li", "div"}:
+                value = " ".join(node.get_text(" ", strip=True).split())
+                match = _PROGRAM_RE.match(value)
+                if match:
+                    hour, minute = [
+                        int(part) for part in match.group(1).split(":")
+                    ]
+                    raw_rows.append({
+                        "start_source": datetime(
+                            source_day.year, source_day.month, source_day.day,
+                            hour, minute, tzinfo=MSK_TIMEZONE,
+                        ),
+                        "raw_title": match.group(2).strip(),
+                    })
+            node = node.find_next()
+
+    deduped = {}
+    for row in raw_rows:
+        key = (row["start_source"], row["raw_title"])
+        deduped[key] = row
+    raw_rows = sorted(
+        deduped.values(), key=lambda item: item["start_source"]
+    )
+
+    events: list[dict] = []
+    filtered = 0
+    for index, row in enumerate(raw_rows):
+        raw_title = row["raw_title"]
+        evidence = classify_live_evidence(raw_title)
+        next_start = (
+            raw_rows[index + 1]["start_source"]
+            if index + 1 < len(raw_rows)
+            else None
+        )
+        event = _candidate_event(
+            channel=channel,
+            page_id=page_id,
+            raw_title=raw_title,
+            subtitle="",
+            desc="",
+            categories=[],
+            start_source=row["start_source"],
+            stop_source=next_start,
+            evidence=evidence,
+            provider_source="iptvx_page_fallback",
+        )
+        if event is None:
+            filtered += 1
+        else:
+            event["source_url"] = source_url or page_url_for(channel)
+            event["time_normalization"] = "iptvx_msk_page_to_kz"
+            events.append(event)
+
+    kz_days = set()
+    for source_day in source_days:
+        for hour, minute in ((0, 0), (23, 59)):
+            kz_days.add(
+                datetime(
+                    source_day.year, source_day.month, source_day.day,
+                    hour, minute, tzinfo=MSK_TIMEZONE,
+                ).astimezone(KZ_TIMEZONE).date().isoformat()
+            )
+    return events, {
+        "programmes": len(raw_rows),
+        "candidates": len(events),
+        "filtered": filtered,
+        "days": sorted(kz_days),
+    }
 
 
 async def _fetch_bytes(
@@ -416,6 +477,7 @@ async def _fetch_bytes(
 ) -> bytes:
     last_error = "request_failed"
     for attempt in range(3):
+        retryable = False
         try:
             async with semaphore:
                 async with session.get(url, allow_redirects=True) as response:
@@ -437,101 +499,114 @@ async def _fetch_bytes(
     raise RuntimeError(last_error)
 
 
+async def _page_fallback(
+    session: aiohttp.ClientSession,
+    semaphore: asyncio.Semaphore,
+) -> tuple[dict[str, tuple[list[dict], dict]], dict[str, str]]:
+    results: dict[str, tuple[list[dict], dict]] = {}
+    failures: dict[str, str] = {}
+
+    async def load(channel: str, page_id: str):
+        url = page_url_for(channel)
+        try:
+            raw = await _fetch_bytes(
+                session, url,
+                maximum=MAX_PAGE_BYTES,
+                semaphore=semaphore,
+            )
+            results[channel] = parse_iptvx_page(
+                raw, channel=channel, page_id=page_id, source_url=url
+            )
+        except Exception as exc:
+            failures[channel] = type(exc).__name__ + ": " + str(exc)[:120]
+
+    await asyncio.gather(*(
+        load(channel, page_id)
+        for channel, page_id in IPTVX_CHANNELS.items()
+    ))
+    return results, failures
+
+
 async def refresh_iptvx_sources(database) -> dict:
-    """Fetch all exact editor-approved channel pages and persist candidates."""
-    if not PAGE_BASE_URL:
+    """Fetch XMLTV once, filter 14 ids, then persist per-channel snapshots."""
+    if not XML_URL:
         return {"status": "disabled", "sources": [], "stats": {}}
 
     timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
+    semaphore = asyncio.Semaphore(4)
+    xml_error = ""
+    xml_stats: dict = {}
+    events: list[dict] = []
+    fallback: dict[str, tuple[list[dict], dict]] = {}
+    fallback_failures: dict[str, str] = {}
+
     headers = {
         "User-Agent": "Mozilla/5.0 SLP/2.0",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept": "application/xml,text/xml,*/*",
         "Accept-Encoding": "gzip, deflate",
     }
-    semaphore = asyncio.Semaphore(4)
-    direct: dict[str, tuple[list[dict], dict]] = {}
-    failures: dict[str, str] = {}
-
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-        async def load(channel: str, page_id: str):
-            url = page_url_for(channel)
-            try:
-                raw = await _fetch_bytes(
-                    session, url,
-                    maximum=MAX_PAGE_BYTES,
-                    semaphore=semaphore,
-                )
-                direct[channel] = parse_iptvx_page(
-                    raw,
-                    channel=channel,
-                    page_id=page_id,
-                    source_url=url,
-                )
-            except Exception as exc:
-                failures[channel] = type(exc).__name__ + ": " + str(exc)[:120]
-
-        await asyncio.gather(*(
-            load(channel, page_id)
-            for channel, page_id in IPTVX_CHANNELS.items()
-        ))
-
-        fallback_events: list[dict] = []
-        fallback_stats: dict = {}
-        if failures and XML_FALLBACK_URL:
-            try:
-                raw_xml = await _fetch_bytes(
-                    session, XML_FALLBACK_URL,
-                    maximum=MAX_XML_BYTES,
-                    semaphore=semaphore,
-                )
-                fallback_events, fallback_stats = parse_iptvx_xml(raw_xml)
-            except Exception as exc:
-                fallback_stats = {
-                    "error": type(exc).__name__ + ": " + str(exc)[:120]
-                }
+        try:
+            raw = await _fetch_bytes(
+                session, XML_URL,
+                maximum=MAX_XML_BYTES,
+                semaphore=semaphore,
+            )
+            events, xml_stats = parse_iptvx_xml(raw)
+        except Exception as exc:
+            xml_error = type(exc).__name__ + ": " + str(exc)[:160]
+            fallback, fallback_failures = await _page_fallback(
+                session, semaphore
+            )
 
     today = datetime.now(KZ_TIMEZONE).date()
     first_day = today - timedelta(days=1)
     last_day = today + timedelta(days=8)
     run_id = "iptvx-" + datetime.now(KZ_TIMEZONE).strftime("%Y%m%d%H%M%S%f")
+
+    by_channel: dict[str, list[dict]] = defaultdict(list)
+    for event in events:
+        by_channel[event["channel"]].append(event)
+
     source_stats = []
-
-    fallback_by_channel: dict[str, list[dict]] = defaultdict(list)
-    for event in fallback_events:
-        fallback_by_channel[event["channel"]].append(event)
-
     for channel, page_id in IPTVX_CHANNELS.items():
         source = _SOURCE[channel]
-        mode = "page"
-        error = failures.get(channel, "")
-        if channel in direct:
-            events, page_stats = direct[channel]
-            scope_days = {
-                value for value in page_stats.get("kz_days", [])
-                if first_day.isoformat() <= value <= last_day.isoformat()
-            }
-        else:
-            mode = "xml_fallback"
-            events = fallback_by_channel.get(channel, [])
-            page_stats = {
-                "programmes": 0,
-                "sport_candidates": len(events),
-                "filtered": 0,
-                "source_days": [],
-                "kz_days": sorted({event["date"] for event in events}),
-            }
-            scope_days = set(page_stats["kz_days"])
+        mode = "xmltv"
+        error = ""
+        channel_events = by_channel.get(channel, [])
+        channel_meta = (
+            (xml_stats.get("channels") or {}).get(channel, {})
+            if not xml_error else {}
+        )
+        scope_days = set(channel_meta.get("days") or [])
 
-        events = [
-            event for event in events
+        if xml_error:
+            mode = "page_fallback"
+            error = xml_error
+            page_events, page_meta = fallback.get(
+                channel, ([], {"days": []})
+            )
+            channel_events = page_events
+            scope_days = set(page_meta.get("days") or [])
+            if channel in fallback_failures:
+                error += "; page: " + fallback_failures[channel]
+
+        channel_events = [
+            event for event in channel_events
             if first_day.isoformat() <= event["date"] <= last_day.isoformat()
         ]
+        scope_days = {
+            day for day in scope_days
+            if first_day.isoformat() <= day <= last_day.isoformat()
+        }
         by_day: dict[str, list[dict]] = defaultdict(list)
-        for event in events:
+        for event in channel_events:
             by_day[event["date"]].append(event)
             scope_days.add(event["date"])
 
-        if channel in direct and scope_days:
+        # Always retire the old wrong Setanta ids when the new source was
+        # successfully read for the current window.
+        if scope_days and (not xml_error or channel in fallback):
             for legacy_source in _LEGACY_SOURCES.get(channel, ()):
                 for day in sorted(scope_days):
                     database.upsert_source_snapshot(
@@ -549,11 +624,12 @@ async def refresh_iptvx_sources(database) -> dict:
                 status="warning",
                 event_count=0,
                 previous_count=None,
-                error=error or "no_schedule_days",
+                error=error or "channel_not_present_in_current_feed",
                 details={
                     "provider": "iptvx",
                     "mode": mode,
                     "page_id": page_id,
+                    "xml_url": XML_URL,
                     "page_url": page_url_for(channel),
                 },
             )
@@ -574,20 +650,24 @@ async def refresh_iptvx_sources(database) -> dict:
                     run_id=run_id,
                     source=source,
                     scope_date=day,
-                    status="ok" if mode == "page" else "warning",
+                    status="ok" if rows else "warning",
                     event_count=len(rows),
                     previous_count=len(previous),
-                    error=error if mode != "page" else "",
+                    error="" if rows else "no_sports_candidates",
                     details={
                         "provider": "iptvx",
                         "mode": mode,
                         "page_id": page_id,
+                        "xml_url": XML_URL,
                         "page_url": page_url_for(channel),
-                        "programmes": page_stats.get("programmes", 0),
-                        "sport_candidates": page_stats.get(
-                            "sport_candidates", len(events)
+                        "programmes": channel_meta.get("programmes", 0),
+                        "candidates": channel_meta.get(
+                            "candidates", len(channel_events)
                         ),
-                        "filtered": page_stats.get("filtered", 0),
+                        "explicit_live": channel_meta.get(
+                            "explicit_live", 0
+                        ),
+                        "filtered": channel_meta.get("filtered", 0),
                     },
                 )
 
@@ -596,16 +676,17 @@ async def refresh_iptvx_sources(database) -> dict:
             "page_id": page_id,
             "page_url": page_url_for(channel),
             "mode": mode,
-            "events": len(events),
+            "events": len(channel_events),
             "days": sorted(scope_days),
             "error": error,
         })
 
     return {
-        "status": "ok" if not failures else "warning",
-        "source": "direct_channel_pages",
-        "page_base": PAGE_BASE_URL,
+        "status": "ok" if not xml_error else "warning",
+        "source": "xmltv_whitelist",
+        "xml_url": XML_URL,
         "sources": source_stats,
-        "failed_pages": failures,
-        "xml_fallback_stats": fallback_stats,
+        "xml_stats": xml_stats,
+        "xml_error": xml_error,
+        "page_fallback_failures": fallback_failures,
     }
