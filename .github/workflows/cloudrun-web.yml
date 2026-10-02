@@ -82,7 +82,7 @@ jobs:
         run: |
           docker run -d --name slp-cloudrun-web-ci -p 8080:8080 slp-cloudrun-web-ci
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            if curl --fail --silent http://127.0.0.1:8080/healthz > /tmp/web-health.json; then break; fi
+            if curl --fail --silent http://127.0.0.1:8080/health > /tmp/web-health.json; then break; fi
             sleep 1
           done
           grep -q '"telegram_polling":false' /tmp/web-health.json
