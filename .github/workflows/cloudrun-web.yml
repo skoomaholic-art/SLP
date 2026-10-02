@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "Dockerfile"
+      - "Dockerfile.openserp"
       - ".dockerignore"
       - "requirements.txt"
       - "requirements-cloudrun.txt"
@@ -13,6 +14,7 @@ on:
       - "parsers/championat.py"
       - "parsers/qazsport_complete.py"
       - "verifiers/broadcast_occurrence.py"
+      - "verifiers/web_search.py"
       - "services/epg_excel.py"
       - "services/official_supplier_excel.py"
       - "services/editorial_export.py"
@@ -27,6 +29,8 @@ on:
       - "storage/database.py"
       - "scripts/cloudrun_users.py"
       - ".github/workflows/cloudrun-web.yml"
+      - ".github/workflows/deploy-google-cloud.yml"
+      - "infra/gcp/**"
   workflow_dispatch:
 
 jobs:
@@ -63,6 +67,17 @@ jobs:
           node --check /tmp/slp-free-gmail-drive.js
       - name: Build Cloud Run image (without deployment)
         run: docker build -t slp-cloudrun-web-ci .
+      - name: Build and verify OpenSERP image
+        run: |
+          docker build -f Dockerfile.openserp -t slp-openserp-ci .
+          docker run -d --name slp-openserp-ci -p 7000:7000 slp-openserp-ci
+          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+            if curl --fail --silent http://127.0.0.1:7000/health > /tmp/openserp-health.json; then break; fi
+            sleep 1
+          done
+          cat /tmp/openserp-health.json
+          docker rm -f slp-openserp-ci
+
       - name: Verify container uses web entrypoint
         run: |
           docker run -d --name slp-cloudrun-web-ci -p 8080:8080 slp-cloudrun-web-ci
