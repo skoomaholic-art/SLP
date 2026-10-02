@@ -126,6 +126,8 @@ PRINCIPAL="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/location
 
 gcloud iam service-accounts add-iam-policy-binding "$DEPLOYER_SA"   --member="$PRINCIPAL"   --role="roles/iam.workloadIdentityUser" >/dev/null
 
+gcloud iam service-accounts add-iam-policy-binding "$DEPLOYER_SA"   --member="serviceAccount:$DEPLOYER_SA"   --role="roles/iam.serviceAccountTokenCreator" >/dev/null
+
 echo "==> Scheduler can invoke the public Cloud Run service with OIDC"
 # The service-level roles/run.invoker binding is added by the deploy workflow
 # after the service exists.
