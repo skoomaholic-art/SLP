@@ -1,4 +1,5 @@
 from datetime import datetime
+import gzip
 import unittest
 
 from services.iptvx_sources import (
@@ -35,6 +36,18 @@ class IptvxSourceTests(unittest.TestCase):
         )
         self.assertEqual(stats["channels"]["Q LEAGUE"]["programmes"], 2)
         self.assertEqual(stats["channels"]["Q LEAGUE"]["candidates"], 1)
+
+    def test_gzip_extensionless_xmltv_is_decoded(self):
+        xml = b"""<tv>
+          <programme start="20261002150000 +0300" channel="eurosport1">
+            <title>Теннис. ATP 500. Полуфинал</title>
+            <category>Теннис</category>
+          </programme>
+        </tv>"""
+        events, stats = parse_iptvx_xml(gzip.compress(xml))
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["channel"], "EUROSPORT 1")
+        self.assertEqual(stats["mapped"], 1)
 
     def test_xmltv_explicit_live_remains_high_confidence(self):
         xml = """<tv>

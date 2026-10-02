@@ -12,8 +12,13 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 import asyncio
+import bz2
+import gzip
+import io
+import lzma
 import os
 import re
+import zipfile
 import xml.etree.ElementTree as ET
 
 import aiohttp
@@ -256,6 +261,47 @@ def _candidate_event(
     return event
 
 
+def _decode_xml_payload(raw: bytes | str) -> bytes:
+    """Return plain XML bytes from iptvX extensionless compressed feeds."""
+    if isinstance(raw, str):
+        payload = raw.encode("utf-8")
+    else:
+        payload = bytes(raw or b"")
+    if not payload:
+        raise ValueError("empty_iptvx_payload")
+
+    # Some iptvX feed URLs are extensionless and may return a compressed file
+    # without a Content-Encoding header, so aiohttp cannot always decompress it.
+    if payload.startswith(b"\x1f\x8b"):
+        payload = gzip.decompress(payload)
+    elif payload.startswith(b"PK\x03\x04"):
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            names = [
+                name for name in archive.namelist()
+                if not name.endswith("/")
+            ]
+            preferred = next(
+                (
+                    name for name in names
+                    if name.casefold().endswith((".xml", ".xmltv"))
+                ),
+                names[0] if names else "",
+            )
+            if not preferred:
+                raise ValueError("empty_iptvx_zip")
+            payload = archive.read(preferred)
+    elif payload.startswith(b"BZh"):
+        payload = bz2.decompress(payload)
+    elif payload.startswith(b"\xfd7zXZ\x00"):
+        payload = lzma.decompress(payload)
+
+    payload = payload.lstrip(b"\xef\xbb\xbf\x00\r\n\t ")
+    if not payload.startswith(b"<"):
+        prefix = payload[:24].hex()
+        raise ValueError("unknown_iptvx_payload:" + prefix)
+    return payload
+
+
 def parse_iptvx_xml(raw: bytes | str) -> tuple[list[dict], dict]:
     """Parse the XMLTV feed for only the 14 editor-approved sports channels.
 
@@ -265,7 +311,7 @@ def parse_iptvx_xml(raw: bytes | str) -> tuple[list[dict], dict]:
     programme. This avoids the previous failure mode where valid schedules were
     discarded simply because the XMLTV row omitted a LIVE tag.
     """
-    payload = raw.encode("utf-8") if isinstance(raw, str) else raw
+    payload = _decode_xml_payload(raw)
     root = ET.fromstring(payload)
     events: list[dict] = []
     channel_stats = {
