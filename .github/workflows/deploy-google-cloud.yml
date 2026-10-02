@@ -137,6 +137,7 @@ jobs:
           done
 
           OPEN_TOKEN="$(gcloud auth print-identity-token \
+            --impersonate-service-account="$DEPLOYER_SA" \
             --audiences="$OPENSERP_URL" \
             --include-email)"
           curl --fail --silent --show-error \
@@ -153,7 +154,7 @@ jobs:
           if gcloud storage ls "$TARGET" >/dev/null 2>&1; then
             echo "GCS database already exists; migration is not repeated."
           else
-            ID_TOKEN="$(gcloud auth print-identity-token               --audiences="$MIGRATION_URL"               --include-email)"
+            ID_TOKEN="$(gcloud auth print-identity-token               --impersonate-service-account="$DEPLOYER_SA"               --audiences="$MIGRATION_URL"               --include-email)"
             curl --fail --silent --show-error               -H "Authorization: Bearer $ID_TOKEN"               "$MIGRATION_URL"               -o /tmp/slp-render.db.gz
             python - <<'PY'
             import gzip, hashlib, sqlite3
