@@ -423,20 +423,60 @@ class BucketSnapshot:
             Path(backup_path).unlink(missing_ok=True)
 
 
+def _prepare_primary_storage():
+    """Prefer GCS on Google Cloud while keeping Apps Script as mail transport.
+
+    If the GCS database object is empty on the first Google Cloud boot and the
+    legacy Apps Script/Drive bridge is configured, restore the existing Drive
+    snapshot once and immediately migrate it into GCS. After that, GCS is the
+    authoritative database backup and Apps Script is used only for mail/Excel.
+    """
+    if GCS_BUCKET:
+        bucket = BucketSnapshot(GCS_BUCKET)
+        if bucket.generation == 0 and freebridge.enabled():
+            drive = freebridge.FreeDriveSnapshot(DB_PATH)
+            if not getattr(drive, "initialized_empty", False) and DB_PATH.exists():
+                bucket.save()
+        return bucket
+    if freebridge.enabled():
+        return freebridge.FreeDriveSnapshot(DB_PATH)
+    return None
+
+
+def _migrate_template_to_gcs_if_needed() -> None:
+    if not (GCS_BUCKET and freebridge.enabled()):
+        return
+    try:
+        from google.cloud import storage
+        blob = storage.Client().bucket(GCS_BUCKET).blob(TEMPLATE_OBJECT)
+        if blob.exists():
+            return
+        result = freebridge.ScriptClient().template()
+        if not result.get("exists"):
+            return
+        raw = base64.b64decode(result["data"], validate=True)
+        if not raw or len(raw) > 12 * 1024 * 1024:
+            return
+        if hashlib.sha256(raw).hexdigest() != result.get("sha256"):
+            return
+        blob.upload_from_string(
+            raw,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            if_generation_match=0,
+        )
+    except Exception:
+        import logging
+        logging.getLogger("uvicorn.error").exception(
+            "SLP template migration Drive -> GCS failed"
+        )
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if freebridge.enabled() and GCS_BUCKET:
-        raise RuntimeError(
-            "Бесплатный Drive и платный GCS одновременно не настраиваются"
-        )
-    # Restore encrypted SQLite from the owner's private Drive BEFORE schema
-    # initialization, never accept an empty DB after a failed restore.
-    application.state.backup = (
-        freebridge.FreeDriveSnapshot(DB_PATH) if freebridge.enabled()
-        else BucketSnapshot(GCS_BUCKET) if GCS_BUCKET else None
-    )
+    application.state.backup = _prepare_primary_storage()
     application.state.free_mail_bridge = freebridge.enabled()
+    _migrate_template_to_gcs_if_needed()
     database = SLPDatabase(DB_PATH)
     initialize_epg_imports(database)
     gmail.init_gmail_schema(database)
