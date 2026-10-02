@@ -228,7 +228,7 @@ jobs:
               code="$(curl --silent --show-error --max-time 10 \
                 --output /tmp/health.json \
                 --write-out '%{http_code}' \
-                "$url/healthz" || true)"
+                "$url/health" || true)"
               echo "health attempt=$attempt url=$url http=$code"
               if [ "$code" = "200" ] \
                 && grep -q '"status":"ok"' /tmp/health.json \
