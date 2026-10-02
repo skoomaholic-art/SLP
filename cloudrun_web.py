@@ -1519,6 +1519,19 @@ def template_status(request: Request):
     if local and local.is_file():
         return {"available": True, "location": "local", "name": local.name,
                 "message": "Постоянство локального файла зависит от диска хостинга"}
+    if GCS_BUCKET:
+        try:
+            from google.cloud import storage
+            blob = storage.Client().bucket(GCS_BUCKET).blob(TEMPLATE_OBJECT)
+            return {
+                "available": bool(blob.exists()),
+                "location": "gcs",
+                "name": TEMPLATE_OBJECT if blob.exists() else "",
+                "message": "Шаблон хранится в Google Cloud Storage",
+            }
+        except Exception as exc:
+            return {"available": False, "location": "error",
+                    "message": type(exc).__name__}
     if request.app.state.free_mail_bridge:
         try:
             result = freebridge.ScriptClient().template()
@@ -1531,18 +1544,9 @@ def template_status(request: Request):
         except freebridge.FreeDriveError as exc:
             return {"available": False, "location": "error",
                     "message": str(exc)[:180]}
-    if not GCS_BUCKET:
-        return {"available": False, "location": "not_configured",
-                "message": ("Настройте SPORT_TEMPLATE_PATH или постоянное хранилище"
-                            if not local else "По SPORT_TEMPLATE_PATH файл пока не найден")}
-    try:
-        from google.cloud import storage
-        blob = storage.Client().bucket(GCS_BUCKET).blob(TEMPLATE_OBJECT)
-        return {"available": bool(blob.exists()), "location": "gcs",
-                "name": TEMPLATE_OBJECT if blob.exists() else ""}
-    except Exception as exc:
-        return {"available": False, "location": "error",
-                "message": type(exc).__name__}
+    return {"available": False, "location": "not_configured",
+            "message": ("Настройте SPORT_TEMPLATE_PATH или постоянное хранилище"
+                        if not local else "По SPORT_TEMPLATE_PATH файл пока не найден")}
 
 
 @app.post("/api/template")
@@ -1550,8 +1554,8 @@ async def upload_template(request: Request, upload: UploadFile = File(...)):
     require_admin(request)
     origin_guard(request)
     local_target = _local_template_path()
-    if (not local_target and not request.app.state.free_mail_bridge
-            and (not GCS_BUCKET or not request.app.state.backup)):
+    if (not local_target and not GCS_BUCKET
+            and not request.app.state.free_mail_bridge):
         raise HTTPException(503, "Настройте постоянное хранилище или локальный путь")
     if not str(upload.filename or "").casefold().endswith(".xlsx"):
         raise HTTPException(422, "Требуется XLSX-шаблон")
@@ -1604,7 +1608,7 @@ async def upload_template(request: Request, upload: UploadFile = File(...)):
             "bytes": len(raw), "destination": "local",
             "warning": "Без постоянного тома шаблон исчезнет при перезапуске сервера",
         }
-    if request.app.state.free_mail_bridge:
+    if request.app.state.free_mail_bridge and not GCS_BUCKET:
         try:
             async with request.app.state.collect_lock:
                 client = freebridge.ScriptClient()
@@ -1647,6 +1651,15 @@ def load_template():
     local = _local_template_path()
     if local and local.is_file():
         return load_workbook(local)
+    if GCS_BUCKET:
+        try:
+            from google.cloud import storage
+            raw = storage.Client().bucket(GCS_BUCKET).blob(
+                TEMPLATE_OBJECT
+            ).download_as_bytes()
+            return load_workbook(BytesIO(raw))
+        except Exception:
+            pass
     if freebridge.enabled():
         try:
             result = freebridge.ScriptClient().template()
@@ -1659,13 +1672,6 @@ def load_template():
             return load_workbook(BytesIO(raw))
         except freebridge.FreeDriveError as exc:
             raise HTTPException(503, "Drive: " + str(exc)) from exc
-    if GCS_BUCKET:
-        try:
-            from google.cloud import storage
-            raw = storage.Client().bucket(GCS_BUCKET).blob(TEMPLATE_OBJECT).download_as_bytes()
-            return load_workbook(BytesIO(raw))
-        except Exception:
-            pass
     raise HTTPException(503, "Загрузите утверждённый Excel-шаблон в SPORT_TEMPLATE_PATH "
                         "или Google Cloud Storage: " + TEMPLATE_OBJECT)
 
