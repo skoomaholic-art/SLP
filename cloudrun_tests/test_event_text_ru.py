@@ -22,7 +22,10 @@ class EventTextRussianTests(unittest.TestCase):
         )
         self.assertEqual(result["sport"], "Тяжёлая атлетика")
         self.assertEqual(result["tournament"], "XX Летние Азиатские игры")
-        self.assertEqual(result["title"], "Женщины, 86 кг. Финал")
+        self.assertEqual(
+            result["title"],
+            "Тяжёлая атлетика. Женщины. 86 кг. Финал",
+        )
 
     def test_english_event_is_normalized_to_russian(self):
         result = normalize_event_fields(
@@ -52,7 +55,10 @@ class EventTextRussianTests(unittest.TestCase):
             sport="Садақ ату",
             tournament="XX Жазғы Азия Ойындары",
         )
-        self.assertEqual(result["title"], "Женщины. Командные соревнования. Финал")
+        self.assertEqual(
+            result["title"],
+            "Стрельба из лука. Женщины. Командные соревнования. Финал",
+        )
         self.assertEqual(result["tournament"], "XX Летние Азиатские игры")
         self.assertEqual(result["sport"], "Стрельба из лука")
 
@@ -61,7 +67,7 @@ class EventTextRussianTests(unittest.TestCase):
             sport="Суға секіру",
             tournament="XX ЖАЗҒЫ АЗИЯ ОЙЫНДАРЫ",
         )
-        self.assertEqual(second["title"], "Женщины")
+        self.assertEqual(second["title"], "Прыжки в воду. Женщины")
         self.assertEqual(second["sport"], "Прыжки в воду")
 
     def test_sportplus_all_caps_becomes_readable(self):
@@ -82,7 +88,35 @@ class EventTextRussianTests(unittest.TestCase):
             tournament="",
         )
         self.assertEqual(result["title"], "ALASH PRIDE 131")
+        lower = normalize_event_fields(
+            title="alash pride 131",
+            sport="MMA",
+            tournament="",
+        )
+        self.assertEqual(lower["title"], "ALASH PRIDE 131")
         self.assertEqual(result["sport"], "ММА")
+
+    def test_greco_roman_wrestling_is_russian_and_structured(self):
+        result = normalize_event_fields(
+            title="Женщины, Грек-рим куреси. Отборочный этап",
+            sport="Борьба",
+            tournament="XX Жазғы Азия Ойындары",
+        )
+        self.assertEqual(result["sport"], "Борьба")
+        self.assertEqual(result["tournament"], "XX Летние Азиатские игры")
+        self.assertEqual(
+            result["title"],
+            "Греко-римская борьба. Женщины. Отборочный этап",
+        )
+
+    def test_cyrillic_roman_twenty_is_normalized_to_latin_roman_numeral(self):
+        result = normalize_event_fields(
+            title="Женщины",
+            sport="Прыжки в воду",
+            tournament="ХХ Летние Азиатские игры",
+        )
+        self.assertEqual(result["tournament"], "XX Летние Азиатские игры")
+        self.assertEqual(result["title"], "Прыжки в воду. Женщины")
 
     def test_qazsport_world_championship_and_qualification_translate_cleanly(self):
         result = normalize_event_fields(
@@ -141,6 +175,13 @@ class EventTextRussianTests(unittest.TestCase):
             tournament="",
         )
         self.assertEqual(result["title"], "ACA 208")
+        lower = normalize_event_fields(
+            title="aca 208",
+            sport="MMA",
+            tournament="aca 208",
+        )
+        self.assertEqual(lower["title"], "ACA 208")
+        self.assertEqual(lower["tournament"], "ACA 208")
         self.assertEqual(result["sport"], "ММА")
 
     def test_real_betis_is_not_mistaken_for_standalone_bet_word(self):
