@@ -24,7 +24,7 @@ need python3
 gcloud config set project "$PROJECT_ID" >/dev/null
 
 echo "==> Enabling Google Cloud APIs"
-gcloud services enable   run.googleapis.com   artifactregistry.googleapis.com   iamcredentials.googleapis.com   sts.googleapis.com   secretmanager.googleapis.com   storage.googleapis.com   cloudscheduler.googleapis.com   cloudresourcemanager.googleapis.com
+gcloud services enable   run.googleapis.com   artifactregistry.googleapis.com   iamcredentials.googleapis.com   sts.googleapis.com   secretmanager.googleapis.com   storage.googleapis.com   cloudscheduler.googleapis.com   cloudresourcemanager.googleapis.com   iam.googleapis.com
 
 PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
 
@@ -51,6 +51,7 @@ create_sa "$SCHEDULER_SA_NAME" "SLP Cloud Scheduler"
 
 echo "==> Runtime permissions"
 gcloud storage buckets add-iam-policy-binding "gs://$BUCKET"   --member="serviceAccount:$RUNTIME_SA"   --role="roles/storage.objectAdmin" >/dev/null
+gcloud storage buckets add-iam-policy-binding "gs://$BUCKET"   --member="serviceAccount:$DEPLOYER_SA"   --role="roles/storage.objectAdmin" >/dev/null
 
 for secret in slp-web-secret slp-web-users slp-free-script-key; do
   if ! gcloud secrets describe "$secret" >/dev/null 2>&1; then
@@ -104,7 +105,7 @@ fi
 gcloud projects add-iam-policy-binding "$PROJECT_ID"   --member="serviceAccount:$RUNTIME_SA"   --role="roles/secretmanager.secretAccessor" >/dev/null
 
 echo "==> GitHub deployer permissions"
-for role in   roles/run.admin   roles/artifactregistry.writer   roles/cloudscheduler.admin   roles/viewer; do
+for role in   roles/run.admin   roles/artifactregistry.writer   roles/cloudscheduler.admin   roles/secretmanager.secretAccessor   roles/viewer; do
   gcloud projects add-iam-policy-binding "$PROJECT_ID"     --member="serviceAccount:$DEPLOYER_SA"     --role="$role" >/dev/null
 done
 
