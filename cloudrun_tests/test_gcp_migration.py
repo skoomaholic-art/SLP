@@ -63,6 +63,33 @@ class GoogleCloudMigrationTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         call.assert_called_once_with("scan", timeout_seconds=300)
 
+    def test_old_bridge_without_scan_operation_still_imports_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = SLPDatabase(Path(directory) / "sport.db")
+            fake_manifest = {
+                "files": [],
+                "lastScan": "2026-10-02T06:00:00+05:00",
+            }
+            with patch.object(
+                bridge,
+                "_config",
+                return_value=("https://script.google.com/macros/s/test/exec", "x" * 64),
+            ), patch.object(
+                bridge.ScriptClient,
+                "scan",
+                side_effect=bridge.FreeDriveError("unknown operation"),
+            ), patch.object(
+                bridge.ScriptClient,
+                "manifest",
+                return_value=fake_manifest,
+            ):
+                result = bridge.sync_inbox(
+                    database,
+                    allow_auto_import=False,
+                    refresh_archive=True,
+                )
+            self.assertEqual(result["new_attachments"], 0)
+
     def test_collection_forces_fresh_bridge_scan(self):
         with tempfile.TemporaryDirectory() as directory:
             database = SLPDatabase(Path(directory) / "sport.db")

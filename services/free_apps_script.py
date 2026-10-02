@@ -360,7 +360,15 @@ def sync_inbox(
         ).fetchone()
     client = ScriptClient()
     if refresh_archive:
-        client.scan()
+        try:
+            client.scan()
+        except FreeDriveError as exc:
+            # Backward compatibility with the currently published Apps Script
+            # revision. Older bridge deployments do not know the authenticated
+            # "scan" operation yet; in that case continue with the latest
+            # hourly manifest instead of failing the entire SLP collection.
+            if "unknown operation" not in str(exc).casefold():
+                raise
     offset = int(saved["next_offset"]) if saved else 0
     created = reviewed = auto_imported = 0
     visited = set()
@@ -370,13 +378,18 @@ def sync_inbox(
     for page_number in range(4):
         page = client.manifest(offset)
         total = page.get("total")
-        # Older scripts returned only the most recent 21 days and sorted
-        # newest first. Resuming their shifting offsets could lose mail.
-        if not isinstance(total, int) or total < 0 or total > 10000:
-            raise FreeDriveError(
-                "Обнови опубликованный Apps Script: нужна стабильная " 
-                "пагинация полного архива (поле total)"
-            )
+        legacy_manifest = not (
+            isinstance(total, int) and 0 <= total <= 10000
+        )
+        # Older published scripts expose only a recent moving window and do
+        # not provide a stable total. Read that window from offset 0 on every
+        # sync and rely on free_bridge_processed for idempotency instead of
+        # advancing a cursor that could skip newly inserted mail.
+        if legacy_manifest:
+            if offset != 0:
+                offset = 0
+                page = client.manifest(0)
+            total = len(page.get("files") or [])
         if offset > total:
             # Owner reset the Drive archive. The processed-id table still
             # prevents re-import of any files that survived the reset.
@@ -496,17 +509,21 @@ def sync_inbox(
                     (identifier, str(meta["sha256"]),
                      datetime.now(KZ_TIMEZONE).isoformat()),
                 )
-        next_offset = page.get("next")
-        if next_offset is None:
-            next_offset = offset + len(files)
-            if next_offset > total:
-                raise FreeDriveError("Манифест изменился во время чтения")
+        if legacy_manifest:
+            next_offset = 0
             finished = True
         else:
-            if (not isinstance(next_offset, int) or next_offset <= offset
-                    or next_offset > total):
-                raise FreeDriveError("Некорректная пагинация манифеста")
-            finished = False
+            next_offset = page.get("next")
+            if next_offset is None:
+                next_offset = offset + len(files)
+                if next_offset > total:
+                    raise FreeDriveError("Манифест изменился во время чтения")
+                finished = True
+            else:
+                if (not isinstance(next_offset, int) or next_offset <= offset
+                        or next_offset > total):
+                    raise FreeDriveError("Некорректная пагинация манифеста")
+                finished = False
         with database._connect() as conn:
             conn.execute(
                 "INSERT INTO free_bridge_cursor(id,next_offset) VALUES(1,?) "
