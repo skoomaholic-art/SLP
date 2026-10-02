@@ -88,6 +88,34 @@ jobs:
       - name: Configure Artifact Registry Docker auth
         run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
+      - name: Migrate current Render SQLite to GCS once
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET="gs://$BUCKET/sport-epg/slp-web.db"
+          MIGRATION_URL="https://slp-web.onrender.com/api/migration/snapshot"
+          if gcloud storage ls "$TARGET" >/dev/null 2>&1; then
+            echo "GCS database already exists; migration is not repeated."
+          else
+            ID_TOKEN="$(gcloud auth print-identity-token               --audiences="$MIGRATION_URL"               --include-email)"
+            curl --fail --silent --show-error               -H "Authorization: Bearer $ID_TOKEN"               "$MIGRATION_URL"               -o /tmp/slp-render.db.gz
+            python - <<'PY'
+import gzip, hashlib, sqlite3
+from pathlib import Path
+packed = Path("/tmp/slp-render.db.gz").read_bytes()
+raw = gzip.decompress(packed)
+target = Path("/tmp/slp-render.db")
+target.write_bytes(raw)
+with sqlite3.connect(target) as db:
+    row = db.execute("PRAGMA quick_check").fetchone()
+if not row or row[0] != "ok":
+    raise SystemExit("Render SQLite snapshot failed quick_check")
+print("migrated_bytes=", len(raw))
+print("sha256=", hashlib.sha256(raw).hexdigest())
+PY
+            gcloud storage cp /tmp/slp-render.db "$TARGET"
+          fi
+
       - name: Build and push exact production image
         shell: bash
         run: |
