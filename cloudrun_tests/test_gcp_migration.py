@@ -72,6 +72,10 @@ class GoogleCloudMigrationTests(unittest.TestCase):
                 "items": [],
             }
             with patch.object(
+                bridge,
+                "_config",
+                return_value=("https://script.google.com/macros/s/test/exec", "x" * 64),
+            ), patch.object(
                 bridge.ScriptClient,
                 "scan",
                 side_effect=bridge.FreeDriveError("unknown operation"),
