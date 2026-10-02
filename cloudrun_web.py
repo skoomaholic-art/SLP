@@ -1211,12 +1211,24 @@ async def scheduled_refresh(request: Request):
             )
         except Exception as exc:
             results["errors"].append("vsetv: " + type(exc).__name__)
-        if gmail.status(request.app.state.database)["connected"]:
+        if (request.app.state.free_mail_bridge
+                or gmail.status(request.app.state.database)["connected"]):
             try:
-                results["gmail"] = await asyncio.to_thread(
-                    gmail.sync_inbox, request.app.state.database,
-                    allow_auto_import=False,
-                )
+                if request.app.state.free_mail_bridge:
+                    results["gmail"] = await asyncio.to_thread(
+                        freebridge.sync_inbox,
+                        request.app.state.database,
+                        allow_auto_import=False,
+                        refresh_archive=True,
+                    )
+                else:
+                    results["gmail"] = await asyncio.to_thread(
+                        gmail.sync_inbox,
+                        request.app.state.database,
+                        allow_auto_import=False,
+                    )
+            except freebridge.FreeDriveError as exc:
+                results["errors"].append("gmail_bridge: " + type(exc).__name__)
             except (gmail.GmailTransportError, gmail.GmailNotConfigured) as exc:
                 results["errors"].append("gmail: " + type(exc).__name__)
         await _save_state(request)
