@@ -45,7 +45,7 @@ class SourceRoutingTests(unittest.TestCase):
 
     def test_vsetv_is_only_used_where_verified_id_exists(self):
         with_vsetv = [channel for channel in CHANNELS if channel.vsetv_id is not None]
-        self.assertEqual(len(with_vsetv), 8)
+        self.assertEqual(len(with_vsetv), 9)
         for channel in CHANNELS:
             route = route_for_channel(channel.name)
             has_fallback = "vsetv_live_badge" in route.fallback_transports
@@ -92,8 +92,17 @@ class SourceRoutingTests(unittest.TestCase):
         self.assertTrue(
             any(name.startswith("web_vsetv_") for name in by_name["KHL HD"])
         )
-        self.assertFalse(
+        self.assertTrue(
             any(name.startswith("web_vsetv_") for name in by_name["SETANTA SPORTS KZ"])
+        )
+        self.assertTrue(
+            any(name.startswith("web_iptvx_") for name in by_name["SETANTA SPORTS KZ"])
+        )
+        self.assertTrue(
+            any(name.startswith("web_iptvx_") for name in by_name["QAZSPORT HD"])
+        )
+        self.assertFalse(
+            any(name.startswith("web_iptvx_") for name in by_name["KHL PRIME"])
         )
 
 

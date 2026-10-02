@@ -43,7 +43,6 @@ def _fallbacks(
     return tuple(result)
 
 
-EVENT_API_CONFIRMATIONS = ("espn_public", "thesportsdb")
 
 ROUTES = {
     "SETANTA SPORTS 1": ChannelRoute(
@@ -173,20 +172,6 @@ ROUTES = {
         confirmation_transports=("vsetv_live_badge", "championat_calendar", "official_event_sources"),
         agent_reach_role="championat_reader_and_official_page_extraction_fallback",
     ),
-}
-
-
-ROUTES = {
-    name: ChannelRoute(
-        channel=route.channel,
-        primary_transport=route.primary_transport,
-        fallback_transports=route.fallback_transports,
-        confirmation_transports=tuple(dict.fromkeys(
-            route.confirmation_transports + EVENT_API_CONFIRMATIONS
-        )),
-        agent_reach_role=route.agent_reach_role,
-    )
-    for name, route in ROUTES.items()
 }
 
 

@@ -39,7 +39,7 @@ _NOISE = re.compile(
 
 def normalize_channel_name(value: str) -> str:
     text = " ".join(str(value or "").split()).strip()
-    text = re.sub(r"^\[[^\]]+\]\s*", "", text)
+    text = re.sub(r"\[[^\]]+\]", " ", text)
     text = re.sub(r"^[A-Z]{2,3}\s*[:|/-]\s*", "", text)
     text = _NOISE.sub(" ", text)
     text = re.sub(r"[|:_/]+", " ", text)
