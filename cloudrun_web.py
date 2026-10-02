@@ -36,6 +36,7 @@ from services import free_apps_script as freebridge
 from services import assistant_bridge
 from services import ai_pipeline
 from services import editorial_store as editorial
+from services import editorial_notifications as important_notifications
 from services.channel_registry import CHANNELS
 from services.event_text_ru import normalize_event_fields, strip_bookmakers
 from services.source_routing import route_for_channel, runtime_source_names
@@ -185,9 +186,8 @@ def event_rows(
         rows = conn.execute(
             "SELECT storage_id,payload_json,active,first_seen_at,last_seen_at "
             "FROM events WHERE (?=1 OR active=1) "
-            "AND (?='' OR event_date>=?) AND (?='' OR event_date<=?) "
             "ORDER BY start_at,channel LIMIT 20000",
-            (int(include_inactive), first, first, last, last),
+            (int(include_inactive),),
         ).fetchall()
     now = datetime.now(KZ_TIMEZONE)
     overrides = editorial.get_editorial(
@@ -198,8 +198,11 @@ def event_rows(
         try:
             raw = json.loads(row["payload_json"])
             patch = overrides.get(row["storage_id"], {})
+            cancelled = str(patch.get("cancelled") or "").casefold() == "true"
+            if cancelled and not include_inactive:
+                continue
             raw.update({key: value for key, value in patch.items()
-                        if key != "end_time"})
+                        if key not in ("end_time", "cancelled")})
             if patch.get("end_time"):
                 raw["estimated_broadcast_end_date"] = raw["date"]
                 raw["estimated_broadcast_end"] = patch["end_time"]
@@ -224,6 +227,11 @@ def event_rows(
             ):
                 continue
             start, end = get_scheduled_datetimes(raw)
+            visible_date = start.date().isoformat()
+            if first and visible_date < first:
+                continue
+            if last and visible_date > last:
+                continue
             known_end = bool(
                 raw.get("estimated_broadcast_end_date")
                 and raw.get("estimated_broadcast_end")
@@ -238,7 +246,9 @@ def event_rows(
                 "date": start.date().isoformat(), "time": start.strftime("%H:%M"),
                 "start": start, "end": end + (
                     timedelta(0) if known_end else timedelta(minutes=10)
-                ), "end_known": known_end, "active": bool(row["active"]),
+                ), "end_known": known_end,
+                "active": bool(row["active"]) and not cancelled,
+                "editorially_cancelled": cancelled,
                 "first_seen_at": row["first_seen_at"],
                 "last_seen_at": row["last_seen_at"],
                 "editorial": patch,
@@ -334,6 +344,7 @@ def event_rows(
             if k not in ("start", "end", "source_record_id", "first_seen_at",
                          "last_seen_at")
         }
+        entry["source_record_id"] = chosen["source_record_id"]
         entry["start_at"] = chosen["start"].isoformat()
         entry["platform_start_at"] = (
             chosen["start"] - timedelta(minutes=10)
@@ -460,6 +471,7 @@ async def lifespan(application: FastAPI):
     initialize_epg_imports(database)
     gmail.init_gmail_schema(database)
     editorial.init_editorial(database)
+    important_notifications.init_notifications(database)
     application.state.database = database
     application.state.schedule = ScheduleService(
         RuntimeParserOrchestrator(database=database)
@@ -469,10 +481,10 @@ async def lifespan(application: FastAPI):
     application.state.collect_progress = {
         "running": False,
         "phase": "idle",
-        "message": "Текущая сетка загружена",
+        "message": "Расписание готово к обновлению",
         "detail": (
-            "Нажмите «Собрать расписание», чтобы вручную обновить сайты, API "
-            f"и почту · Событий в базе: {database.active_event_count()}"
+            "Нажмите «Собрать расписание», чтобы проверить сайты, API и почту. "
+            f"Событий в базе: {database.active_event_count()}"
         ),
         "updated_at": datetime.now(KZ_TIMEZONE).isoformat(timespec="seconds"),
     }
@@ -988,93 +1000,72 @@ def archive_revisions(request: Request, storage_id: str = ""):
 
 
 def _notification_items(database: SLPDatabase, limit: int = 80) -> list[dict]:
-    """Unify actionable supplier/source notices without inventing cancellations."""
-    items: list[dict] = []
-    gmail.init_gmail_schema(database)
-    with database._connect() as conn:
-        mail_rows = conn.execute(
-            "SELECT id,status,filename,subject,detected_channel,reason,"
-            "received_at,created_at FROM gmail_notices "
-            "WHERE status IN ('pending','review') ORDER BY id DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-        incident_rows = conn.execute(
-            "SELECT id,source,scope_date,incident_type,severity,message,"
-            "created_at FROM incidents WHERE resolved_at IS NULL "
-            "ORDER BY id DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-        revision_rows = conn.execute(
-            "SELECT id,storage_id,source,scope_date,change_kind,before_json,"
-            "after_json,created_at FROM event_revisions "
-            "ORDER BY id DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-
-    for row in mail_rows:
-        items.append({
-            "kind": "mail", "id": f"mail:{row['id']}",
-            "level": "attention",
-            "title": (
-                (row["detected_channel"] or "Письмо требует проверки") +
-                (" · " + row["filename"] if row["filename"] else "")
-            ),
-            "message": row["reason"] or row["subject"],
-            "created_at": row["received_at"] or row["created_at"],
-            "action": "gmail",
-        })
-    for row in incident_rows:
-        items.append({
-            "kind": "incident", "id": f"incident:{row['id']}",
-            "level": row["severity"] or "warning",
-            "title": f"{row['source']} · {row['scope_date']}",
-            "message": row["message"],
-            "created_at": row["created_at"],
-            "action": "sources",
-        })
-    for row in revision_rows:
-        try:
-            before = json.loads(row["before_json"]) if row["before_json"] else {}
-            after = json.loads(row["after_json"]) if row["after_json"] else {}
-        except (TypeError, json.JSONDecodeError):
-            before, after = {}, {}
-        event = after or before
-        title = clean(event.get("title") or event.get("raw_title") or "Событие")
-        channel = channel_name(event.get("channel") or "")
-        change = row["change_kind"]
-        if change == "removed_from_source":
-            message = "Запись исчезла из новой сетки. Это не подтверждает отмену."
-            level = "attention"
-        elif change == "source_changed":
-            fields = []
-            for field, label in (
-                ("time", "время"), ("date", "дата"),
-                ("title", "название"), ("tournament", "турнир"),
-            ):
-                if before.get(field) != after.get(field):
-                    fields.append(label)
-            message = "Источник изменил: " + (", ".join(fields) or "данные события")
-            level = "attention"
-        else:
-            message = "Новое подтверждённое событие в источнике"
-            level = "info"
-        items.append({
-            "kind": "source_change", "id": f"revision:{row['id']}",
-            "level": level,
-            "title": " · ".join(x for x in (channel, title) if x),
-            "message": message, "created_at": row["created_at"],
-            "action": "archive", "storage_id": row["storage_id"],
-        })
-    items.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
-    return items[:limit]
+    """Only high-signal, persistent editorial notices belong in this inbox."""
+    return important_notifications.list_notifications(database, limit=limit)
 
 
 @app.get("/api/notifications")
 def notifications(request: Request, limit: int = 80):
     current_user(request)
-    return {"notifications": _notification_items(
+    items = _notification_items(
         request.app.state.database, min(max(limit, 1), 150)
-    )}
+    )
+    return {
+        "notifications": items,
+        "unread_count": sum(1 for item in items if not item.get("read")),
+    }
+
+
+@app.post("/api/notifications/{notice_id}/read")
+async def read_notification(request: Request, notice_id: int):
+    require_editor(request)
+    origin_guard(request)
+    async with request.app.state.collect_lock:
+        item = important_notifications.mark_read(
+            request.app.state.database, notice_id
+        )
+        if item is None:
+            raise HTTPException(404, "Уведомление не найдено")
+        await _save_state(request)
+    return item
+
+
+@app.post("/api/notifications/{notice_id}/apply")
+async def apply_notification(request: Request, notice_id: int):
+    user = require_editor(request)
+    origin_guard(request)
+    async with request.app.state.collect_lock:
+        item = important_notifications.get_notification(
+            request.app.state.database, notice_id
+        )
+        if item is None:
+            raise HTTPException(404, "Уведомление не найдено")
+        if item.get("status") == "applied":
+            return item
+        patch = item.get("patch") or {}
+        storage_id = str(item.get("storage_id") or "")
+        if not patch or not storage_id:
+            important_notifications.mark_read(
+                request.app.state.database, notice_id
+            )
+            await _save_state(request)
+            raise HTTPException(
+                409, "Для этого уведомления нет автоматического изменения"
+            )
+        try:
+            editorial.apply_edit(
+                request.app.state.database,
+                storage_id=storage_id,
+                values=patch,
+                username=user["username"],
+            )
+        except editorial.EditorialError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        result = important_notifications.mark_applied(
+            request.app.state.database, notice_id
+        )
+        await _save_state(request)
+    return result
 
 
 @app.get("/api/gmail/status")
@@ -1385,6 +1376,29 @@ def _set_collect_progress(
     application.state.collect_progress = payload
 
 
+def _current_week_bounds() -> tuple[date, date]:
+    today = datetime.now(KZ_TIMEZONE).date()
+    first = today - timedelta(days=today.weekday())
+    return first, first + timedelta(days=6)
+
+
+def _collection_error_code(message: str) -> int:
+    rules = (
+        ("Основные сайты", 101),
+        ("Дополнительные телегиды", 102),
+        ("Почта/Drive", 201),
+        ("Почта", 202),
+        ("Проверка спортивных API", 301),
+        ("Сохранение", 401),
+        ("Итоговая сетка", 402),
+        ("Внутренняя ошибка", 500),
+    )
+    for prefix, code in rules:
+        if str(message or "").startswith(prefix):
+            return code
+    return 599
+
+
 async def _run_collection(application: FastAPI) -> dict:
     database = application.state.database
     result = {
@@ -1395,6 +1409,7 @@ async def _run_collection(application: FastAPI) -> dict:
         "vsetv": None,
         "iptvx": None,
         "event_api_validation": None,
+        "important_notifications": 0,
         "mail": None,
     }
 
@@ -1403,11 +1418,8 @@ async def _run_collection(application: FastAPI) -> dict:
             _set_collect_progress(
                 application,
                 phase="parsers",
-                message="Обрабатываю основные спортивные источники",
-                detail=(
-                    "QAZSPORT HD, SPORT+ Qazaqstan, Setanta, Q channels, "
-                    "Eurosport, viju+ Sport, KHL и МАТЧ! ПЛАНЕТА"
-                ),
+                message="Собираю расписание, подождите немного",
+                detail="Основные сайты и API спортивных каналов",
             )
             try:
                 refreshed = await application.state.schedule.refresh()
@@ -1431,11 +1443,8 @@ async def _run_collection(application: FastAPI) -> dict:
             _set_collect_progress(
                 application,
                 phase="fallbacks",
-                message="Проверяю резервные телегиды и LIVE-подтверждения",
-                detail=(
-                    "VseTV, iptvX XMLTV, Championat, Agent Reach и "
-                    "публичные API подтверждения событий"
-                ),
+                message="Уже почти собрал",
+                detail="Проверяю VseTV, iptvX и резервные подтверждения",
             )
             try:
                 result["vsetv"] = await refresh_vsetv_web_sources(database)
@@ -1451,24 +1460,11 @@ async def _run_collection(application: FastAPI) -> dict:
                     "iptvX: " + type(exc).__name__
                 )
 
-            try:
-                candidates = event_rows(database, "", "")
-                result["event_api_validation"] = await validate_events_with_public_apis(
-                    candidates
-                )
-            except Exception as exc:
-                result["source_warnings"].append(
-                    "Проверка спортивных API: " + type(exc).__name__
-                )
-
             _set_collect_progress(
                 application,
                 phase="mail",
-                message="Проверяю новые письма и Excel поставщиков",
-                detail=(
-                    "Setanta, Q LEAGUE, Q ARENA, Q FOOTBALL, "
-                    "QAZSPORT и SPORT+"
-                ),
+                message="Наврал - ещё собираю",
+                detail="Проверяю новые письма и Excel поставщиков",
             )
             mail_available = (
                 application.state.free_mail_bridge
@@ -1507,12 +1503,33 @@ async def _run_collection(application: FastAPI) -> dict:
 
             _set_collect_progress(
                 application,
+                phase="validation",
+                message="Проверяю, не наврали ли источники",
+                detail="Сверяю уже собранную сетку с внешними спортивными данными",
+            )
+            try:
+                today = datetime.now(KZ_TIMEZONE).date()
+                validation_end = today + timedelta(days=6)
+                candidates = event_rows(
+                    database, today.isoformat(), validation_end.isoformat()
+                )
+                validation = await validate_events_with_public_apis(candidates)
+                result["event_api_validation"] = validation
+                result["important_notifications"] = (
+                    important_notifications.record_validation_notifications(
+                        database, validation
+                    )
+                )
+            except Exception as exc:
+                result["source_warnings"].append(
+                    "Проверка спортивных API: " + type(exc).__name__
+                )
+
+            _set_collect_progress(
+                application,
                 phase="merge",
-                message="Собираю итоговую сетку",
-                detail=(
-                    "Принятые почтовые данные имеют приоритет, "
-                    "остальные события дополняются парсингом"
-                ),
+                message="Вот-вот",
+                detail="Собираю финальную сетку и сохраняю изменения",
             )
             if application.state.backup:
                 try:
@@ -1529,12 +1546,18 @@ async def _run_collection(application: FastAPI) -> dict:
     result["ok"] = not bool(result["errors"])
     try:
         result["event_count"] = len(event_rows(database, "", ""))
+        week_first, week_last = _current_week_bounds()
+        result["week_event_count"] = len(event_rows(
+            database, week_first.isoformat(), week_last.isoformat()
+        ))
     except Exception as exc:
         result["event_count"] = database.active_event_count()
+        result["week_event_count"] = result["event_count"]
         result["errors"].append(
             "Итоговая сетка: " + type(exc).__name__
         )
         result["ok"] = False
+
     result["durable_storage"] = bool(application.state.backup)
     result["last_run"] = database.latest_agent_run()
     pending_notices = gmail.list_notices(database, limit=200)
@@ -1544,15 +1567,24 @@ async def _run_collection(application: FastAPI) -> dict:
         if item["status"] == "pending" and item["detected_channel"]
     })
 
+    if result["ok"]:
+        result["summary_message"] = (
+            f"Расписание собрано: {result['week_event_count']} "
+            "событий на этой неделе"
+        )
+        final_detail = ""
+    else:
+        first_error = result["errors"][0] if result["errors"] else "Неизвестная ошибка"
+        code = _collection_error_code(first_error)
+        result["summary_message"] = f"Ошибка #{code}: {first_error}"
+        extra = result["errors"][1:]
+        final_detail = "; ".join(extra[:3])
+
     _set_collect_progress(
         application,
         phase="done" if result["ok"] else "done_with_errors",
-        message=(
-            "Сбор завершён успешно"
-            if result["ok"]
-            else "Сбор завершён с ошибками отдельных источников"
-        ),
-        detail=f"Итоговая сетка: {result['event_count']} событий",
+        message=result["summary_message"],
+        detail=final_detail,
         running=False,
         result=result,
     )
@@ -1565,8 +1597,8 @@ def collect_status(request: Request):
     return dict(getattr(request.app.state, "collect_progress", {
         "running": False,
         "phase": "idle",
-        "message": "Текущая сетка загружена",
-        "detail": "Нажмите «Собрать расписание», чтобы вручную обновить источники",
+        "message": "Расписание готово к обновлению",
+        "detail": "Нажмите «Собрать расписание», чтобы проверить сайты, API и почту",
     }))
 
 
@@ -1584,8 +1616,8 @@ async def collect(request: Request, options: CollectOptions):
     _set_collect_progress(
         request.app,
         phase="start",
-        message="Запускаю полный сбор",
-        detail="Сайты, TV+/Mobikino, резервные телегиды и почта",
+        message="Собираю расписание, подождите немного",
+        detail="Сайты, API, резервные телегиды и почта",
         running=True,
     )
     request.app.state.collect_task = asyncio.create_task(

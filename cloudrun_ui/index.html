@@ -71,7 +71,12 @@ details.sources summary{cursor:pointer;font-weight:700;font-size:16px}
 .mail-icon{display:inline-block;background:#0e2732;color:var(--accent);border-radius:7px;padding:4px 7px;font-weight:750}
 .mail-notice-count{border-radius:9px;padding:3px 7px;background:#4e3628;color:#ffddb4}
 .notification-list{display:grid;gap:8px;margin-top:10px}
-.notification-item{border:1px solid var(--line);border-radius:9px;padding:9px;background:#101b29}
+.notification-item{border:1px solid var(--line);border-radius:9px;padding:11px;background:#101b29;transition:.18s ease}
+.notification-item.read{background:#171b22;border-color:#333a45;opacity:.72}
+.notification-item.applied{background:#171b22;border-color:#38463d;opacity:.72}
+.notification-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.notification-actions button,.notification-actions a{font-size:12px;padding:6px 9px}
+.notification-source{display:inline-flex;align-items:center;text-decoration:none}
 .notification-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
 .notification-title{font-weight:750}
 .notification-time{color:var(--muted);font-size:11px;white-space:nowrap}
@@ -93,8 +98,8 @@ details.sources summary{cursor:pointer;font-weight:700;font-size:16px}
 
 footer{margin:25px 0;color:var(--muted);font-size:12px}
 #message{white-space:pre-line}
-.collection-quote{display:block;margin-top:14px;font-style:italic;line-height:1.55}
-.collection-quote .quote-author{display:block;margin-top:5px}
+.collection-quote{display:block;width:100%;margin-top:14px;font-style:italic;line-height:1.55;text-align:center}
+.collection-quote .quote-author{display:block;margin-top:5px;text-align:center}
 </style>
 </head>
 <body>
@@ -328,40 +333,76 @@ async function loadNotifications(){
  try{
   const response=await api("/api/notifications?limit=80");
   const items=response.notifications||[];
-  const actionable=items.filter(x=>["attention","warning","error","critical"].includes(x.level));
-  $("notificationCounter").textContent=String(actionable.length);
-  $("notificationCounter").classList.toggle("hide",!actionable.length);
+  const unread=Number(response.unread_count||0);
+  $("notificationCounter").textContent=String(unread);
+  $("notificationCounter").classList.toggle("hide",!unread);
   const root=$("notifications");root.replaceChildren();
+
+  const markCardRead=(card,item)=>{
+   if(item.read)return;
+   item.read=true;item.status="read";
+   card.classList.add("read");
+   const current=Math.max(0,Number($("notificationCounter").textContent||0)-1);
+   $("notificationCounter").textContent=String(current);
+   $("notificationCounter").classList.toggle("hide",!current);
+   api("/api/notifications/"+item.id+"/read","POST",{}).catch(()=>{});
+  };
+
   for(const item of items){
    const card=document.createElement("article");
-   card.className="notification-item "+(item.level||"info");
+   card.className="notification-item "+(item.level||"attention")+
+    (item.read?" read":"")+(item.status==="applied"?" applied":"");
+
    const top=document.createElement("div");top.className="notification-top";
    const title=document.createElement("div");title.className="notification-title";
    title.textContent=item.title||"Изменение";
    const when=document.createElement("div");when.className="notification-time";
-   when.textContent=(item.created_at||"").slice(0,16).replace("T"," ");
+   when.textContent=(item.updated_at||item.created_at||"").slice(0,16).replace("T"," ");
    top.append(title,when);
+
    const message=document.createElement("div");message.className="notification-message";
    message.textContent=item.message||"";
    card.append(top,message);
-   if(item.action==="gmail"){
-    card.style.cursor="pointer";
-    card.addEventListener("click",()=>{$("gmailPanel").open=true;$("gmailPanel").scrollIntoView({behavior:"smooth",block:"nearest"})});
-   }else if(item.action==="archive"){
-    card.style.cursor="pointer";
-    card.addEventListener("click",async()=>{
-     if(!state.archive){state.archive=true;$("archiveToggle").setAttribute("aria-pressed","true");
-      $("archiveToggle").textContent="Показать текущее расписание";
-      $("archiveExport").classList.remove("hide");$("archiveNote").classList.remove("hide");await load();}
-    });
-   }else if(item.action==="sources"){
-    card.style.cursor="pointer";
-    card.addEventListener("click",()=>{$("sourcesPanel").open=true;$("sourcesPanel").scrollIntoView({behavior:"smooth",block:"nearest"})});
+
+   const actions=document.createElement("div");actions.className="notification-actions";
+   if(item.source_url){
+    const source=document.createElement("a");
+    source.className="notification-source";
+    source.href=item.source_url;source.target="_blank";source.rel="noopener noreferrer";
+    source.textContent="Источник"+(item.source_name?" · "+item.source_name:"");
+    source.addEventListener("click",()=>markCardRead(card,item));
+    actions.append(source);
    }
+   if(item.can_apply){
+    const apply=document.createElement("button");
+    apply.type="button";apply.textContent="Применить изменения в расписании";
+    apply.addEventListener("click",async event=>{
+     event.stopPropagation();apply.disabled=true;
+     try{
+      await api("/api/notifications/"+item.id+"/apply","POST",{});
+      msg("Изменения применены к расписанию.","success");
+      await load();
+     }catch(e){msg(e.message,"error");apply.disabled=false}
+    });
+    actions.append(apply);
+   }else if(item.status==="applied"){
+    const applied=document.createElement("span");
+    applied.className="muted-small";applied.textContent="Изменение применено";
+    actions.append(applied);
+   }
+   if(actions.childNodes.length)card.append(actions);
+
+   card.addEventListener("click",event=>{
+    if(event.target.closest("button,a"))return;
+    markCardRead(card,item);
+   });
    root.append(card);
   }
-  if(!items.length){const empty=document.createElement("p");empty.className="muted-small";
-   empty.textContent="Новых изменений и ошибок источников нет.";root.append(empty)}
+  if(!items.length){
+   const empty=document.createElement("p");empty.className="muted-small";
+   empty.textContent="Важных изменений нет. Всё тихо.";
+   root.append(empty);
+  }
  }catch(e){
   const root=$("notifications");root.textContent=e.message;
  }
@@ -708,22 +749,15 @@ function showCollectionQuote(technical,quote,author){
  authorLine.textContent="(с) "+author;em.append(authorLine);n.append(em);
 }
 function startCollectTicker(){
- let index=0,showQuote=true,current="Запускаю полный сбор...",detail="";
+ let index=0,current="Собираю расписание, подождите немного",detail="";
  let stopped=false;
  const paint=()=>{
   if(stopped)return;
   const technical=detail?current+"\n"+detail:current;
-  if(showQuote){
-   const [quote,author]=COLLECTION_QUOTES[index%COLLECTION_QUOTES.length];
-   showCollectionQuote(technical,quote,author);
-  }else{
-   showCollectionMessage(technical,"Ещё собираю...");
-  }
+  const [quote,author]=COLLECTION_QUOTES[index%COLLECTION_QUOTES.length];
+  showCollectionQuote(technical,quote,author);
  };
- const flip=setInterval(()=>{
-  if(showQuote)index++;
-  showQuote=!showQuote;paint();
- },12000);
+ const flip=setInterval(()=>{index++;paint()},12000);
  const poll=setInterval(async()=>{
   try{
    const status=await api("/api/collect/status");
@@ -768,16 +802,12 @@ $("collect").addEventListener("click",async()=>{
    }
   }
   if(!result)throw new Error("Сбор выполняется слишком долго. Статус сохранён, обновите страницу позже.");
-  const mail=result.mail||{};
-  const mailText=(mail.new_attachments||0)?
-    " Новых писем в уведомлениях: "+mail.new_attachments+".":"";
-  const warningText=(result.source_warnings||[]).length?
-    " Предупреждения источников: "+result.source_warnings.slice(0,3).join("; ")+".":"";
   if(result.ok){
-   msg("Сбор завершён успешно. Событий в итоговой сетке: "+result.event_count+"."+mailText+warningText,"success");
+   msg(result.summary_message||
+     ("Расписание собрано: "+(result.week_event_count||0)+" событий на этой неделе"),"success");
   }else{
-   msg("Сбор завершён с ошибками: "+(result.errors||[]).join("; ")+
-      ". Итоговая сетка сохранена по доступным источникам."+mailText+warningText,"error");
+   msg(result.summary_message||
+     ("Ошибка #599: "+((result.errors||[])[0]||"неизвестная ошибка")),"error");
   }
   await load();
  }catch(e){
