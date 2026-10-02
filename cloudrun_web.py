@@ -551,6 +551,75 @@ def healthz(request: Request):
             "durable_storage": bool(request.app.state.backup)}
 
 
+@app.get("/api/migration/snapshot")
+async def migration_snapshot(request: Request):
+    """One-time Render -> Google Cloud database transfer.
+
+    Disabled unless SPORT_ENABLE_GCP_MIGRATION=true. Access requires a Google
+    OIDC token issued to the configured Google Cloud deployer service account.
+    The response is a gzip-compressed SQLite online backup; no environment
+    secrets are returned.
+    """
+    if os.getenv("SPORT_ENABLE_GCP_MIGRATION", "").casefold() not in {
+        "1", "true", "yes",
+    }:
+        raise HTTPException(404, "Migration endpoint disabled")
+    allowed = os.getenv("SPORT_MIGRATION_SERVICE_ACCOUNT", "").strip()
+    audience = PUBLIC_URL + "/api/migration/snapshot"
+    if not allowed or not PUBLIC_URL:
+        raise HTTPException(503, "Migration identity is not configured")
+    authorization = request.headers.get("authorization", "")
+    if not authorization.startswith("Bearer ") or len(authorization) > 8192:
+        raise HTTPException(401, "Google OIDC token required")
+    try:
+        from google.oauth2 import id_token
+        from google.auth.transport.requests import Request as GoogleRequest
+        claims = await asyncio.to_thread(
+            id_token.verify_oauth2_token,
+            authorization[7:],
+            GoogleRequest(),
+            audience,
+        )
+    except Exception:
+        raise HTTPException(401, "Google OIDC token rejected") from None
+    if (
+        str(claims.get("email") or "").casefold() != allowed.casefold()
+        or not claims.get("email_verified", False)
+    ):
+        raise HTTPException(403, "Unknown migration identity")
+
+    import gzip
+    with tempfile.NamedTemporaryFile(
+        dir=DB_PATH.parent, suffix=".db", delete=False,
+    ) as tmp:
+        snapshot_path = Path(tmp.name)
+    try:
+        source = sqlite3.connect(DB_PATH)
+        target = sqlite3.connect(snapshot_path)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+            source.close()
+        with sqlite3.connect(snapshot_path) as checked:
+            quick = checked.execute("PRAGMA quick_check").fetchone()
+        if not quick or quick[0] != "ok":
+            raise HTTPException(500, "SQLite snapshot failed integrity check")
+        raw = await asyncio.to_thread(snapshot_path.read_bytes)
+        packed = await asyncio.to_thread(gzip.compress, raw, 6)
+        return Response(
+            content=packed,
+            media_type="application/gzip",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Disposition": 'attachment; filename="slp-render.db.gz"',
+                "X-SLP-SHA256": hashlib.sha256(raw).hexdigest(),
+            },
+        )
+    finally:
+        snapshot_path.unlink(missing_ok=True)
+
+
 @app.get("/")
 def home():
     return FileResponse(ROOT / "cloudrun_ui" / "index.html")
