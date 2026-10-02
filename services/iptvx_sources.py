@@ -736,3 +736,58 @@ async def refresh_iptvx_sources(database) -> dict:
         "xml_error": xml_error,
         "page_fallback_failures": fallback_failures,
     }
+
+
+async def probe_iptvx_source() -> dict:
+    """Non-mutating production connectivity probe for the iptvX XMLTV feed."""
+    timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
+    semaphore = asyncio.Semaphore(1)
+    headers = {
+        "User-Agent": "Mozilla/5.0 SLP/2.0",
+        "Accept": "application/xml,text/xml,*/*",
+        "Accept-Encoding": "gzip, deflate",
+    }
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            raw = await _fetch_bytes(
+                session,
+                XML_URL,
+                maximum=MAX_XML_BYTES,
+                semaphore=semaphore,
+            )
+        events, stats = parse_iptvx_xml(raw)
+        today = datetime.now(KZ_TIMEZONE).date()
+        first_day = today - timedelta(days=1)
+        last_day = today + timedelta(days=8)
+        current_counts: dict[str, int] = defaultdict(int)
+        for event in events:
+            event_day = str(event.get("date") or "")
+            if first_day.isoformat() <= event_day <= last_day.isoformat():
+                current_counts[str(event.get("channel") or "")] += 1
+
+        channels = {}
+        for channel, page_id in IPTVX_CHANNELS.items():
+            meta = (stats.get("channels") or {}).get(channel, {})
+            channels[channel] = {
+                "page_id": page_id,
+                "programmes": int(meta.get("programmes") or 0),
+                "candidates": int(meta.get("candidates") or 0),
+                "current_window_candidates": int(current_counts.get(channel, 0)),
+                "days": list(meta.get("days") or []),
+            }
+        return {
+            "status": "ok",
+            "xml_url": XML_URL,
+            "payload_bytes": len(raw),
+            "mapped": int(stats.get("mapped") or 0),
+            "candidates": int(stats.get("candidates") or 0),
+            "explicit_live": int(stats.get("explicit_live") or 0),
+            "channels": channels,
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "xml_url": XML_URL,
+            "error": type(exc).__name__ + ": " + str(exc)[:240],
+            "channels": {},
+        }

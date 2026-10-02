@@ -42,7 +42,7 @@ from services.event_text_ru import normalize_event_fields, strip_bookmakers
 from services.source_routing import route_for_channel, runtime_source_names
 from services.supplier_overlay import apply_supplier_overlay
 from services.vsetv_sources import WEB_CHANNEL_IDS, refresh_vsetv_web_sources
-from services.iptvx_sources import page_url_for, refresh_iptvx_sources
+from services.iptvx_sources import page_url_for, probe_iptvx_source, refresh_iptvx_sources
 from services.event_api_validation import validate_events_with_public_apis
 from services.channel_normalization import canonical_channel_name
 from services.browser_schedule import browser_fallback_enabled, install_browser_for_python_runtime
@@ -544,6 +544,12 @@ def health(request: Request):
     return {"status": "ok", "runtime": "web", "telegram_polling": False,
             "events": database.active_event_count(),
             "durable_storage": bool(request.app.state.backup)}
+
+
+@app.get("/health/iptvx")
+async def health_iptvx(request: Request):
+    """Aggregate-only connectivity probe; exposes no user or mailbox data."""
+    return await probe_iptvx_source()
 
 
 @app.get("/api/migration/snapshot")
@@ -1249,7 +1255,7 @@ async def scheduled_refresh(request: Request):
     ):
         raise HTTPException(403, "Неизвестный сервисный аккаунт")
     async with request.app.state.collect_lock:
-        results = {"gmail": None, "websites": None, "errors": []}
+        results = {"gmail": None, "websites": None, "iptvx": None, "errors": []}
         try:
             await request.app.state.schedule.refresh()
         except Exception as exc:
@@ -1262,6 +1268,12 @@ async def scheduled_refresh(request: Request):
             )
         except Exception as exc:
             results["errors"].append("vsetv: " + type(exc).__name__)
+        try:
+            results["iptvx"] = await refresh_iptvx_sources(
+                request.app.state.database
+            )
+        except Exception as exc:
+            results["errors"].append("iptvx: " + type(exc).__name__)
         if (request.app.state.free_mail_bridge
                 or gmail.status(request.app.state.database)["connected"]):
             try:
