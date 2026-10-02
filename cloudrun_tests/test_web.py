@@ -79,6 +79,8 @@ class WebTests(unittest.TestCase):
                  "cloudrun_ui" / "index.html").read_text()
         logos_js = (Path(__file__).resolve().parents[1] /
                     "cloudrun_ui" / "logos.js").read_text()
+        web_source = (Path(__file__).resolve().parents[1] /
+                      "cloudrun_web.py").read_text()
         self.assertIn('href="/assets/app-icon.png"', index)
         self.assertIn('function channelLogo(channel)', index)
         self.assertNotIn('className="logo-variant"', index)
