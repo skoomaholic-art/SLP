@@ -363,3 +363,37 @@ cloud resource was created. Existing Telegram production is unchanged.
   are not accepted until the supplier revision is reconciled. It does
   not claim that old matches remain current indefinitely.
 - Gmail OAuth, scheduler and temporary Render deployment remain untouched.
+
+## 2026-10-05 - iptvX: provider LIVE! icon is now the live evidence
+
+- **Original symptom:** iptvX events could not be told apart as live or
+  repeat. On `epg.iptvx.one/id/<tvg-id>` the provider marks direct broadcasts
+  with a `LIVE!` icon (`live.png`) inside the programme row; a repeat of the
+  same match carries the identical title without the icon.
+- **Root cause:** `parse_iptvx_page()` read rows with `get_text()`, which drops
+  the `<img>`; every match-like row then became `live_state="candidate"` with
+  `is_live_broadcast=True`, so repeats entered the LIVE schedule.
+- **Changed:** `services/iptvx_sources.py` walks each day in document order
+  (independent of `<p>`/`<li>`/`<div>`/table/`<br>` layout), records the icon
+  per row and stores marked rows as `live_state="live"`,
+  `live_evidence_method="iptvx_live_icon"`, confidence `high`. When a page has
+  at least one mark, unmarked rows on that page are counted as
+  `unmarked_repeats` and not stored. A page with no marks at all keeps the
+  previous candidate behaviour. `IPTVX_LIVE_MARKER_POLICY=off` restores the old
+  behaviour for unmarked rows. Live studio shows the provider also marks
+  (`КХЛ. Подробно`, `На связи`, ...) are excluded.
+- **Changed:** KHL ids were swapped. `kxl` is "КХЛ ТВ | КХЛ | KHL" and now maps
+  to `KHL PRIME`; `kxl-hd` maps to `KHL HD` (page titles checked 2026-10-05).
+- **Verification:** `cloudrun_tests` 129 passed, `tests` 175 passed, compile
+  clean. New regression rows are copied from the real Setanta Sports and KHL
+  pages of 28 Sep - 5 Oct 2026.
+- **Still open / NOT verified:** the raw HTML of the pages was not available to
+  the agent (only rendered text), so the layout-independent reader is proven on
+  four synthetic layouts, not on a captured page. Run
+  `PYTHONPATH=. python scripts/check_iptvx_live.py` from a host that can reach
+  the site: every channel must show `LIVE!` > 0 on a week with broadcasts.
+  The XMLTV path (`parse_iptvx_xml`, diagnostics only) is unchanged. The feed
+  covers the current week only, so the upcoming horizon shrinks to almost zero
+  shortly before the provider's weekly refresh. Background `iptvx-refresh`
+  still answers 503 without GCS. No deployment, no Telegram bot change.
+
