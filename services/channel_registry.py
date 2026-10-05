@@ -123,7 +123,7 @@ CHANNELS = (
         "56cf2d9c4e2e67121b9d66ee",
         "KHL HD",
         1641,
-        iptvx_id="kxl",
+        iptvx_id="kxl-hd",
         sport_hint="Хоккей",
     ),
     Channel(
@@ -132,7 +132,7 @@ CHANNELS = (
         "56cf2e264e2e67121b9d66fb",
         "KHL PRIME",
         806,
-        iptvx_id="kxl-hd",
+        iptvx_id="kxl",
         sport_hint="Хоккей",
     ),
     Channel(
