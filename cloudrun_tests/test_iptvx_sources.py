@@ -128,14 +128,126 @@ class IptvxSourceTests(unittest.TestCase):
             "EUROSPORT 2": "eurosport2",
             "viju+ Sport": "viasat-sport",
             "МАТЧ! ПЛАНЕТА": "match-planeta",
-            "KHL HD": "kxl",
-            "KHL PRIME": "kxl-hd",
+            # epg.iptvx.one/id/kxl is "КХЛ ТВ | КХЛ | KHL" (the SD/Prime
+            # feed); kxl-hd is "КХЛ HD". Verified on the live pages 2026-10-05.
+            "KHL PRIME": "kxl",
+            "KHL HD": "kxl-hd",
         }
         for channel, page_id in expected.items():
             self.assertEqual(
                 page_url_for(channel),
                 "https://epg.iptvx.one/id/" + page_id,
             )
+
+
+    # --- LIVE! icon handling (rows copied from the real pages, 2026-10-05) ---
+
+    ICON = '<img src="https://epg.iptvx.one/live.png" title="LIVE!" alt="LIVE!">'
+
+    def _setanta(self, body):
+        return parse_iptvx_page(
+            '<main><p>tvg-id="setanta-sports"</p>' + body + "</main>",
+            channel="SETANTA SPORTS 1",
+            page_id="setanta-sports",
+        )
+
+    def test_live_icon_marks_event_live_and_unmarked_repeat_is_dropped(self):
+        events, stats = self._setanta(
+            "<h3>Вторник, 29 сентября 2026 г.</h3>"
+            "<p>12:00 Футбол. АПЛ. Брентфорд – Челси</p>"
+            "<p>19:00 " + self.ICON + "Баскетбол. Евролига. Дубай – Барселона</p>"
+            "<p>21:30 " + self.ICON + "Баскетбол. Евролига. Валенсия – Баскония</p>"
+            "<h3>Суббота, 03 октября 2026 г.</h3>"
+            "<p>00:00 Баскетбол. Евролига. Дубай – Барселона</p>"
+            "<p>11:00 " + self.ICON + "Автоспорт. Формула-1. Квалификация</p>"
+        )
+        self.assertEqual(
+            [(e["date"], e["time"]) for e in events],
+            [("2026-09-29", "21:00"), ("2026-09-29", "23:30"),
+             ("2026-10-03", "13:00")],
+        )
+        for event in events:
+            self.assertEqual(event["live_state"], "live")
+            self.assertEqual(event["live_confidence"], "high")
+            self.assertEqual(event["live_evidence_method"], "iptvx_live_icon")
+            self.assertNotIn("LIVE", event["raw_title"].upper())
+        self.assertEqual(stats["live_marked"], 3)
+        self.assertEqual(stats["unmarked_repeats"], 2)
+        self.assertTrue(stats["live_marker_required"])
+
+    def test_live_icon_is_read_from_br_separated_and_table_layouts(self):
+        for body in (
+            "<h3>Четверг, 01 октября 2026 г.</h3><div>"
+            "17:00 Футбол. Германия. Боруссия Дортмунд – Падерборн 07<br>"
+            "19:00 " + self.ICON + "Баскетбол. Евролига. Хапоэль – Реал Мадрид<br>"
+            "</div>",
+            "<h3>Четверг, 01 октября 2026 г.</h3><table>"
+            "<tr><td>17:00</td><td>Футбол. Германия. Боруссия Дортмунд – Падерборн 07</td></tr>"
+            "<tr><td>19:00</td><td>" + self.ICON + "<b>Баскетбол. Евролига. Хапоэль – Реал Мадрид</b></td></tr>"
+            "</table>",
+            "<h3>Четверг, 01 октября 2026 г.</h3><ul>"
+            "<li><span>17:00</span> Футбол. Германия. Боруссия Дортмунд – Падерборн 07</li>"
+            "<li><span>19:00</span> " + self.ICON + " Баскетбол. Евролига. Хапоэль – Реал Мадрид</li>"
+            "</ul>",
+        ):
+            events, stats = self._setanta(body)
+            self.assertEqual(stats["programmes"], 2, body)
+            self.assertEqual(len(events), 1, body)
+            self.assertEqual(events[0]["time"], "21:00")
+            self.assertIn("Реал Мадрид", events[0]["raw_title"])
+            self.assertEqual(events[0]["live_evidence_method"], "iptvx_live_icon")
+
+    def test_description_paragraphs_and_live_studio_shows_are_not_events(self):
+        events, stats = parse_iptvx_page(
+            '<main><p>tvg-id="kxl"</p>'
+            "<h3>Понедельник, 28 сентября 2026 г.</h3>"
+            "<p>16:20 " + self.ICON + "КХЛ. Авангард – Металлург (Мг)</p>"
+            "<p>19:00 " + self.ICON + "КХЛ. Динамо (Минск) – Лада</p>"
+            "<p>22:00 " + self.ICON + "КХЛ. Подробно</p>"
+            "<p>Вас ждет неожиданный взгляд на события. Вед: Александр Бойков</p>"
+            "<p>22:25 КХЛ. Авангард – Металлург (Мг)</p>"
+            "<h3>Пятница, 02 октября 2026 г.</h3>"
+            "<p>11:00 " + self.ICON + "На связи</p>"
+            "<p>18:50 " + self.ICON + "КХЛ. Нефтехимик -Барыс</p></main>",
+            channel="KHL PRIME",
+            page_id="kxl",
+        )
+        self.assertEqual(
+            [e["raw_title"] for e in events],
+            ["КХЛ. Авангард – Металлург (Мг)", "КХЛ. Динамо (Минск) – Лада",
+             "КХЛ. Нефтехимик -Барыс"],
+        )
+        self.assertEqual(events[0]["channel"], "KHL PRIME")
+        self.assertEqual(events[0]["time"], "18:20")
+        self.assertEqual(stats["programmes"], 6)
+
+    def test_page_without_any_live_icon_keeps_candidates(self):
+        events, stats = self._setanta(
+            "<h3>Пятница, 02 октября 2026 г.</h3>"
+            "<p>20:30 Футбол. АПЛ. Арсенал - Ливерпуль</p>"
+        )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["live_state"], "candidate")
+        self.assertFalse(stats["live_marker_required"])
+        self.assertEqual(stats["unmarked_repeats"], 0)
+
+    def test_text_live_prefix_is_equivalent_to_icon(self):
+        events, _ = self._setanta(
+            "<h3>Пятница, 02 октября 2026 г.</h3>"
+            "<p>20:45 LIVE! Баскетбол. Евролига. Фенербахче – Дубай</p>"
+            "<p>23:00 Футбол. АПЛ. Ливерпуль – Фулхэм</p>"
+        )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["raw_title"], "Баскетбол. Евролига. Фенербахче – Дубай")
+        self.assertEqual(events[0]["live_evidence_method"], "iptvx_live_icon")
+
+    def test_unrelated_images_are_not_live_markers(self):
+        events, stats = self._setanta(
+            "<h3>Пятница, 02 октября 2026 г.</h3>"
+            '<p>20:30 <img src="/logo/delivery.png" alt="logo">Футбол. АПЛ. Арсенал - Ливерпуль</p>'
+        )
+        self.assertEqual(stats["live_marked"], 0)
+        self.assertEqual(events[0]["live_state"], "candidate")
 
 
 if __name__ == "__main__":
