@@ -23,6 +23,7 @@ import xml.etree.ElementTree as ET
 
 import aiohttp
 from bs4 import BeautifulSoup
+from bs4.element import NavigableString, Tag
 
 from services.channel_registry import CHANNEL_BY_NAME, IPTVX_CHANNELS
 from services.event_text_ru import normalize_event_fields
@@ -43,6 +44,16 @@ REQUEST_TIMEOUT_SECONDS = 45
 MAX_PAGE_BYTES = 3 * 1024 * 1024
 MAX_XML_BYTES = 100 * 1024 * 1024
 MSK_TIMEZONE = timezone(timedelta(hours=3))
+
+# How the provider's explicit LIVE! icon is used on channel pages:
+#   auto (default) - if a page marks at least one programme as LIVE!, the
+#                    unmarked match-like rows on that page are repeats and are
+#                    not stored; a page with no marks keeps the old
+#                    "candidate" behaviour so a channel is never emptied
+#                    merely because the provider does not mark it.
+#   off            - ignore the rule above (marked rows are still "live").
+LIVE_MARKER_POLICY = os.getenv("IPTVX_LIVE_MARKER_POLICY", "auto").strip().casefold()
+LIVE_ICON_METHOD = "iptvx_live_icon"
 
 ID_TO_CHANNEL = {tvg_id: channel for channel, tvg_id in IPTVX_CHANNELS.items()}
 _SOURCE = {
@@ -78,6 +89,20 @@ _NON_EVENT_RE = re.compile(
     r"топ[- ]?10|лучшие моменты|highlights?|обзор|review|повтор|replay|"
     r"классика|archive|архив|превью|preview|анонс|promo)\b"
 )
+
+# Studio and magazine programmes that the provider also flags LIVE! (they are
+# live studio shows, not sporting events). Observed on epg.iptvx.one/id/kxl.
+_STUDIO_RE = re.compile(
+    r"(?iu)(?:^|[\s.])(?:подробно|на связи|трансферы|неделя кхл|судейская|"
+    r"тактика с|видео дня|специальный репортаж|вратарская бригада|"
+    r"мхл удивляет|все,? кроме хоккея|доброе утро|уточняется)"
+)
+_LIVE_PREFIX_RE = re.compile(r"(?iu)^\s*live!?\s*[:.\-–—]?\s*")
+_BLOCK_TAGS = frozenset({
+    "p", "li", "div", "br", "tr", "ul", "ol", "table", "section", "article",
+    "dl", "dt", "dd", "hr", "blockquote", "pre",
+})
+_HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
 
 _SPORT_INFERENCE = (
     (re.compile(r"(?iu)\b(?:футбол|football|soccer|АПЛ|EPL|ЛЧ|UCL)\b"), "Футбол"),
@@ -190,6 +215,7 @@ def _candidate_event(
     stop_source: datetime | None,
     evidence,
     provider_source: str,
+    live_marker: bool = False,
 ) -> dict | None:
     combined_title = raw_title or subtitle
     if not combined_title:
@@ -213,6 +239,8 @@ def _candidate_event(
         return None
     if _NON_EVENT_RE.search(" ".join([combined_title, subtitle, desc])):
         return None
+    if _STUDIO_RE.search(combined_title):
+        return None
     if event_is_editorial_or_replay(candidate):
         return None
     if not _looks_like_sport(
@@ -222,6 +250,7 @@ def _candidate_event(
     ):
         return None
 
+    confirmed = bool(live_marker or evidence.is_live)
     start = start_source.astimezone(KZ_TIMEZONE)
     stop = stop_source.astimezone(KZ_TIMEZONE) if stop_source else None
     event = {
@@ -243,16 +272,18 @@ def _candidate_event(
         "is_sport_event": True,
         "is_live": True,
         "is_live_broadcast": True,
-        "live_state": "live" if evidence.is_live else "candidate",
+        "live_state": "live" if confirmed else "candidate",
         "live_evidence_method": (
-            "provider_live_text"
-            if evidence.is_live
+            LIVE_ICON_METHOD if live_marker
+            else "provider_live_text" if evidence.is_live
             else "iptvx_sports_channel_candidate"
         ),
         "live_evidence_value": (
-            evidence.value if evidence.is_live else page_id
+            "LIVE!" if live_marker
+            else evidence.value if evidence.is_live
+            else page_id
         ),
-        "live_confidence": "high" if evidence.is_live else "candidate",
+        "live_confidence": "high" if confirmed else "candidate",
     }
     if stop and stop > start:
         event["estimated_broadcast_end_date"] = stop.date().isoformat()
@@ -415,6 +446,67 @@ def parse_iptvx_xml(raw: bytes | str) -> tuple[list[dict], dict]:
     return events, stats
 
 
+
+def _is_live_icon(tag: Tag) -> bool:
+    """True for the provider's LIVE! badge (<img src=".../live.png" title="LIVE!">)."""
+    if tag.name != "img":
+        return False
+    src = str(tag.get("src") or "").casefold()
+    name = src.rsplit("/", 1)[-1].split("?", 1)[0]
+    if name.startswith("live.") or name.startswith("ico_live"):
+        return True
+    for attr in ("alt", "title"):
+        label = str(tag.get(attr) or "").strip().casefold()
+        if label in {"live", "live!"}:
+            return True
+    return False
+
+
+def _iter_day_lines(heading: Tag):
+    """Yield (text, has_live_icon) for each visual line under a day heading.
+
+    Works from document order rather than from a particular container tag, so
+    it does not matter whether the page renders rows as <p>, <li>, <div>,
+    table rows or <br>-separated text. Inline tags never split a line; any
+    block-level tag or <br> does. Stops at the next heading.
+    """
+    parts: list[str] = []
+    marked = False
+
+    def flush():
+        nonlocal parts, marked
+        text = " ".join(" ".join(parts).split())
+        result = (text, marked) if text else None
+        parts, marked = [], False
+        return result
+
+    for node in heading.next_elements:
+        if isinstance(node, Tag):
+            if node.name in _HEADING_TAGS:
+                if heading in node.parents or node is heading:
+                    continue
+                break
+            if node.name in {"script", "style"}:
+                continue
+            if node.name in _BLOCK_TAGS:
+                line = flush()
+                if line:
+                    yield line
+            elif _is_live_icon(node):
+                marked = True
+        elif isinstance(node, NavigableString):
+            if heading in node.parents:
+                continue
+            if node.parent is not None and node.parent.name in {"script", "style"}:
+                continue
+            value = str(node)
+            if value.strip():
+                parts.append(value)
+    line = flush()
+    if line:
+        yield line
+
+
 def parse_iptvx_page(
     html: bytes | str,
     *,
@@ -440,38 +532,46 @@ def parse_iptvx_page(
         if source_day is None:
             continue
         source_days.add(source_day)
-        node = heading.find_next()
-        while node is not None:
-            if node.name in {"h2", "h3", "h4"} and node is not heading:
-                break
-            if node.name in {"p", "li", "div"}:
-                value = " ".join(node.get_text(" ", strip=True).split())
-                match = _PROGRAM_RE.match(value)
-                if match:
-                    hour, minute = [
-                        int(part) for part in match.group(1).split(":")
-                    ]
-                    raw_rows.append({
-                        "start_source": datetime(
-                            source_day.year, source_day.month, source_day.day,
-                            hour, minute, tzinfo=MSK_TIMEZONE,
-                        ),
-                        "raw_title": match.group(2).strip(),
-                    })
-            node = node.find_next()
+        for value, marked in _iter_day_lines(heading):
+            match = _PROGRAM_RE.match(value)
+            if not match:
+                continue
+            title = match.group(2).strip()
+            stripped = _LIVE_PREFIX_RE.sub("", title)
+            if stripped != title and stripped:
+                # Text rendering of the same marker ("LIVE! Футбол ...").
+                title, marked = stripped, True
+            hour, minute = [int(part) for part in match.group(1).split(":")]
+            if hour > 23 or minute > 59:
+                continue
+            raw_rows.append({
+                "start_source": datetime(
+                    source_day.year, source_day.month, source_day.day,
+                    hour, minute, tzinfo=MSK_TIMEZONE,
+                ),
+                "raw_title": title,
+                "live_marker": marked,
+            })
 
     deduped = {}
     for row in raw_rows:
         key = (row["start_source"], row["raw_title"])
+        if key in deduped and deduped[key]["live_marker"]:
+            continue
         deduped[key] = row
     raw_rows = sorted(
         deduped.values(), key=lambda item: item["start_source"]
     )
 
+    marked_rows = sum(1 for row in raw_rows if row["live_marker"])
+    require_marker = LIVE_MARKER_POLICY != "off" and marked_rows > 0
+
     events: list[dict] = []
     filtered = 0
+    unmarked_repeats = 0
     for index, row in enumerate(raw_rows):
         raw_title = row["raw_title"]
+        live_marker = bool(row["live_marker"])
         evidence = classify_live_evidence(raw_title)
         next_start = (
             raw_rows[index + 1]["start_source"]
@@ -489,13 +589,20 @@ def parse_iptvx_page(
             stop_source=next_start,
             evidence=evidence,
             provider_source="iptvx_page_fallback",
+            live_marker=live_marker,
         )
         if event is None:
             filtered += 1
-        else:
-            event["source_url"] = source_url or page_url_for(channel)
-            event["time_normalization"] = "iptvx_msk_page_to_kz"
-            events.append(event)
+            continue
+        if require_marker and event["live_state"] != "live":
+            # The provider marks live broadcasts on this page and did not
+            # mark this one: it is a repeat, not an upcoming live event.
+            filtered += 1
+            unmarked_repeats += 1
+            continue
+        event["source_url"] = source_url or page_url_for(channel)
+        event["time_normalization"] = "iptvx_msk_page_to_kz"
+        events.append(event)
 
     kz_days = set()
     for source_day in source_days:
@@ -510,6 +617,12 @@ def parse_iptvx_page(
         "programmes": len(raw_rows),
         "candidates": len(events),
         "filtered": filtered,
+        "live_marked": marked_rows,
+        "explicit_live": sum(
+            1 for event in events if event["live_state"] == "live"
+        ),
+        "unmarked_repeats": unmarked_repeats,
+        "live_marker_required": require_marker,
         "days": sorted(kz_days),
     }
 
@@ -712,6 +825,13 @@ async def refresh_iptvx_sources(database) -> dict:
                         "programmes": int(meta.get("programmes") or 0),
                         "candidates": int(meta.get("candidates") or len(events)),
                         "filtered": int(meta.get("filtered") or 0),
+                        "live_marked": int(meta.get("live_marked") or 0),
+                        "unmarked_repeats": int(
+                            meta.get("unmarked_repeats") or 0
+                        ),
+                        "live_marker_required": bool(
+                            meta.get("live_marker_required")
+                        ),
                     },
                 )
 
@@ -722,6 +842,11 @@ async def refresh_iptvx_sources(database) -> dict:
             "mode": "direct_channel_page",
             "events": len(events),
             "programmes": int(meta.get("programmes") or 0),
+            "explicit_live": sum(
+                1 for event in events if event.get("live_state") == "live"
+            ),
+            "live_marked": int(meta.get("live_marked") or 0),
+            "unmarked_repeats": int(meta.get("unmarked_repeats") or 0),
             "days": sorted(scope_days),
             "error": error,
         })
