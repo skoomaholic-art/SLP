@@ -397,3 +397,42 @@ cloud resource was created. Existing Telegram production is unchanged.
   shortly before the provider's weekly refresh. Background `iptvx-refresh`
   still answers 503 without GCS. No deployment, no Telegram bot change.
 
+## 2026-10-05 - source cards show Excel and parsing separately
+
+- **Original symptom:** cards read "Данные получены с Excel + парсинга" with
+  one timestamp, so the editor could not tell which source feeds the grid.
+- **Root cause:** "Excel" was shown whenever any file had ever been imported
+  (`imported_at` set), regardless of whether it covers the current 7 days, and
+  the single timestamp was the newer of the two signals.
+- **Changed:** `cloudrun_ui/index.html` renders two indicators per channel,
+  Excel and Парсинг, each lit only when it has events in the current window,
+  each with its own event count and time; stale file, awaiting supplier, error
+  and "no LIVE events" are distinct states. No server change.
+- **Changed:** `services/free_apps_script.py` turns the bare
+  `Apps Script: unauthorized` into a message naming the cause (bridge key
+  mismatch or wrong script URL). The mismatch itself is configuration in Secret
+  Manager / Script Properties and is NOT fixed by code.
+- **Verification:** `cloudrun_tests` 129 passed, `tests` 175 passed, page
+  script passes `node --check`. Not checked in a browser.
+
+## 2026-10-06 - export no longer depends on the Drive bridge being up
+
+- **Original symptom:** banner `Ошибка #201: Почта/Drive: Google Apps Script
+  недоступен: HTTPError` and «Выгрузить Excel» produced no file.
+- **Root cause:** `/api/export` loads the approved template on every click
+  (local path -> GCS -> Apps Script). With no template in GCS and the bridge
+  failing, `load_template()` raised 503, so a storage outage blocked a table
+  whose data lives entirely in the SLP database. The bridge error also hid the
+  HTTP status, so the cause could not be read from the banner.
+- **Changed:** `cloudrun_web.py` keeps the last approved template read or
+  uploaded in this process and reuses it when storage fails (`cached`); with no
+  copy at all it exports the same events on a plain built-in 25-column sheet
+  (`builtin`). The response carries `X-SLP-Template` and the UI states plainly
+  when the approved layout was not used. `services/free_apps_script.py` reports
+  `HTTP <code>` with the likely cause (403 access, 404 wrong /exec URL, 429
+  quota, 5xx).
+- **Verification:** `cloudrun_tests` 133 passed (4 new in
+  `test_export_resilience.py`), `tests` 175 passed.
+- **Not fixed by code:** the bridge itself. The built-in export does not
+  contain rows and approved translations that exist only inside the template.
+
