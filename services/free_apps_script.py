@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import sqlite3
 import tempfile
 import time
@@ -85,6 +86,46 @@ def _http_error_text(code: int) -> str:
     return prefix + "неожиданный ответ"
 
 
+_SCRIPT_ERRORS = (
+    ("unknown operation",
+     "Apps Script не поддерживает отправку: обновите код скрипта и выпустите "
+     "новую версию развёртывания"),
+    ("recipient not configured: q",
+     "Не настроен адрес QSport (SLP_REQUEST_Q_TO в свойствах скрипта)"),
+    ("recipient not configured: setanta",
+     "Не настроен адрес Setanta (SLP_REQUEST_SETANTA_TO в свойствах скрипта)"),
+    ("recipient not configured: test",
+     "Не настроен тестовый адрес (SLP_REQUEST_TEST_TO в свойствах скрипта)"),
+    ("bad category", "Неверный тип запроса"),
+    ("bad period", "Неверный период"),
+    ("bad request", "Apps Script отклонил запрос как некорректный"),
+    ("duplicate request", "Этот запрос уже был отправлен"),
+    ("rate limited",
+     "Запрос этому поставщику уже отправлялся менее 10 минут назад"),
+    ("busy", "Apps Script занят, повторите через минуту"),
+    ("send failed", "Ошибка GmailApp при отправке письма"),
+)
+
+
+def _script_error_text(code) -> str:
+    """Translate the script's short error codes; never surface a bare code."""
+    value = " ".join(str(code or "").split())[:160]
+    lowered = value.casefold()
+    for marker, text in _SCRIPT_ERRORS:
+        if lowered.startswith(marker):
+            detail = value[len(marker):].strip(" :")
+            if marker == "send failed" and detail:
+                return text + ": " + detail[:90]
+            return text
+    return "Apps Script вернул ошибку: " + (value or "без описания")
+
+
+SEND_CATEGORIES = ("q", "setanta", "all")
+_SEND_TARGETS = {"q": ("q",), "setanta": ("setanta",), "all": ("q", "setanta")}
+_SEND_LABELS = {"q": "QSport", "setanta": "Setanta"}
+CAPABILITY_MAX_AGE_SECONDS = 600
+
+
 class ScriptClient:
     def __init__(self):
         self.url, self.secret = _config()
@@ -148,6 +189,9 @@ class ScriptClient:
                 "совпадает с SLP_BRIDGE_KEY скрипта или URL ведёт на "
                 "другой скрипт"
             )
+        if (isinstance(result, dict) and not result.get("ok")
+                and operation in ("send_request", "capabilities")):
+            raise FreeDriveError(_script_error_text(result.get("error")))
         if not isinstance(result, dict) or not result.get("ok"):
             raise FreeDriveError(
                 "Apps Script: " + str(result.get("error", "invalid response"))[:180]
@@ -175,6 +219,31 @@ class ScriptClient:
             "version": 1, "ciphertext": ciphertext,
             "previousSha": previous_sha,
         })
+
+    def capabilities(self) -> dict:
+        return self._call("capabilities", timeout_seconds=15)
+
+    def send_request(self, category: str, period_start: str, period_end: str,
+                     *, request_id: str = "", username: str = "") -> dict:
+        """Ask the script to mail a schedule request.
+
+        Only a whitelisted category and a period are sent. The recipient and
+        the letter text are chosen inside the script from its own properties.
+        """
+        if category not in SEND_CATEGORIES:
+            raise FreeDriveError("Неверный тип запроса")
+        for value in (period_start, period_end):
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(value or "")):
+                raise FreeDriveError("Неверный период")
+        request_id = request_id or secrets.token_hex(16)
+        if not re.fullmatch(r"[a-f0-9]{32}", request_id):
+            raise FreeDriveError("Некорректный идентификатор запроса")
+        return self._call("send_request", content={
+            "version": 1, "category": category,
+            "period_start": period_start, "period_end": period_end,
+            "request_id": request_id,
+            "username": re.sub(r"[^\w.@-]", "", str(username or ""))[:64],
+        }, timeout_seconds=60)
 
     def scan(self) -> dict:
         # Force Apps Script to scan Gmail immediately instead of waiting for
@@ -318,7 +387,13 @@ def _record_notice(database, meta: dict, payload: bytes,
              ("confirmed_format" if parsed and confirmed_channel == parsed.channel
               else "workbook_content" if parsed else ""), meta["sha256"]),
         )
-        return int(cur.lastrowid) if cur.rowcount else None
+        created = int(cur.lastrowid) if cur.rowcount else None
+    if created and channel:
+        gmail._mark_request_response(
+            database, thread_id="", message_id=identity, channel=channel,
+            sender_key=gmail._sender_key(str(meta.get("sender") or "")),
+        )
+    return created
 
 
 
@@ -353,6 +428,151 @@ def health(database) -> dict:
     return {"verified": True, "archiver_active": active,
             "last_pull_at": str(row["last_pull_at"] or ""),
             "script_last_scan_at": scan}
+
+
+def _init_send_state(conn) -> None:
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS free_bridge_send("
+        "id INTEGER PRIMARY KEY CHECK(id=1),checked_at TEXT NOT NULL,"
+        "supported INTEGER NOT NULL,mode TEXT NOT NULL,"
+        "q INTEGER NOT NULL,setanta INTEGER NOT NULL,reason TEXT NOT NULL)"
+    )
+
+
+def refresh_send_capabilities(database, client: "ScriptClient | None" = None) -> dict:
+    supported, mode, sendable, reason = False, "test", {}, ""
+    try:
+        answer = (client or ScriptClient()).capabilities()
+        supported = bool((answer.get("capabilities") or {}).get("send_request"))
+        mode = "production" if answer.get("mode") == "production" else "test"
+        sendable = answer.get("sendable") or {}
+        if not supported:
+            reason = _script_error_text("unknown operation")
+        elif not (sendable.get("q") or sendable.get("setanta")):
+            reason = (_script_error_text("recipient not configured: test")
+                      if mode == "test"
+                      else "Не настроены адреса поставщиков в свойствах скрипта")
+    except FreeDriveError as exc:
+        reason = str(exc)[:200]
+    with database._connect() as conn:
+        _init_send_state(conn)
+        conn.execute(
+            "INSERT INTO free_bridge_send(id,checked_at,supported,mode,q,setanta,reason) "
+            "VALUES(1,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+            "checked_at=excluded.checked_at,supported=excluded.supported,"
+            "mode=excluded.mode,q=excluded.q,setanta=excluded.setanta,"
+            "reason=excluded.reason",
+            (datetime.now(KZ_TIMEZONE).isoformat(timespec="seconds"),
+             int(supported), mode, int(bool(sendable.get("q"))),
+             int(bool(sendable.get("setanta"))), reason),
+        )
+    return send_status(database)
+
+
+def send_status(database) -> dict:
+    with database._connect() as conn:
+        _init_send_state(conn)
+        row = conn.execute(
+            "SELECT checked_at,supported,mode,q,setanta,reason "
+            "FROM free_bridge_send WHERE id=1"
+        ).fetchone()
+    if not row:
+        return {"checked_at": "", "supported": False, "mode": "test",
+                "sendable": {"q": False, "setanta": False},
+                "send_enabled": False, "stale": True,
+                "reason": "Возможность отправки ещё не проверялась"}
+    sendable = {"q": bool(row["q"]), "setanta": bool(row["setanta"])}
+    stale = True
+    try:
+        age = (datetime.now(KZ_TIMEZONE)
+               - datetime.fromisoformat(str(row["checked_at"]))).total_seconds()
+        stale = not (-60 <= age <= CAPABILITY_MAX_AGE_SECONDS)
+    except (TypeError, ValueError):
+        pass
+    enabled = bool(row["supported"]) and any(sendable.values())
+    reason = str(row["reason"] or "")
+    if enabled and not all(sendable.values()):
+        missing = [_SEND_LABELS[key] for key, ready in sendable.items() if not ready]
+        reason = "Не настроен получатель " + ", ".join(missing)
+    return {"checked_at": str(row["checked_at"] or ""),
+            "supported": bool(row["supported"]),
+            "mode": str(row["mode"] or "test"), "sendable": sendable,
+            "send_enabled": enabled, "stale": stale, "reason": reason}
+
+
+def send_schedule_request(database, *, username: str, category: str,
+                          period_start: str, period_end: str,
+                          client: "ScriptClient | None" = None) -> dict:
+    if category not in SEND_CATEGORIES:
+        raise FreeDriveError("Неверный тип запроса")
+    try:
+        period_start, period_end = gmail._request_period(period_start, period_end)
+    except gmail.GmailTransportError as exc:
+        raise FreeDriveError("Неверный период: " + str(exc)) from exc
+    gmail.init_gmail_schema(database)
+    targets = _SEND_TARGETS[category]
+    with database._connect() as conn:
+        waiting = conn.execute(
+            "SELECT category FROM gmail_requests WHERE period_start=? AND "
+            "period_end=? AND status IN ('pending','partial') "
+            "AND delivery_mode='production'",
+            (period_start, period_end),
+        ).fetchall()
+    already = {row["category"] for row in waiting}
+    if "all" in already:
+        already |= {"q", "setanta"}
+    blocked = [_SEND_LABELS[item] for item in targets if item in already]
+    if blocked:
+        raise FreeDriveError(
+            "Аналогичный запрос уже ожидает ответа: " + ", ".join(blocked)
+        )
+    answer = (client or ScriptClient()).send_request(
+        category, period_start, period_end, username=username,
+    )
+    mode = "production" if answer.get("mode") == "production" else "test"
+    results = []
+    now = datetime.now(KZ_TIMEZONE).isoformat()
+    with database._connect() as conn:
+        for item in answer.get("results") or []:
+            target = str(item.get("category") or "")
+            if target not in _SEND_LABELS:
+                continue
+            entry = {"category": target, "label": _SEND_LABELS[target],
+                     "to": str(item.get("to") or "")[:254],
+                     "subject": str(item.get("subject") or "")[:200],
+                     "sent": bool(item.get("sent")),
+                     "error": _script_error_text(item.get("error"))
+                     if item.get("error") else ""}
+            results.append(entry)
+            if not entry["sent"]:
+                continue
+            conn.execute(
+                "INSERT INTO gmail_requests("
+                "recipient,subject,category,sent_by,gmail_message_id,sent_at,"
+                "thread_id,requested_channels_json,status,"
+                "period_start,period_end,delivery_mode"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (entry["to"], entry["subject"], target, username,
+                 "apps_script:" + secrets.token_hex(8), now, "",
+                 json.dumps(gmail.REQUEST_CHANNELS[target], ensure_ascii=False),
+                 "pending" if mode == "production" else "test",
+                 period_start, period_end, mode),
+            )
+    sent = [entry for entry in results if entry["sent"]]
+    if not sent:
+        raise FreeDriveError(
+            results[0]["error"] if results and results[0]["error"]
+            else "Apps Script не подтвердил отправку"
+        )
+    return {"sent": len(sent) == len(targets),
+            "partial": len(sent) < len(targets),
+            "mode": mode, "category": category, "transport": "apps_script",
+            "to": ", ".join(entry["to"] for entry in sent),
+            "subject": sent[0]["subject"],
+            "channels": [channel for entry in sent
+                         for channel in gmail.REQUEST_CHANNELS[entry["category"]]],
+            "period_start": period_start, "period_end": period_end,
+            "results": results}
 
 
 def sync_inbox(
