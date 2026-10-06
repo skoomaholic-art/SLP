@@ -1130,12 +1130,30 @@ def gmail_status(request: Request):
     result["auto_import"] = False
     if request.app.state.free_mail_bridge:
         # Apps Script is authorized by the owner, not Cloud Run Gmail OAuth.
-        # Gmail sending remains disabled in the free read-only bridge.
         verified = freebridge.health(request.app.state.database)
+        # Sending is enabled only by a signed capabilities answer from the
+        # deployed script, re-checked when the stored answer is stale.
+        sending = freebridge.send_status(request.app.state.database)
+        if sending["stale"]:
+            sending = freebridge.refresh_send_capabilities(
+                request.app.state.database
+            )
+        send_enabled = bool(sending["send_enabled"] and request.app.state.backup)
+        send_reason = "" if send_enabled else (
+            sending["reason"] if not sending["send_enabled"]
+            else "Отправка требует постоянного хранилища журнала"
+        )
         result.update({
             "configured": True, "connected": verified["verified"],
-            "email": gmail.OWNER_ACCOUNT, "send_enabled": False,
-            "bridge_mode": True, "mail_mode": "test",
+            "email": gmail.OWNER_ACCOUNT, "send_enabled": send_enabled,
+            "send_reason": send_reason or sending["reason"],
+            "send_targets": sending["sendable"],
+            "send_checked_at": sending["checked_at"],
+            "capabilities": {
+                "read_mail": bool(verified["verified"]),
+                "send_request": bool(sending["supported"]),
+            },
+            "bridge_mode": True, "mail_mode": sending["mode"],
             "last_sync_at": verified["last_pull_at"],
             "script_last_scan_at": verified["script_last_scan_at"],
             "archiver_active": verified["archiver_active"],
@@ -1426,10 +1444,47 @@ async def dismiss_mail(request: Request, notice_id: int):
     return {"dismissed": True}
 
 
+async def _send_request_via_bridge(request: Request, options: "MailRequest",
+                                   user: dict) -> dict:
+    """Schedule request through the Apps Script bridge (no Gmail OAuth)."""
+    database = request.app.state.database
+    category = str(options.category or "")[:16]
+    if category not in freebridge.SEND_CATEGORIES:
+        raise HTTPException(422, "Неверный тип запроса")
+    if not request.app.state.backup:
+        raise HTTPException(503, "Отправка требует постоянного хранилища журнала")
+    sending = await asyncio.to_thread(freebridge.send_status, database)
+    if sending["stale"]:
+        sending = await asyncio.to_thread(
+            freebridge.refresh_send_capabilities, database
+        )
+    if sending["mode"] == "production" and user["role"] != "admin":
+        raise HTTPException(403, "Отправка запрещена для текущего пользователя")
+    if not sending["send_enabled"]:
+        raise HTTPException(503, sending["reason"] or "Отправка не настроена")
+    async with request.app.state.collect_lock:
+        try:
+            result = await asyncio.to_thread(
+                freebridge.send_schedule_request, database,
+                username=user["username"], category=category,
+                period_start=str(options.period_start or "")[:10],
+                period_end=str(options.period_end or "")[:10],
+            )
+        except freebridge.FreeDriveError as exc:
+            message = str(exc)
+            code = (422 if message.startswith(("Неверный", "Некорректный"))
+                    else 409 if "уже" in message else 502)
+            raise HTTPException(code, message) from exc
+        await _save_state(request)
+    return result
+
+
 @app.post("/api/gmail/request")
 async def send_test_request(request: Request, options: MailRequest):
     user = require_editor(request)
     origin_guard(request)
+    if request.app.state.free_mail_bridge:
+        return await _send_request_via_bridge(request, options, user)
     if gmail.mail_mode() == "production":
         user = require_admin(request)
     if not request.app.state.backup:
