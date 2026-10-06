@@ -30,7 +30,10 @@ from pydantic import BaseModel
 from agents.runtime_orchestrator import RuntimeParserOrchestrator
 from parsers.tvplus import tvplus_channel_diagnostics
 from services.live_evidence import event_is_live_broadcast, event_is_schedule_candidate
-from services.editorial_export import InvalidTemplate, build_working_xlsx, validate_template
+from services.editorial_export import (
+    HEADERS as EXPORT_HEADERS, InvalidTemplate, build_working_xlsx,
+    validate_template,
+)
 from services import gmail_integration as gmail
 from services import free_apps_script as freebridge
 from services import assistant_bridge
@@ -1798,6 +1801,7 @@ async def upload_template(request: Request, upload: UploadFile = File(...)):
             validate_template(workbook)
         finally:
             workbook.close()
+        _remember_template(raw)
     except (BadZipFile, ValueError, InvalidTemplate) as exc:
         raise HTTPException(422, "Неверный шаблон: " + str(exc)) from exc
     if local_target:
@@ -1867,44 +1871,104 @@ async def upload_template(request: Request, upload: UploadFile = File(...)):
             "bytes": len(raw), "destination": TEMPLATE_OBJECT}
 
 
-def load_template():
+# Last approved template successfully read from remote storage in this
+# process. A storage outage must not stop the editor from downloading the
+# schedule, so the previous good copy is reused until storage answers again.
+_TEMPLATE_CACHE: dict = {}
+
+
+def _remember_template(raw: bytes) -> None:
+    _TEMPLATE_CACHE["raw"] = raw
+    _TEMPLATE_CACHE["sha256"] = hashlib.sha256(raw).hexdigest()
+
+
+def _builtin_template():
+    """Plain 25-column workbook used only when no approved template is reachable."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "EPG"
+    sheet.append(list(EXPORT_HEADERS))
+    for cell in sheet[1]:
+        cell.font = Font(bold=True)
+    sheet.freeze_panes = "A2"
+    for index in range(1, len(EXPORT_HEADERS) + 1):
+        sheet.column_dimensions[
+            sheet.cell(1, index).column_letter
+        ].width = 18
+    return workbook
+
+
+def _load_template_with_origin():
+    """Return (workbook, origin); origin is approved | cached."""
     local = _local_template_path()
     if local and local.is_file():
-        return load_workbook(local)
+        return load_workbook(local), "approved"
+    problem = ""
     if GCS_BUCKET:
         try:
             from google.cloud import storage
             raw = storage.Client().bucket(GCS_BUCKET).blob(
                 TEMPLATE_OBJECT
             ).download_as_bytes()
-            return load_workbook(BytesIO(raw))
-        except Exception:
-            pass
+            workbook = load_workbook(BytesIO(raw))
+            _remember_template(raw)
+            return workbook, "approved"
+        except Exception as exc:
+            problem = "GCS: " + type(exc).__name__
     if freebridge.enabled():
         try:
             result = freebridge.ScriptClient().template()
             if not result.get("exists"):
                 raise HTTPException(503, "Сначала загрузи утверждённый XLSX-шаблон")
-            raw = base64.b64decode(result["data"], validate=True)
+            try:
+                raw = base64.b64decode(result.get("data") or "", validate=True)
+            except (ValueError, TypeError) as exc:
+                raise HTTPException(503, "XLSX-шаблон в Drive повреждён") from exc
             if (not raw or len(raw) > 6 * 1024 * 1024
                     or hashlib.sha256(raw).hexdigest() != result.get("sha256")):
                 raise HTTPException(503, "XLSX-шаблон в Drive повреждён")
-            return load_workbook(BytesIO(raw))
+            workbook = load_workbook(BytesIO(raw))
+            _remember_template(raw)
+            return workbook, "approved"
         except freebridge.FreeDriveError as exc:
-            raise HTTPException(503, "Drive: " + str(exc)) from exc
-    raise HTTPException(503, "Загрузите утверждённый Excel-шаблон в SPORT_TEMPLATE_PATH "
-                        "или Google Cloud Storage: " + TEMPLATE_OBJECT)
+            problem = "Drive: " + str(exc)
+        except HTTPException as exc:
+            problem = str(exc.detail)
+    if _TEMPLATE_CACHE.get("raw"):
+        return load_workbook(BytesIO(_TEMPLATE_CACHE["raw"])), "cached"
+    raise HTTPException(503, problem or (
+        "Загрузите утверждённый Excel-шаблон в SPORT_TEMPLATE_PATH "
+        "или Google Cloud Storage: " + TEMPLATE_OBJECT
+    ))
 
 
-def xlsx_content(data: list[dict]) -> bytes:
+def load_template():
+    return _load_template_with_origin()[0]
+
+
+def xlsx_export(data: list[dict]) -> tuple[bytes, str, str]:
+    """Build XLSX and report approved, cached or builtin template origin."""
+    reason = ""
     try:
-        workbook = build_working_xlsx(load_template(), data)
+        template, origin = _load_template_with_origin()
+    except HTTPException as exc:
+        if exc.status_code != 503:
+            raise
+        template, origin, reason = _builtin_template(), "builtin", str(exc.detail)
+    try:
+        workbook = build_working_xlsx(template, data)
     except InvalidTemplate as exc:
         raise HTTPException(422, str(exc)) from exc
     output = BytesIO()
     workbook.save(output)
     workbook.close()
-    return output.getvalue()
+    return output.getvalue(), origin, reason
+
+
+def xlsx_content(data: list[dict]) -> bytes:
+    return xlsx_export(data)[0]
 
 
 @app.get("/api/export")
@@ -1912,12 +1976,20 @@ def export(request: Request, start: str = "", end: str = ""):
     current_user(request)
     _validate_period(start, end)
     data = event_rows(request.app.state.database, start, end)
-    raw = xlsx_content(data)
+    raw, origin, reason = xlsx_export(data)
+    if reason:
+        logging.getLogger("uvicorn.error").warning(
+            "SLP export used %s template: %s", origin, reason[:200]
+        )
     filename = "sport_epg_schedule.xlsx"
     return StreamingResponse(
         BytesIO(raw),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": 'attachment; filename="' + filename + '"'},
+        headers={
+            "Content-Disposition": 'attachment; filename="' + filename + '"',
+            "X-SLP-Template": origin,
+            "Cache-Control": "no-store",
+        },
     )
 
 
