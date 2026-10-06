@@ -436,3 +436,32 @@ cloud resource was created. Existing Telegram production is unchanged.
 - **Not fixed by code:** the bridge itself. The built-in export does not
   contain rows and approved translations that exist only inside the template.
 
+## 2026-10-06 - «Запросить расписание» works through the Apps Script bridge
+
+- **Original symptom:** in bridge mode the button was always disabled:
+  `/api/gmail/status` hard-coded `send_enabled=False` and the script could only
+  read mail.
+- **Changed (script):** `SLP_Free_Gmail_Drive.gs` gains signed
+  `op=capabilities` (GET) and `op=send_request` (POST, body covered by the
+  HMAC). Recipients come only from Script Properties `SLP_REQUEST_Q_TO`,
+  `SLP_REQUEST_SETANTA_TO`, `SLP_REQUEST_TEST_TO`; `SLP_REQUEST_MODE` defaults
+  to `test` (all letters to the test address, `[ТЕСТ]` subject). Single-use
+  request id, 10-minute per-supplier limit, `all` = two letters with a
+  per-supplier result. Existing operations untouched.
+- **Changed (Python):** `services/free_apps_script.py` adds
+  `ScriptClient.capabilities()/send_request()`, a stored capability check
+  (`free_bridge_send`), `send_schedule_request()` writing the existing
+  `gmail_requests` journal (test letters get status `test` and never show as
+  awaiting), readable error texts, and reply matching for supplier files that
+  arrive through the bridge.
+- **Changed (backend/UI):** `POST /api/gmail/request` routes to the bridge when
+  it is enabled (production mode requires admin); direct Gmail path unchanged.
+  `/api/gmail/status` returns `send_enabled` from the last signed capabilities
+  answer plus `send_reason`, `capabilities`, `send_targets`. The button title
+  shows the reason; the result names supplier, period, recipient and subject.
+- **Verification:** archive includes Node bridge tests for the real `.gs` source
+  plus Python backend/UI regression coverage.
+- **NOT verified:** nothing was sent through production. The deployed script
+  must be updated and its properties set by the owner. No supplier must receive
+  a letter until test mode is confirmed.
+
