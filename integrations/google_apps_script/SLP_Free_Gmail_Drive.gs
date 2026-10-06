@@ -7,6 +7,16 @@
  * Script Properties, set manually before setup():
  *   SLP_BRIDGE_KEY = long random shared secret (>= 48 characters)
  *
+ * Optional Script Properties for the "request schedule" letters
+ * (op=send_request). Recipients live ONLY here; SLP never sends an address:
+ *   SLP_REQUEST_Q_TO        = QSport supplier address
+ *   SLP_REQUEST_SETANTA_TO  = Setanta supplier address
+ *   SLP_REQUEST_TEST_TO     = your own address for test letters
+ *   SLP_REQUEST_MODE        = test (default) | production
+ * In test mode every letter goes to SLP_REQUEST_TEST_TO with a [ТЕСТ] subject
+ * and no supplier is contacted. Letters are sent with GmailApp, the same
+ * permission the mailbox scan already uses.
+ *
  * Deploy as Web app: execute as ME, access ANYONE. All data-returning routes
  * require a fresh HMAC-SHA256 signature; never share the deployment URL/key.
  */
@@ -14,6 +24,13 @@ var SLP_FOLDER_NAME = "SLP_Private_EPG_Archive";
 var SLP_MAX_ATTACH_BYTES = 6 * 1024 * 1024;
 var SLP_MAX_FILES_PER_RUN = 30;
 var SLP_MANIFEST_PAGE_SIZE = 25;
+var SLP_BRIDGE_VERSION = 2;
+var SLP_REQUEST_MIN_INTERVAL_MS = 10 * 60 * 1000;
+var SLP_REQUEST_CHANNELS = {
+  q: "Q LEAGUE, Q ARENA и Q FOOTBALL",
+  setanta: "SETANTA SPORTS 1, SETANTA SPORTS 2 и SETANTA SPORTS KZ"
+};
+var SLP_REQUEST_PROPERTY = {q: "SLP_REQUEST_Q_TO", setanta: "SLP_REQUEST_SETANTA_TO"};
 
 function slpProps_() { return PropertiesService.getScriptProperties(); }
 function slpHex_(bytes) {
@@ -179,17 +196,140 @@ function syncMailbox() {
     lock.releaseLock();
   }
 }
+/* ---------- schedule request letters (op=capabilities / send_request) ---------- */
+function slpRequestMode_() {
+  return String(slpProps_().getProperty("SLP_REQUEST_MODE") || "test")
+      .toLowerCase() === "production" ? "production" : "test";
+}
+function slpAddress_(property) {
+  var value = String(slpProps_().getProperty(property) || "").trim();
+  return /^[^\s@<>,;:"']{1,64}@[A-Za-z0-9.-]{1,180}\.[A-Za-z]{2,24}$/.test(value)
+      ? value : "";
+}
+function slpRequestTargets_(category) {
+  return category === "all" ? ["q", "setanta"] : [category];
+}
+function slpCapabilities_() {
+  var mode = slpRequestMode_();
+  var configured = {
+    q: !!slpAddress_("SLP_REQUEST_Q_TO"),
+    setanta: !!slpAddress_("SLP_REQUEST_SETANTA_TO"),
+    test: !!slpAddress_("SLP_REQUEST_TEST_TO")
+  };
+  var sendable = mode === "test"
+      ? {q: configured.test, setanta: configured.test}
+      : {q: configured.q, setanta: configured.setanta};
+  return {
+    ok: true, version: SLP_BRIDGE_VERSION, mode: mode,
+    capabilities: {read_mail: true, send_request: true},
+    configured: configured, sendable: sendable
+  };
+}
+function slpIsoDate_(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  var parts = value.split("-").map(Number);
+  var day = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
+  return (day.getUTCFullYear() === parts[0] && day.getUTCMonth() === parts[1] - 1 &&
+      day.getUTCDate() === parts[2]) ? day : null;
+}
+function slpRuDate_(value) {
+  return value.slice(8, 10) + "." + value.slice(5, 7) + "." + value.slice(0, 4);
+}
+function slpRequestLetter_(target, periodStart, periodEnd, mode) {
+  var period = slpRuDate_(periodStart) + " - " + slpRuDate_(periodEnd);
+  return {
+    subject: (mode === "test" ? "[ТЕСТ] " : "") +
+        "Запрос спортивного расписания на период " + period,
+    body: "Добрый день.\n\n" +
+        "Просьба направить актуальное расписание " + SLP_REQUEST_CHANNELS[target] +
+        " на период с " + slpRuDate_(periodStart) + " по " + slpRuDate_(periodEnd) +
+        " в формате Excel.\n\nСпасибо."
+  };
+}
+function slpSendRequest_(payload) {
+  var category = String(payload.category || "");
+  if (category !== "q" && category !== "setanta" && category !== "all") {
+    return {ok: false, error: "bad category"};
+  }
+  var periodStart = String(payload.period_start || "").slice(0, 10);
+  var periodEnd = String(payload.period_end || "").slice(0, 10);
+  var first = slpIsoDate_(periodStart), last = slpIsoDate_(periodEnd);
+  if (!first || !last || first > last || (last - first) / 86400000 > 62) {
+    return {ok: false, error: "bad period"};
+  }
+  var requestId = String(payload.request_id || "");
+  if (!/^[a-f0-9]{32}$/.test(requestId)) return {ok: false, error: "bad request id"};
+
+  var mode = slpRequestMode_(), targets = slpRequestTargets_(category);
+  var recipients = {};
+  for (var i = 0; i < targets.length; i++) {
+    var address = mode === "test"
+        ? slpAddress_("SLP_REQUEST_TEST_TO")
+        : slpAddress_(SLP_REQUEST_PROPERTY[targets[i]]);
+    if (!address) {
+      return {ok: false, error: mode === "test"
+          ? "recipient not configured: test"
+          : "recipient not configured: " + targets[i]};
+    }
+    recipients[targets[i]] = address;
+  }
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(15000)) return {ok: false, error: "busy"};
+  try {
+    var cache = CacheService.getScriptCache();
+    if (cache.get("slp_req_" + requestId)) return {ok: false, error: "duplicate request"};
+    var props = slpProps_(), now = Date.now();
+    for (var j = 0; j < targets.length; j++) {
+      var lastSent = Number(props.getProperty("SLP_REQUEST_LAST_" + targets[j].toUpperCase()) || 0);
+      if (now - lastSent < SLP_REQUEST_MIN_INTERVAL_MS) {
+        return {ok: false, error: "rate limited: " + targets[j]};
+      }
+    }
+    cache.put("slp_req_" + requestId, "1", 600);
+
+    var results = [], sentCount = 0;
+    for (var k = 0; k < targets.length; k++) {
+      var target = targets[k];
+      var letter = slpRequestLetter_(target, periodStart, periodEnd, mode);
+      var item = {category: target, to: recipients[target], subject: letter.subject, sent: false};
+      try {
+        GmailApp.sendEmail(recipients[target], letter.subject, letter.body);
+        item.sent = true;
+        sentCount++;
+        props.setProperty("SLP_REQUEST_LAST_" + target.toUpperCase(), String(now));
+      } catch (sendError) {
+        item.error = "send failed: " + String(sendError).slice(0, 100);
+      }
+      results.push(item);
+    }
+    Logger.log("SLP request " + category + " " + periodStart + ".." + periodEnd +
+        " mode=" + mode + " sent=" + sentCount + "/" + targets.length);
+    if (!sentCount) return {ok: false, error: results[0].error || "send failed"};
+    return {
+      ok: true, sent: sentCount === targets.length, partial: sentCount < targets.length,
+      mode: mode, category: category,
+      to: results.map(function(r) { return r.to; }).join(", "),
+      subject: results[0].subject,
+      period_start: periodStart, period_end: periodEnd, results: results
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
 function doGet(e) {
   try {
     var p = e.parameter || {}, op = String(p.op || ""), arg = "";
     if (op === "manifest") arg = String(p.offset || "0");
     else if (op === "file") arg = String(p.id || "");
-    else if (op !== "backup" && op !== "template" && op !== "scan") {
+    else if (op !== "backup" && op !== "template" && op !== "scan" &&
+             op !== "capabilities") {
       return slpJson_({ok:false,error:"unknown operation"});
     }
     if (!slpAuthorize_("GET", p.ts, op, arg, p.sig)) {
       return slpJson_({ok:false,error:"unauthorized"});
     }
+    if (op === "capabilities") return slpJson_(slpCapabilities_());
     if (op === "scan") {
       syncMailbox();
       return slpJson_({
@@ -248,7 +388,7 @@ function doGet(e) {
 function doPost(e) {
   try {
     var p = e.parameter || {}, op = String(p.op || "");
-    if (op !== "backup" && op !== "template") {
+    if (op !== "backup" && op !== "template" && op !== "send_request") {
       return slpJson_({ok:false,error:"unknown operation"});
     }
     var body = e.postData ? e.postData.contents : "";
@@ -258,6 +398,12 @@ function doPost(e) {
       return slpJson_({ok:false,error:"unauthorized"});
     }
     var payload = JSON.parse(body);
+    if (op === "send_request") {
+      if (body.length > 600 || payload.version !== 1) {
+        return slpJson_({ok:false,error:"bad request"});
+      }
+      return slpJson_(slpSendRequest_(payload));
+    }
     if (op === "backup") {
       // Only encrypted Fernet tokens pass through this bridge; no raw SQLite.
       if (payload.version !== 1 || !/^[A-Za-z0-9_=-]+$/.test(payload.ciphertext || "") ||
