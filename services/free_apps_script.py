@@ -69,6 +69,22 @@ def _config() -> tuple[str, str]:
     return url, secret
 
 
+def _http_error_text(code: int) -> str:
+    """Name the cause instead of a bare "HTTPError" (kept under 150 chars)."""
+    prefix = "Google Apps Script недоступен (HTTP " + str(code) + "): "
+    if code in (401, 403):
+        return prefix + ("доступ к веб-приложению закрыт. В развёртывании "
+                         "нужно «Запуск от моего имени» и «Доступ: Все»")
+    if code == 404:
+        return prefix + ("развёртывание по этому URL не найдено. Проверь, "
+                         "что SPORT_FREE_SCRIPT_URL — текущий адрес /exec")
+    if code == 429:
+        return prefix + "исчерпана квота Google, повторите позже"
+    if code >= 500:
+        return prefix + "сбой на стороне Google или ошибка в скрипте"
+    return prefix + "неожиданный ответ"
+
+
 class ScriptClient:
     def __init__(self):
         self.url, self.secret = _config()
@@ -109,7 +125,9 @@ class ScriptClient:
         try:
             with urlopen(request, timeout=timeout_seconds) as response:
                 raw = response.read(MAX_HTTP_BYTES + 1)
-        except (URLError, HTTPError, OSError) as exc:
+        except HTTPError as exc:
+            raise FreeDriveError(_http_error_text(exc.code)) from exc
+        except (URLError, OSError) as exc:
             raise FreeDriveError(
                 "Google Apps Script недоступен: " + type(exc).__name__
             ) from exc
@@ -121,6 +139,15 @@ class ScriptClient:
             raise FreeDriveError(
                 "Apps Script не вернул JSON. Проверь публикацию Anyone/Execute as me."
             ) from exc
+        if isinstance(result, dict) and result.get("error") == "unauthorized":
+            # The script answers "unauthorized" for exactly two reasons: the
+            # HMAC does not match (different key) or the request timestamp is
+            # more than 90 seconds off. Say so instead of a bare code word.
+            raise FreeDriveError(
+                "Apps Script отклонил подпись: SPORT_FREE_SCRIPT_KEY не "
+                "совпадает с SLP_BRIDGE_KEY скрипта или URL ведёт на "
+                "другой скрипт"
+            )
         if not isinstance(result, dict) or not result.get("ok"):
             raise FreeDriveError(
                 "Apps Script: " + str(result.get("error", "invalid response"))[:180]
