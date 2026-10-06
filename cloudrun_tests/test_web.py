@@ -120,8 +120,13 @@ class WebTests(unittest.TestCase):
             "cloudrun_ui" / "index.html"
         ).read_text()
         self.assertIn("function sourceStamp(value)", index)
-        self.assertIn('"Данные получены с "+origins.join(" + ")', index)
-        self.assertIn('state.textContent="Данные не найдены"', index)
+        # Excel and parsing are two separate indicators; each is "on" only
+        # when it has events in the current 7-day window.
+        self.assertIn('chip("Excel","on"', index)
+        self.assertIn('chip("Парсинг",web.error_reason?"warn":"on"', index)
+        self.assertIn('"файл устарел"', index)
+        self.assertIn('"нет LIVE-событий"', index)
+        self.assertNotIn('origins.join(" + ")', index)
         self.assertNotIn('webState.textContent="Парсинг: "', index)
         self.assertNotIn('mailState.textContent="Почта/Excel: "', index)
         self.assertNotIn("Gmail подключён. Новые EPG попадают", index)
