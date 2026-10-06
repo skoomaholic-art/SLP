@@ -102,6 +102,38 @@ Mismatched concurrent revisions cannot silently overwrite Drive backups.
 **Do not create the GCP bucket from the previous setup instructions.**
 Do not add a paid Cloud Scheduler. Apps Script performs hourly Gmail intake.
 
+## 3. «Запросить расписание» through the bridge (owner action)
+
+The bridge can mail schedule requests to suppliers. SLP sends only a category
+(`q`, `setanta`, `all`) and a period; the recipient and the letter text are
+chosen inside the script. Nothing is sent until the owner configures it.
+
+1. Replace Code.gs with the current
+   *integrations/google_apps_script/SLP_Free_Gmail_Drive.gs*.
+2. Project settings > Script properties, add:
+   - `SLP_REQUEST_TEST_TO` - your own address for test letters
+   - `SLP_REQUEST_Q_TO` - QSport supplier address
+   - `SLP_REQUEST_SETANTA_TO` - Setanta supplier address
+   - `SLP_REQUEST_MODE` - leave unset (= `test`) until the test letter arrived
+3. Deploy > Manage deployments > pencil on the EXISTING deployment >
+   Version: New version > Deploy. The `/exec` URL must stay the same. Do not
+   create a second deployment.
+4. If Google asks to review permissions, approve. Letters are sent with
+   `GmailApp`, the permission the mailbox scan already holds, so normally no
+   new consent screen appears.
+5. In SLP open «Почта и обновления». Within ten minutes (or after a page
+   reload once the previous check expired) the button becomes active. Send a
+   request: in `test` mode the letter arrives only at `SLP_REQUEST_TEST_TO`
+   with a `[ТЕСТ]` subject, and no supplier is contacted.
+6. Only after that set `SLP_REQUEST_MODE` = `production`. From then on letters
+   go to the suppliers, only an SLP admin may send, and each request is
+   journalled as awaiting the supplier's reply.
+
+Safeguards in the script: single-use request id (a replayed call cannot send
+twice), at most one letter per supplier per 10 minutes, the whole request is
+refused before sending if any needed address is missing, addresses are never
+returned by `capabilities`.
+
 ## Channels
 
 Only the approved 14-channel SLP registry is eligible. Of the supplier
