@@ -480,9 +480,14 @@ async function loadMailStatus(){
  $("request").disabled=!state.gmailSend;
  $("request").title=state.gmailSend?
   (state.gmailMode==="production"?"Отправка подтверждённому поставщику":"Отправка на тестовый адрес"):
-  "Ожидает подключения Gmail и разрешения отправки";
- $("requestTo").textContent=(state.gmailMode==="production"?"Режим PRODUCTION. Получатель берётся из конфигурации: ":"Тестовый получатель: ")+
-  (state.gmailTestTo||"alexandr.petrossov@fmedia.kz");
+  (status.send_reason||"Ожидает подключения Gmail и разрешения отправки");
+ $("requestTo").textContent=status.bridge_mode?
+  (state.gmailMode==="production"?
+   "Боевой режим: письмо уйдёт поставщику. Адрес берётся из свойств Apps Script.":
+   "Тестовый режим: письмо уйдёт на тестовый адрес из свойств Apps Script, поставщик его не получит.")+
+   (status.send_enabled&&status.send_reason?" "+status.send_reason+".":""):
+  (state.gmailMode==="production"?"Режим PRODUCTION. Получатель берётся из конфигурации: ":"Тестовый получатель: ")+
+   (state.gmailTestTo||"alexandr.petrossov@fmedia.kz");
  if(status.connected)await loadMailNotices();
  if(status.bridge_mode&&!state.bridgeInitialSyncDone){
    state.bridgeInitialSyncDone=true;
@@ -967,11 +972,24 @@ $("requestConfirm").addEventListener("click",async()=>{
  };
  if(!period_start||!period_end){msg("Укажите период расписания.","error");return}
  if(!confirm("Отправить запрос "+labels[category]+
-   " с подключённого Gmail на выбранный период?"))return;
+   " с подключённого Gmail на выбранный период?"+
+   (state.gmailBridge?(state.gmailMode==="production"?
+    "\n\nБоевой режим: письмо получит поставщик.":
+    "\n\nТестовый режим: письмо придёт только на тестовый адрес."):"")))return;
  $("requestConfirm").disabled=true;
  try{
   const result=await api("/api/gmail/request","POST",{category,period_start,period_end});
-  msg("Gmail подтвердил отправку: "+result.subject+" → "+result.to,"success");
+  if(result.transport==="apps_script"){
+   const ru=v=>String(v||"").replace(/^(\d{4})-(\d{2})-(\d{2})$/,"$3.$2.$1");
+   const period=ru(result.period_start)+"-"+ru(result.period_end);
+   const lines=(result.results||[]).map(item=>item.sent?
+    item.label+" · "+period+" → "+item.to:
+    item.label+": не отправлено ("+(item.error||"ошибка")+")");
+   msg((result.mode==="test"?"Тестовый запрос отправлен: ":"Запрос отправлен: ")+
+    lines.join("; ")+". Тема: "+result.subject,result.partial?"error":"success");
+  }else{
+   msg("Gmail подтвердил отправку: "+result.subject+" → "+result.to,"success");
+  }
   $("mailRequestPanel").classList.add("hide");
  }catch(e){msg(e.message,"error")}
  finally{$("requestConfirm").disabled=false}
