@@ -56,6 +56,14 @@ h1{font-size:30px;margin:0 0 7px}h2{font-size:19px;margin:0 0 12px}.subtitle,.mu
 .source-text{min-width:0;overflow-wrap:anywhere}
 .source-state{color:var(--muted);font-size:12px}
 .source-state.ok{color:var(--accent)}
+.source-chip{display:flex;align-items:baseline;gap:6px;font-size:12px;line-height:1.5;color:var(--muted)}
+.source-chip b{font-weight:600;min-width:56px}
+.source-dot{flex:0 0 7px;width:7px;height:7px;border-radius:50%;background:var(--line);align-self:center}
+.source-chip.off{opacity:.6}
+.source-chip.on{color:var(--accent)}.source-chip.on .source-dot{background:var(--accent)}
+.source-chip.warn{color:#e8c66a}.source-chip.warn .source-dot{background:#e8c66a}
+.source-chip.stale{color:#e8c66a}.source-chip.stale .source-dot{background:transparent;border:1px solid #e8c66a}
+.source-chip.bad{color:var(--danger)}.source-chip.bad .source-dot{background:var(--danger)}
 details.sources{margin:16px 0}
 details.sources summary{cursor:pointer;font-weight:700;font-size:16px}
 .import-row{display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin-top:15px}
@@ -277,6 +285,10 @@ function latestSourceStamp(...values){
   return bt-at;
  })[0];
 }
+function plural(n,one,few,many){
+ const a=Math.abs(n)%100,b=a%10;
+ return n+" "+(a>10&&a<20?many:b===1?one:b>=2&&b<=4?few:many);
+}
 function renderSources(data){
  const node=$("sources");node.replaceChildren();
  const grid=document.createElement("div");grid.className="source-grid";
@@ -291,29 +303,66 @@ function renderSources(data){
 
  for(const entry of combined.values()){
   const web=entry.web||{},excel=entry.excel||null;
-  const parsing=Number(web.event_count||0)>0;
-  const excelReceived=!!(excel&&excel.imported_at);
-  const origins=[];
-  if(excelReceived)origins.push("Excel");
-  if(parsing)origins.push("парсинга");
+  // Two independent signals, shown separately so it is always visible which
+  // one actually feeds the current 7-day grid. "On" means events in the
+  // current window, not merely "a file was imported once".
+  const parsingCount=Number(web.event_count||0);
+  const excelCount=Number((excel&&excel.live_events)||0);
+  const excelInWindow=!!(excel&&excel.imported_at&&(
+   excelCount>0||excel.status==="ready"||excel.status==="partial"||
+   (!excel.status&&(excel.coverage||[]).length>0)
+  ));
 
   const row=document.createElement("div");row.className="source-item";
   const logo=channelLogo(entry.channel);if(logo)row.append(logo);
   const info=document.createElement("div");info.className="source-text";
   const name=document.createElement("strong");name.textContent=entry.channel;info.append(name);
 
-  const state=document.createElement("div");
-  state.className="source-state"+(origins.length?" ok":"");
-  if(origins.length){
-   const stamp=sourceStamp(latestSourceStamp(
-    parsing?web.checked_at:"",
-    excelReceived?excel.imported_at:""
-   ));
-   state.textContent="Данные получены с "+origins.join(" + ")+(stamp?" · "+stamp:"");
+  const chip=(label,mode,detail,title)=>{
+   const line=document.createElement("div");
+   line.className="source-chip "+mode;
+   const dot=document.createElement("span");dot.className="source-dot";
+   const tag=document.createElement("b");tag.textContent=label;
+   const text=document.createElement("span");text.textContent=detail;
+   line.append(dot,tag,text);
+   if(title)line.title=title;
+   return line;
+  };
+
+  let excelChip;
+  if(excelInWindow){
+   const stamp=sourceStamp(excel.imported_at);
+   excelChip=chip("Excel","on",
+    plural(excelCount,"событие","события","событий")+(stamp?" · "+stamp:""),
+    excel.filename||"");
+  }else if(excel&&excel.imported_at){
+   const stamp=sourceStamp(excel.imported_at);
+   excelChip=chip("Excel","stale","файл устарел"+(stamp?" · "+stamp:""),
+    (excel.filename||"")+" — не покрывает ближайшие 7 дней");
+  }else if(excel&&(excel.status==="awaiting_response"||excel.status==="awaiting_approval")){
+   excelChip=chip("Excel","stale",
+    excel.status==="awaiting_approval"?"ждёт подтверждения":"ждём ответ поставщика","");
   }else{
-   state.textContent="Данные не найдены";
+   excelChip=chip("Excel","off",web.supplier_expected||excel?"нет файла":"не используется","");
   }
-  info.append(state);
+
+  let parsingChip;
+  const checked=sourceStamp(web.checked_at);
+  if(parsingCount>0){
+   parsingChip=chip("Парсинг",web.error_reason?"warn":"on",
+    plural(parsingCount,"событие","события","событий")+(checked?" · "+checked:""),
+    web.error_reason||(web.guide_sources||[]).join(", "));
+  }else if(web.error_reason||web.status==="error"){
+   parsingChip=chip("Парсинг","bad","ошибка"+(checked?" · "+checked:""),
+    web.error_reason||"источник не ответил");
+  }else if(web.checked_at){
+   parsingChip=chip("Парсинг","off","нет LIVE-событий"+(checked?" · "+checked:""),
+    (web.guide_sources||[]).join(", "));
+  }else{
+   parsingChip=chip("Парсинг","off","не проверялся","");
+  }
+
+  info.append(excelChip,parsingChip);
   row.append(info);grid.append(row);
  }
  node.append(grid);
@@ -822,8 +871,11 @@ $("export").addEventListener("click",async()=>{
  try{
   const res=await fetch(url,{credentials:"same-origin"});
   if(!res.ok){const o=await res.json().catch(()=>({}));throw new Error(o.detail||"Ошибка выгрузки")}
+  const origin=res.headers.get("X-SLP-Template")||"approved";
   const blob=await res.blob(),href=URL.createObjectURL(blob),a=document.createElement("a");
   a.href=href;a.download="sport_epg_schedule.xlsx";a.click();setTimeout(()=>URL.revokeObjectURL(href),1000);
+  if(origin==="builtin")msg("Таблица выгружена в простом виде: утверждённый шаблон недоступен (хранилище не отвечает или шаблон не загружен). События актуальные, но оформление и строки, которые хранились в шаблоне, не подтянуты.","error");
+  else if(origin==="cached")msg("Таблица выгружена по ранее загруженной копии шаблона: хранилище сейчас не отвечает.","");
  }catch(e){msg(e.message,"error")}
 });
 
