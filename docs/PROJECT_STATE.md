@@ -465,3 +465,37 @@ cloud resource was created. Existing Telegram production is unchanged.
   must be updated and its properties set by the owner. No supplier must receive
   a letter until test mode is confirmed.
 
+
+## Schedule self-check, wider ESPN cross-check, startup restore retry (2026-10-07, branch feature/schedule-anomaly-check)
+
+- **Original symptom:** a wrong time or a leftover test row reached the
+  schedule unnoticed (20-hour basketball broadcast, `ЧМ-2032`, «тест» rows,
+  day/month swapped); the ESPN cross-check covered 10 leagues and only the
+  first two days; one temporary Apps Script error at boot crashed the process.
+- **Changed (new):** `services/schedule_anomalies.py` — read-only rules over
+  the merged schedule: `duration_too_long`, `duration_too_short`,
+  `channel_overlap`, `duplicate_slot`, `same_fixture_different_time`,
+  `test_label`, `impossible_year`, `date_swap_suspect`. Durations are judged
+  only when the end time is known, never for an estimated end.
+- **Changed (backend/UI):** `GET /api/anomalies` (signed-in users; default
+  period starts yesterday with no upper bound); the collect result carries a
+  `schedule_anomalies` summary; new «Проверка расписания» panel in the web UI.
+  Findings never change the schedule.
+- **Changed (validation):** `ESPN_FEEDS` grew from 10 to 26 feeds (domestic
+  cups, Conference League, Nations League, UEFA WC qualifying, Portugal,
+  Netherlands, Scotland, MLS, Saudi Pro League as `ksa.1`). Requests run
+  concurrently (limit 8), cover up to 8 days including the previous calendar
+  day, and a feed is asked only for days that carry that sport.
+- **Changed (startup):** `FreeDriveError.transient` marks network, 5xx and 429
+  failures; `_restore_drive_snapshot()` retries those twice (2 s, 5 s). A
+  persistent outage or a configuration fault still stops startup: the app is
+  never started with an empty database.
+- **Verification:** `compileall` clean; `cloudrun_tests` 177 passed, `tests`
+  175 passed; local `uvicorn cloudrun_web:app` on a throwaway SQLite file:
+  `/api/anomalies` returned 401 signed-out and the expected four findings
+  signed-in, and the UI panel rendered them in headless Chromium. ESPN slugs
+  were checked one by one against the live scoreboard endpoint.
+- **NOT verified:** nothing was deployed. The rules have not been run against
+  the production database, so the real false-positive rate is unknown. The
+  ESPN request volume per collect grows (up to 26 feeds x 8 days) and was not
+  measured against the live API from Cloud Run.

@@ -90,6 +90,10 @@ details.sources summary{cursor:pointer;font-weight:700;font-size:16px}
 .notification-time{color:var(--muted);font-size:11px;white-space:nowrap}
 .notification-message{color:var(--muted);font-size:12px;margin-top:4px}
 .notification-item.attention{border-color:#8d6434}
+.notification-item.warning{border-color:#a8792f}
+.anomaly-meta{color:var(--text);font-size:12px;margin-top:6px}
+.anomaly-kind{display:inline-block;font-size:11px;border-radius:6px;padding:2px 7px;margin-right:6px;background:#2a3344;color:#d5e4f0}
+.notification-item.error .anomaly-kind{background:#4a2327;color:#ffc9c2}
 .notification-item.error,.notification-item.critical{border-color:#934444}
 .notification-count{display:inline-grid;place-items:center;min-width:22px;height:22px;padding:0 6px;
  border-radius:99px;background:#d94b4b;color:white;font-size:11px;margin-left:6px}
@@ -137,6 +141,11 @@ footer{margin:25px 0;color:var(--muted);font-size:12px}
 <details class="card sources" id="notificationPanel">
 <summary>Уведомления <span id="notificationCounter" class="notification-count hide"></span></summary>
 <div id="notifications" class="notification-list"><p class="muted-small">Загружаю изменения...</p></div>
+</details>
+<details class="card sources" id="anomalyPanel">
+<summary>Проверка расписания <span id="anomalyCounter" class="notification-count hide"></span></summary>
+<p id="anomalyStatus" class="muted-small">Проверяю расписание...</p>
+<div id="anomalies" class="notification-list"></div>
 </details>
 <details class="card sources" id="gmailPanel">
 <summary><span class="mail-icon">✉ Gmail</span> Почта и обновления <span id="mailCounter" class="mail-notice-count hide"></span></summary>
@@ -250,6 +259,7 @@ async function load(){
   const status=await api("/api/sources");
   renderSources(status);
   await loadNotifications();
+  await loadAnomalies();
   await loadMailStatus();
   await loadTemplateStatus();
  }catch(e){msg(e.message,"error")}
@@ -454,6 +464,54 @@ async function loadNotifications(){
   }
  }catch(e){
   const root=$("notifications");root.textContent=e.message;
+ }
+}
+
+const ANOMALY_KINDS={
+ duration_too_long:"Слишком длинный эфир",
+ duration_too_short:"Слишком короткий эфир",
+ channel_overlap:"Наложение на канале",
+ duplicate_slot:"Возможный дубль",
+ same_fixture_different_time:"Один матч в разное время",
+ test_label:"Тестовая запись",
+ impossible_year:"Неверный год",
+ date_swap_suspect:"День и месяц перепутаны?"
+};
+async function loadAnomalies(){
+ const root=$("anomalies"),status=$("anomalyStatus"),counter=$("anomalyCounter");
+ try{
+  const response=await api("/api/anomalies");
+  const items=response.anomalies||[];
+  const levels=(response.summary||{}).levels||{};
+  const serious=Number(levels.error||0)+Number(levels.warning||0);
+  counter.textContent=String(serious);
+  counter.classList.toggle("hide",!serious);
+  root.replaceChildren();
+  const checked=Number(response.checked_events||0);
+  status.textContent=items.length
+   ?"Проверено событий: "+checked+". Нужно посмотреть: "+items.length+". Расписание не изменено — это только подсказки."
+   :"Проверено событий: "+checked+". Подозрительных эфиров не найдено.";
+  for(const item of items){
+   const card=document.createElement("article");
+   card.className="notification-item "+(item.level||"attention");
+   const top=document.createElement("div");top.className="notification-top";
+   const title=document.createElement("div");title.className="notification-title";
+   title.textContent=item.title||"Событие";
+   const when=document.createElement("div");when.className="notification-time";
+   when.textContent=String(item.date||"").split("-").reverse().join(".")+" "+(item.time||"");
+   top.append(title,when);
+   const meta=document.createElement("div");meta.className="anomaly-meta";
+   const kind=document.createElement("span");kind.className="anomaly-kind";
+   kind.textContent=ANOMALY_KINDS[item.kind]||"Проверьте эфир";
+   meta.append(kind,document.createTextNode(item.channel||""));
+   const message=document.createElement("div");message.className="notification-message";
+   message.textContent=item.message||"";
+   card.append(top,meta,message);
+   root.append(card);
+  }
+ }catch(e){
+  root.replaceChildren();counter.classList.add("hide");
+  status.textContent="Проверка расписания недоступна: "+e.message;
  }
 }
 

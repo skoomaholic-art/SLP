@@ -36,7 +36,14 @@ from services.time_logic import KZ_TIMEZONE
 
 
 class FreeDriveError(RuntimeError):
-    pass
+    """Bridge failure. ``transient`` marks errors worth retrying as they are:
+    network trouble, Google-side 5xx and quota responses. Wrong URL, closed
+    access, a bad signature or a damaged backup never fix themselves.
+    """
+
+    def __init__(self, message: str = "", *, transient: bool = False):
+        super().__init__(message)
+        self.transient = transient
 
 
 MAX_HTTP_BYTES = 12 * 1024 * 1024
@@ -167,10 +174,14 @@ class ScriptClient:
             with urlopen(request, timeout=timeout_seconds) as response:
                 raw = response.read(MAX_HTTP_BYTES + 1)
         except HTTPError as exc:
-            raise FreeDriveError(_http_error_text(exc.code)) from exc
+            raise FreeDriveError(
+                _http_error_text(exc.code),
+                transient=exc.code == 429 or exc.code >= 500,
+            ) from exc
         except (URLError, OSError) as exc:
             raise FreeDriveError(
-                "Google Apps Script недоступен: " + type(exc).__name__
+                "Google Apps Script недоступен: " + type(exc).__name__,
+                transient=True,
             ) from exc
         if len(raw) > MAX_HTTP_BYTES:
             raise FreeDriveError("Ответ Apps Script превышает 12 МБ")
