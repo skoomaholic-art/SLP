@@ -277,7 +277,7 @@ class WebTests(unittest.TestCase):
             )
             refresh.assert_awaited_once()
 
-    def test_collect_scans_mail_last_and_never_auto_imports(self):
+    def test_collect_without_editor_rights_scans_mail_last_and_never_imports(self):
         with tempfile.TemporaryDirectory() as directory:
             database = SLPDatabase(Path(directory) / "sport.db")
             refresh = AsyncMock(return_value=SimpleNamespace(run_id="run-1"))
