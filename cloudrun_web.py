@@ -706,6 +706,9 @@ def channel_logos():
 def ui_image(filename: str):
     media = {
         "app-icon.png": "image/png",
+        "logo.png": "image/png",
+        "favicon-32.png": "image/png",
+        "apple-touch-icon.png": "image/png",
         "skoomaholic.webp": "image/webp",
         "daniya.webp": "image/webp",
         "vadim.webp": "image/webp",
@@ -718,8 +721,8 @@ def ui_image(filename: str):
 
 @app.get("/favicon.ico")
 def favicon():
-    return FileResponse(ROOT / "cloudrun_ui" / "assets" / "app-icon.png",
-                        media_type="image/png")
+    return FileResponse(ROOT / "cloudrun_ui" / "assets" / "favicon.ico",
+                        media_type="image/x-icon")
 
 
 @app.post("/api/login")

@@ -4,8 +4,10 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SLP - Спортивное расписание</title>
 <meta name="theme-color" content="#0e121b">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png">
 <link rel="icon" type="image/png" sizes="192x192" href="/assets/app-icon.png">
-<link rel="apple-touch-icon" href="/assets/app-icon.png">
+<link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
 <style>
 :root{color-scheme:dark;--bg:#0e121b;--card:#171e2b;--line:#2c3545;--muted:#a1aec1;--text:#eef2f7;--accent:#41dcc2;--danger:#f5a38f}
 *{box-sizing:border-box}body{background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;margin:0}
@@ -15,7 +17,9 @@ button:disabled{opacity:.46;cursor:not-allowed}input,select{border:1px solid #36
 header{padding:19px 5%;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:16px}
 .brand{display:flex;align-items:center;gap:10px;font-size:22px;font-weight:850;letter-spacing:.1em}
 .brand span{color:var(--accent)}
-.app-icon{width:46px;height:46px;object-fit:contain;background:#000;border:1px solid #334153;border-radius:12px;flex:none}
+.app-icon{width:46px;height:46px;object-fit:contain;flex:none}
+.login-logo{display:block;width:190px;height:190px;margin:0 auto 6px;object-fit:contain;
+ filter:drop-shadow(0 0 1px rgba(150,215,255,.75)) drop-shadow(0 0 10px rgba(40,140,255,.25))}
 .profile{display:flex;align-items:center;gap:9px;min-width:0}
 .who{color:var(--muted);font-size:13px;overflow-wrap:anywhere}
 .user-avatar,.avatar-fallback{height:42px;width:42px;flex:none;border-radius:50%;object-fit:cover;border:2px solid #465970;background:#1a2836}
@@ -122,6 +126,7 @@ footer{margin:25px 0;color:var(--muted);font-size:12px}
 </header>
 <main>
 <section class="card hide" id="login">
+<img class="login-logo" src="/assets/logo.png" width="190" height="190" alt="Skoomaholic Dev">
 <h1>Вход в систему</h1><p class="subtitle">Спортивное расписание, календарь и архив</p>
 <form id="loginForm"><label for="loginName">Логин</label><input id="loginName" autocomplete="username" required>
 <label for="loginPassword">Пароль</label><input id="loginPassword" type="password" autocomplete="current-password" required>
