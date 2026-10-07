@@ -61,6 +61,10 @@ class WebTests(unittest.TestCase):
         assets = Path(__file__).resolve().parents[1] / "cloudrun_ui" / "assets"
         expected = {
             "app-icon.png": b"\x89PNG",
+            "logo.png": b"\x89PNG",
+            "favicon-32.png": b"\x89PNG",
+            "apple-touch-icon.png": b"\x89PNG",
+            "favicon.ico": b"\x00\x00\x01\x00",
             "skoomaholic.webp": b"RIFF",
             "daniya.webp": b"RIFF",
             "vadim.webp": b"RIFF",
@@ -72,6 +76,23 @@ class WebTests(unittest.TestCase):
             self.assertGreater(len(raw), 500, name)
             hashes.append(hashlib.sha256(raw).digest())
         self.assertEqual(len(hashes), len(set(hashes)))
+
+    def test_brand_logo_and_favicon_are_served(self):
+        index = (Path(__file__).resolve().parents[1] / "cloudrun_ui"
+                 / "index.html").read_text(encoding="utf-8")
+        self.assertIn('<link rel="icon" href="/favicon.ico" sizes="any">', index)
+        self.assertIn('href="/assets/apple-touch-icon.png"', index)
+        self.assertIn('class="login-logo" src="/assets/logo.png"', index)
+        icon = web.favicon()
+        self.assertEqual(icon.media_type, "image/x-icon")
+        self.assertTrue(str(icon.path).endswith("favicon.ico"))
+        for name in ("app-icon.png", "logo.png", "favicon-32.png",
+                     "apple-touch-icon.png"):
+            served = web.ui_image(name)
+            self.assertEqual(served.media_type, "image/png")
+            self.assertTrue(Path(served.path).is_file(), name)
+        with self.assertRaises(HTTPException):
+            web.ui_image("favicon.ico.bak")
 
     def test_ui_names_channels_without_swapping_images(self):
         import re
