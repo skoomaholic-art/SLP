@@ -20,6 +20,12 @@ DATE_PATTERN = re.compile(
     r"\b(\d{2})\.(\d{2})\.(\d{4})\b"
 )
 
+# Whole word only: "Liverpool" or "Oliver" must not mark a row LIVE.
+LIVE_WORD_PATTERN = re.compile(
+    r"(?<![^\W\d_])LIVE(?![^\W\d_])",
+    re.IGNORECASE,
+)
+
 
 SPORT_PREFIXES = {
     "Футбол": "Футбол",
@@ -734,9 +740,8 @@ async def get_qazsport_schedule(
             time_text,
         )
 
-        is_live = (
-            "LIVE"
-            in text.upper()
+        is_live = bool(
+            LIVE_WORD_PATTERN.search(text)
         )
 
         event_key = (
