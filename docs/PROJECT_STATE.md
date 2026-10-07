@@ -499,3 +499,26 @@ cloud resource was created. Existing Telegram production is unchanged.
   the production database, so the real false-positive rate is unknown. The
   ESPN request volume per collect grows (up to 26 feeds x 8 days) and was not
   measured against the live API from Cloud Run.
+
+## Collection applies supplier mail (2026-10-07, branch feature/collect-applies-supplier-mail)
+
+- **Owner's instruction:** one collection = open sources and APIs, then mail
+  with supplier tables replacing the open-source rows (the tables are more
+  current), then a check against public sports data; only the 14 registered
+  channels.
+- **Gap found:** the order and the 14-channel limit were already in place, but
+  every mail scan ran with `allow_auto_import=False`, so supplier tables never
+  replaced anything until a person approved each file by hand. This reverses
+  the "keep mail review-only" decision of commit `9382b35`.
+- **Changed:** `_run_collection(apply_supplier_mail=...)`; `/api/collect`
+  passes `True` for editor/admin and `False` for other roles. New
+  `gmail.auto_apply_pending()` applies files already stored by the background
+  scan, oldest first, through the existing `_safe_auto_apply` guards. The
+  scheduled 15-minute scan and the "check mail" button still only store files.
+- **Still requires a person:** the first file in a new QAZSPORT/SPORT+ layout,
+  ambiguous matches, a grid that drops every LIVE of a day, cancellation
+  letters. `SPORT_GMAIL_AUTO_IMPORT=false` switches all automatic imports off.
+- **Verification:** `cloudrun_tests` 184 passed, `tests` 175 passed, including
+  an end-to-end bridge test on a built workbook and an order test of the run.
+- **NOT verified:** not deployed; not run against the production mailbox, so
+  how many stored files will be applied on the first collection is unknown.

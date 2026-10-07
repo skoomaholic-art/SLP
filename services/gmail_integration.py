@@ -699,6 +699,66 @@ def _safe_auto_apply(database, notice_id: int, parsed) -> tuple[bool, str]:
     return result["status"] in ("imported", "already_imported", "superseded"), ""
 
 
+def auto_apply_pending(database, *, limit: int = 60) -> dict:
+    """Apply supplier files that were stored earlier and still wait in mail.
+
+    The background scan only stores attachments. When the editor collects the
+    schedule, every stored file that passes the same guards as a fresh
+    automatic import replaces the open-source rows for its channel and days.
+    Anything ambiguous stays pending with the reason, for manual review.
+    Files are taken oldest first so a newer file always wins.
+    """
+    init_gmail_schema(database)
+    outcome = {"applied": 0, "left_for_review": 0, "channels": [],
+               "mode": "automatic" if _auto_import_enabled() else "review_only"}
+    if not _auto_import_enabled():
+        return outcome
+    with database._connect() as conn:
+        rows = conn.execute(
+            "SELECT id,filename,attachment_bytes,status,detected_channel,"
+            "received_at,subject,sender,snippet,original_sender,"
+            "format_fingerprint,channel_detection_method "
+            "FROM gmail_notices WHERE status='pending' "
+            "AND attachment_bytes IS NOT NULL "
+            "AND coalesce(classification,'')!='SCHEDULE_CANCELLATION' "
+            "ORDER BY received_at,id LIMIT ?",
+            (max(1, min(200, int(limit))),),
+        ).fetchall()
+    channels: list[str] = []
+    for row in rows:
+        why = ""
+        try:
+            parsed = _parse_notice(row)
+        except (GmailTransportError, InvalidEPG, ValueError) as exc:
+            parsed, why = None, str(exc)[:200]
+        accepted = False
+        if parsed is not None:
+            confirmed = (
+                str(row["channel_detection_method"] or "") == "confirmed_format"
+                and str(row["detected_channel"] or "") == parsed.channel
+            )
+            if parsed.channel in OFFICIAL_SOURCE_KEY and not confirmed:
+                # The first file in a new official layout is approved by a
+                # person once; later files in that layout import by themselves.
+                why = "Новый формат файла канала: нужно первое подтверждение"
+            else:
+                accepted, why = _safe_auto_apply(database, row["id"], parsed)
+        if accepted:
+            outcome["applied"] += 1
+            if parsed.channel not in channels:
+                channels.append(parsed.channel)
+            continue
+        outcome["left_for_review"] += 1
+        with database._connect() as conn:
+            conn.execute(
+                "UPDATE gmail_notices SET reason=? "
+                "WHERE id=? AND status='pending'",
+                ((why or "Нужна редакторская проверка")[:200], row["id"]),
+            )
+    outcome["channels"] = channels
+    return outcome
+
+
 def list_notices(database, *, limit: int = 100) -> list[dict]:
     init_gmail_schema(database)
     limit = max(1, min(200, int(limit)))

@@ -1604,7 +1604,19 @@ def _collection_error_code(message: str) -> int:
     return 599
 
 
-async def _run_collection(application: FastAPI) -> dict:
+async def _run_collection(
+    application: FastAPI, *, apply_supplier_mail: bool = False,
+) -> dict:
+    """One collection run, in a fixed order.
+
+    1. Open sources: channel sites, APIs and TV guides.
+    2. Mail: supplier spreadsheets. With ``apply_supplier_mail`` they replace
+       the open-source rows for their channel and days, because the supplier
+       table is the more current statement of the schedule.
+    3. Check of the resulting schedule against public sports data.
+
+    Only the registered channels reach the schedule (``ALLOWED_CHANNELS``).
+    """
     database = application.state.database
     result = {
         "ok": True,
@@ -1616,6 +1628,7 @@ async def _run_collection(application: FastAPI) -> dict:
         "event_api_validation": None,
         "important_notifications": 0,
         "mail": None,
+        "mail_applied": None,
     }
 
     try:
@@ -1681,14 +1694,20 @@ async def _run_collection(application: FastAPI) -> dict:
                         result["mail"] = await asyncio.to_thread(
                             freebridge.sync_inbox,
                             database,
-                            allow_auto_import=False,
+                            allow_auto_import=apply_supplier_mail,
                             refresh_archive=True,
                         )
                     else:
                         result["mail"] = await asyncio.to_thread(
                             gmail.sync_inbox,
                             database,
-                            allow_auto_import=False,
+                            allow_auto_import=apply_supplier_mail,
+                        )
+                    if apply_supplier_mail:
+                        # Files stored earlier by the background scan are
+                        # applied here too; unclear ones stay for review.
+                        result["mail_applied"] = await asyncio.to_thread(
+                            gmail.auto_apply_pending, database
                         )
                 except freebridge.FreeDriveError as exc:
                     result["errors"].append(
@@ -1786,7 +1805,7 @@ async def _run_collection(application: FastAPI) -> dict:
             f"Расписание собрано: {result['week_event_count']} "
             "событий на этой неделе"
         )
-        final_detail = ""
+        final_detail = _mail_applied_detail(result)
     else:
         first_error = result["errors"][0] if result["errors"] else "Неизвестная ошибка"
         code = _collection_error_code(first_error)
@@ -1805,6 +1824,23 @@ async def _run_collection(application: FastAPI) -> dict:
     return result
 
 
+def _mail_applied_detail(result: dict) -> str:
+    """One line on what supplier mail changed during this collection."""
+    fresh = int((result.get("mail") or {}).get("auto_imported") or 0)
+    stored = result.get("mail_applied") or {}
+    applied = fresh + int(stored.get("applied") or 0)
+    waiting = len(result.get("pending_mail_channels") or [])
+    parts = []
+    if applied:
+        parts.append(f"Из почты применено таблиц поставщиков: {applied}")
+    if waiting:
+        parts.append(
+            "Ждут проверки в почте: "
+            + ", ".join(result["pending_mail_channels"])
+        )
+    return ". ".join(parts)
+
+
 @app.get("/api/collect/status")
 def collect_status(request: Request):
     current_user(request)
@@ -1818,7 +1854,7 @@ def collect_status(request: Request):
 
 @app.post("/api/collect", status_code=202)
 async def collect(request: Request, options: CollectOptions):
-    current_user(request)
+    user = current_user(request)
     origin_guard(request)
     existing = getattr(request.app.state, "collect_task", None)
     if existing is not None and not existing.done():
@@ -1835,7 +1871,13 @@ async def collect(request: Request, options: CollectOptions):
         running=True,
     )
     request.app.state.collect_task = asyncio.create_task(
-        _run_collection(request.app)
+        _run_collection(
+            request.app,
+            # Replacing schedule rows is an editorial action: a viewer may
+            # start a collection, but supplier tables are applied only when
+            # an editor or administrator starts it.
+            apply_supplier_mail=user["role"] in ("editor", "admin"),
+        )
     )
     return {
         "accepted": True,
