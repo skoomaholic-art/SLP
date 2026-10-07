@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date, datetime, timedelta
 
@@ -44,10 +45,18 @@ class ScheduleService:
         self.orchestrator = orchestrator or ParserOrchestrator()
         self.database = self.orchestrator.database
         self.last_refresh: RefreshResult | None = None
+        self._refresh_lock = asyncio.Lock()
 
     async def refresh(self) -> RefreshResult:
-        self.last_refresh = await self.orchestrator.refresh()
-        return self.last_refresh
+        # /refresh, the scheduler and the web app share one service; a caller
+        # that arrives during a running refresh reuses its result instead of
+        # starting a second full scrape against the same database.
+        waited = self._refresh_lock.locked()
+        async with self._refresh_lock:
+            if waited and self.last_refresh is not None:
+                return self.last_refresh
+            self.last_refresh = await self.orchestrator.refresh()
+            return self.last_refresh
 
     def _source_snapshot(self, source: str, scope_date: str) -> list[dict]:
         return self.database.load_active_source_snapshot(source, scope_date)

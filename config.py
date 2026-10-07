@@ -37,7 +37,8 @@ class Settings:
     admin_ids: frozenset[int]
 
     def is_admin(self, user_id: int) -> bool:
-        return not self.admin_ids or int(user_id) in self.admin_ids
+        # Fail closed: without ADMIN_IDS nobody gets admin commands.
+        return int(user_id) in self.admin_ids
 
 
 def load_settings(*, require_bot_token: bool = True) -> Settings:

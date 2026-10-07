@@ -126,7 +126,7 @@ Useful commands:
 /check    independent web verification for one event
 /health   parser/database health
 /status   alias for /health
-/refresh  force source refresh (admin when ADMIN_IDS is configured)
+/refresh  force source refresh (only for ADMIN_IDS; nobody when it is empty)
 /errors   unresolved source/QA incidents (admin)
 ```
 

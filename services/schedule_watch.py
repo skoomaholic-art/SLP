@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
@@ -10,6 +12,7 @@ from services.schedule_merge import group_simulcasts, normalize_match_text
 from services.time_logic import KZ_TIMEZONE, get_scheduled_datetimes
 
 
+logger = logging.getLogger(__name__)
 STATE_VERSION = 1
 DEFAULT_STATE_PATH = Path(__file__).resolve().parents[1] / "slp_state.json"
 END_CHANGE_THRESHOLD_MINUTES = 15
@@ -365,6 +368,18 @@ def empty_runtime_state() -> dict:
     }
 
 
+def _preserve_unreadable_state(target: Path) -> None:
+    # The next save overwrites the file, so keep a copy of the subscribers.
+    stamp = datetime.now(KZ_TIMEZONE).strftime("%Y%m%d-%H%M%S")
+    backup = target.with_name(f"{target.name}.corrupt-{stamp}")
+    try:
+        shutil.copy2(target, backup)
+    except OSError:
+        logger.exception("Could not back up runtime state %s", target)
+    else:
+        logger.error("Unreadable runtime state saved to %s", backup)
+
+
 def load_runtime_state(path: str | Path = DEFAULT_STATE_PATH) -> dict:
     target = Path(path)
     if not target.exists():
@@ -373,9 +388,13 @@ def load_runtime_state(path: str | Path = DEFAULT_STATE_PATH) -> dict:
     try:
         data = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        logger.exception("Runtime state %s is unreadable; starting empty", target)
+        _preserve_unreadable_state(target)
         return empty_runtime_state()
 
     if not isinstance(data, dict):
+        logger.error("Runtime state %s is not an object; starting empty", target)
+        _preserve_unreadable_state(target)
         return empty_runtime_state()
 
     state = empty_runtime_state()

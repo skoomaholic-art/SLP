@@ -573,13 +573,12 @@ class HistoryTests(unittest.TestCase):
             history = db.event_revisions(storage_id)
             self.assertEqual(history[0]["change_kind"], "removed_from_source")
             self.assertEqual(len(history), 3)
-            self.assertEqual(
-                db._connect().execute(
+            with db._connect() as conn:
+                row = conn.execute(
                     "SELECT payload_json FROM events WHERE storage_id=?",
                     (storage_id,),
-                ).fetchone()["payload_json"] is not None,
-                True,
-            )
+                ).fetchone()
+            self.assertIsNotNone(row["payload_json"])
 
 
 if __name__ == "__main__":
