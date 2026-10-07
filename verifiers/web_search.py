@@ -50,6 +50,46 @@ OPENSERP_EXTRACT_LIMIT = 5
 OPENSERP_EXTRACT_TIMEOUT = 45
 
 START_LOCK = threading.Lock()
+OPENSERP_TOKEN_LOCK = threading.Lock()
+_OPENSERP_ID_TOKEN = ""
+_OPENSERP_ID_TOKEN_EXPIRES_AT = 0.0
+
+
+def _openserp_headers(*, json_body: bool = False) -> dict[str, str]:
+    headers = {"Accept": "application/json"}
+    if json_body:
+        headers["Content-Type"] = "application/json"
+
+    audience = (os.getenv("OPENSERP_AUTH_AUDIENCE") or "").strip()
+    if not audience:
+        return headers
+
+    global _OPENSERP_ID_TOKEN, _OPENSERP_ID_TOKEN_EXPIRES_AT
+    now = time.time()
+    if not _OPENSERP_ID_TOKEN or _OPENSERP_ID_TOKEN_EXPIRES_AT <= now + 60:
+        with OPENSERP_TOKEN_LOCK:
+            now = time.time()
+            if (
+                not _OPENSERP_ID_TOKEN
+                or _OPENSERP_ID_TOKEN_EXPIRES_AT <= now + 60
+            ):
+                try:
+                    from google.auth.transport.requests import Request as GoogleRequest
+                    from google.oauth2 import id_token as google_id_token
+                    token = google_id_token.fetch_id_token(
+                        GoogleRequest(),
+                        audience,
+                    )
+                except Exception as exc:
+                    raise RuntimeError(
+                        "Не удалось получить Google OIDC-токен для OpenSERP"
+                    ) from exc
+                _OPENSERP_ID_TOKEN = token
+                # Cloud Run identity tokens are normally valid for one hour.
+                # Refresh conservatively rather than parsing unverified JWT data.
+                _OPENSERP_ID_TOKEN_EXPIRES_AT = now + 45 * 60
+    headers["Authorization"] = "Bearer " + _OPENSERP_ID_TOKEN
+    return headers
 
 
 # =========================================================
@@ -460,9 +500,7 @@ def openserp_search(
 
     request = urllib.request.Request(
         url,
-        headers={
-            "Accept": "application/json",
-        },
+        headers=_openserp_headers(),
     )
 
     with urllib.request.urlopen(
@@ -510,10 +548,7 @@ def _post_json(url, payload, timeout):
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        },
+        headers=_openserp_headers(json_body=True),
         method="POST",
     )
 

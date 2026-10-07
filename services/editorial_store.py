@@ -1,10 +1,12 @@
 """Persistent editorial corrections on top of immutable source snapshots."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 import json
 import re
 
+from services.channel_normalization import canonical_channel_name
+from services.channel_registry import CHANNEL_BY_NAME
 from services.time_logic import KZ_TIMEZONE
 
 TEXT_FIELDS = frozenset({
@@ -12,7 +14,10 @@ TEXT_FIELDS = frozenset({
     "team2_ru", "team2_kz", "subtitle_ru", "subtitle_kz",
 })
 TIME_FIELDS = frozenset({"time", "end_time"})
-EDITABLE_FIELDS = TEXT_FIELDS | TIME_FIELDS
+DATE_FIELDS = frozenset({"date"})
+CHANNEL_FIELDS = frozenset({"channel"})
+CONTROL_FIELDS = frozenset({"cancelled"})
+EDITABLE_FIELDS = TEXT_FIELDS | TIME_FIELDS | DATE_FIELDS | CHANNEL_FIELDS | CONTROL_FIELDS
 TIME_RE = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 
 
@@ -77,6 +82,19 @@ def apply_edit(database, *, storage_id: str, values: dict,
             raise EditorialError("Значение длиннее 250 символов")
         if field in TIME_FIELDS and v and not TIME_RE.fullmatch(v):
             raise EditorialError("Неверный формат времени, требуется ЧЧ:ММ")
+        if field in DATE_FIELDS:
+            try:
+                date.fromisoformat(v)
+            except ValueError:
+                raise EditorialError("Неверный формат даты, требуется ГГГГ-ММ-ДД") from None
+        if field in CHANNEL_FIELDS:
+            v = canonical_channel_name(v)
+            if v not in CHANNEL_BY_NAME:
+                raise EditorialError("Неизвестный телеканал")
+        if field in CONTROL_FIELDS:
+            v = v.casefold()
+            if v not in {"true", "false"}:
+                raise EditorialError("Неверное значение статуса отмены")
         if field in ("title", "sport") and not v:
             raise EditorialError("Нельзя удалить название события или вид спорта")
         cleaned[field] = v

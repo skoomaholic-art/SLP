@@ -29,11 +29,15 @@ from services.epg_excel import (
 from services import ai_pipeline
 from services.time_logic import KZ_TIMEZONE
 
-OAUTH_SCOPES = (
-    "openid email "
-    "https://www.googleapis.com/auth/gmail.readonly "
-    "https://www.googleapis.com/auth/gmail.send"
-)
+def _oauth_scopes() -> str:
+    """Request read-only access for mail ingest; sending needs a deliberate opt-in."""
+    scopes = "openid email https://www.googleapis.com/auth/gmail.readonly"
+    if (
+        _env("SPORT_GMAIL_ENABLE_TEST_SEND").casefold() == "true"
+        or _env("SPORT_GMAIL_MAIL_MODE").casefold() == "production"
+    ):
+        scopes += " https://www.googleapis.com/auth/gmail.send"
+    return scopes
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GMAIL_URL = "https://gmail.googleapis.com/gmail/v1"
@@ -48,6 +52,7 @@ CHANGE_TOKENS = re.compile(
     r"обновлен|update|change|revised|cancel|перенес)", re.I
 )
 MAX_LIST_MESSAGES = 100
+MAX_LIST_PAGES = 5
 MAX_ATTACHMENTS_PER_SYNC = 35
 MAX_BODY_BYTES = 6000
 SYNC_OVERLAP_SECONDS = 300
@@ -269,7 +274,7 @@ def start_oauth(database, *, username: str) -> str:
         )
     return AUTHORIZE_URL + "?" + urlencode({
         "client_id": client_id, "redirect_uri": _url("/api/gmail/callback"),
-        "response_type": "code", "scope": OAUTH_SCOPES, "state": state,
+        "response_type": "code", "scope": _oauth_scopes(), "state": state,
         "access_type": "offline", "prompt": "consent", "login_hint": OWNER_ACCOUNT,
         "include_granted_scopes": "false",
     })
@@ -453,10 +458,16 @@ def _sender_key(value: str) -> str:
 def _original_sender(body: str, outer_sender: str) -> str:
     """Extract the first forwarded From/От address without guessing identity."""
     for match in re.finditer(
-        r"(?:^|[\s>|])(?:from|от)\s*:\s*([^\n\r]{1,300})",
+        r"(?:^|[\s>|])(?:from|от(?:правитель)?)\s*:\s*([^\n\r]{1,300})",
         str(body or ""), re.I,
     ):
-        address = _sender_key(match.group(1))
+        # parseaddr() can join a bare sender address with a following
+        # "EXTERNAL EMAIL" banner, producing a fake domain. Extract the
+        # bounded email token from the forwarded header before normalizing.
+        token = re.search(
+            r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", match.group(1), re.I,
+        )
+        address = token.group(0).casefold() if token else _sender_key(match.group(1))
         if address and address != _sender_key(outer_sender):
             return address
     return ""
@@ -540,9 +551,11 @@ def _search_queries(database) -> tuple[str, ...]:
         "after:" + str(max(0, last_ms // 1000 - SYNC_OVERLAP_SECONDS))
         if last_ms else "newer_than:21d"
     )
+    # Process provider grids before generic XLSX forwards so the weekly
+    # attachment cap cannot starve the latest Setanta/QSport EPG.
     return (
-        boundary + " (filename:xlsx OR filename:xls)",
         boundary + " (setanta OR сетанта OR qsport OR qazsport OR SPORTPLUS OR SPORT+)",
+        boundary + " (filename:xlsx OR filename:xls)",
     )
 
 
@@ -555,6 +568,21 @@ def _save_sync_checkpoint(database, *, internal_date_ms: int,
             (max(0, int(internal_date_ms)),
              datetime.now(KZ_TIMEZONE).isoformat(), str(error)[:400]),
         )
+
+
+_EXCLUDED_SETANTA_ATTACHMENT = re.compile(
+    r"\bsetanta[\s_-]+(?:(?:sports)[\s_-]+)?(?:plus|kyrgyzstan)\b",
+    re.I,
+)
+
+
+def _excluded_supplier_attachment(filename: str) -> bool:
+    """Ignore the provider's two channels outside the owner's 14-channel list.
+
+    Exclusion is per attachment, not per message: a forwarded five-file email
+    still imports Setanta 1, Setanta 2 and Setanta Qazaqstan.
+    """
+    return bool(_EXCLUDED_SETANTA_ATTACHMENT.search(filename))
 
 
 def _candidate(filename: str, subject: str) -> bool:
@@ -668,7 +696,67 @@ def _safe_auto_apply(database, notice_id: int, parsed) -> tuple[bool, str]:
         result = approve_notice(database, notice_id, username="SLP_AUTO")
     except (GmailTransportError, InvalidEPG) as exc:
         return False, str(exc)[:200]
-    return result["status"] in ("imported", "already_imported"), ""
+    return result["status"] in ("imported", "already_imported", "superseded"), ""
+
+
+def auto_apply_pending(database, *, limit: int = 60) -> dict:
+    """Apply supplier files that were stored earlier and still wait in mail.
+
+    The background scan only stores attachments. When the editor collects the
+    schedule, every stored file that passes the same guards as a fresh
+    automatic import replaces the open-source rows for its channel and days.
+    Anything ambiguous stays pending with the reason, for manual review.
+    Files are taken oldest first so a newer file always wins.
+    """
+    init_gmail_schema(database)
+    outcome = {"applied": 0, "left_for_review": 0, "channels": [],
+               "mode": "automatic" if _auto_import_enabled() else "review_only"}
+    if not _auto_import_enabled():
+        return outcome
+    with database._connect() as conn:
+        rows = conn.execute(
+            "SELECT id,filename,attachment_bytes,status,detected_channel,"
+            "received_at,subject,sender,snippet,original_sender,"
+            "format_fingerprint,channel_detection_method "
+            "FROM gmail_notices WHERE status='pending' "
+            "AND attachment_bytes IS NOT NULL "
+            "AND coalesce(classification,'')!='SCHEDULE_CANCELLATION' "
+            "ORDER BY received_at,id LIMIT ?",
+            (max(1, min(200, int(limit))),),
+        ).fetchall()
+    channels: list[str] = []
+    for row in rows:
+        why = ""
+        try:
+            parsed = _parse_notice(row)
+        except (GmailTransportError, InvalidEPG, ValueError) as exc:
+            parsed, why = None, str(exc)[:200]
+        accepted = False
+        if parsed is not None:
+            confirmed = (
+                str(row["channel_detection_method"] or "") == "confirmed_format"
+                and str(row["detected_channel"] or "") == parsed.channel
+            )
+            if parsed.channel in OFFICIAL_SOURCE_KEY and not confirmed:
+                # The first file in a new official layout is approved by a
+                # person once; later files in that layout import by themselves.
+                why = "Новый формат файла канала: нужно первое подтверждение"
+            else:
+                accepted, why = _safe_auto_apply(database, row["id"], parsed)
+        if accepted:
+            outcome["applied"] += 1
+            if parsed.channel not in channels:
+                channels.append(parsed.channel)
+            continue
+        outcome["left_for_review"] += 1
+        with database._connect() as conn:
+            conn.execute(
+                "UPDATE gmail_notices SET reason=? "
+                "WHERE id=? AND status='pending'",
+                ((why or "Нужна редакторская проверка")[:200], row["id"]),
+            )
+    outcome["channels"] = channels
+    return outcome
 
 
 def list_notices(database, *, limit: int = 100) -> list[dict]:
@@ -703,24 +791,39 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
     """Read Gmail read-only; auto-accept only verified unambiguous LIVE EPG."""
 
     init_gmail_schema(database)
-    scan_started_ms = int(datetime.now(KZ_TIMEZONE).timestamp() * 1000)
     token = _access_token(database)
     message_ids: dict[str, dict] = {}
+    incomplete_search = False
     for query in _search_queries(database):
-        response = _json_api("/users/me/messages?" + urlencode({
-            "q": query, "maxResults": str(MAX_LIST_MESSAGES),
-        }), token)
-        for item in response.get("messages", [])[:MAX_LIST_MESSAGES]:
-            if item.get("id"):
-                message_ids[str(item["id"])] = item
+        page_token = ""
+        for page in range(MAX_LIST_PAGES):
+            params = {"q": query, "maxResults": str(MAX_LIST_MESSAGES)}
+            if page_token:
+                params["pageToken"] = page_token
+            response = _json_api(
+                "/users/me/messages?" + urlencode(params), token
+            )
+            for item in response.get("messages", [])[:MAX_LIST_MESSAGES]:
+                if item.get("id"):
+                    message_ids[str(item["id"])] = item
+            page_token = str(response.get("nextPageToken") or "")
+            if not page_token:
+                break
+        if page_token:
+            # Do not advance the mail checkpoint after an incomplete listing.
+            incomplete_search = True
     created = 0
     reviewed = 0
     auto_imported = 0
     failed_messages = 0
     retryable_errors = 0
     quarantined_messages = 0
+    deferred_attachments = False
     max_internal_date_ms = 0
     for item in message_ids.values():
+        if created >= MAX_ATTACHMENTS_PER_SYNC:
+            deferred_attachments = True
+            break
         msg_id = str(item.get("id") or "")
         if not re.fullmatch(r"[a-f0-9]{10,32}", msg_id):
             continue
@@ -798,7 +901,9 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
         for part in parts:
             filename = str(part.get("filename") or "")[:200]
             attachment_id = str(part["body"].get("attachmentId") or "")
-            if not filename or not attachment_id or not _candidate(filename, context):
+            if (not filename or not attachment_id
+                    or _excluded_supplier_attachment(filename)
+                    or not _candidate(filename, context)):
                 continue
             with database._connect() as conn:
                 if conn.execute(
@@ -809,6 +914,7 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
                 ).fetchone():
                     continue
             if created >= MAX_ATTACHMENTS_PER_SYNC:
+                deferred_attachments = True
                 break
             size = int(part["body"].get("size") or 0)
             if size > MAX_WORKBOOK_BYTES:
@@ -932,12 +1038,24 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
                 created += 1
         if not message_processing_error:
             _resolve_processing_error(database, msg_id)
-    checkpoint_advanced = retryable_errors == 0
+    checkpoint_advanced = (
+        retryable_errors == 0 and not deferred_attachments
+        and not incomplete_search
+    )
+    sync_issue = (
+        "Письма не все прочитаны: лимит вложений на один запуск"
+        if deferred_attachments else
+        "Письма не все прочитаны: больше пяти страниц Gmail"
+        if incomplete_search else
+        "Есть письма для повторной обработки" if retryable_errors else ""
+    )
     _save_sync_checkpoint(
         database,
-        internal_date_ms=(max(max_internal_date_ms, scan_started_ms)
-                          if checkpoint_advanced else 0),
-        error=("Есть письма для повторной обработки" if retryable_errors else ""),
+        # Never move the Gmail cursor beyond a timestamp we actually observed.
+        # Advancing to "now" can skip a delayed or temporarily unreadable
+        # message on the next overlap query.
+        internal_date_ms=(max_internal_date_ms if checkpoint_advanced else 0),
+        error=sync_issue,
     )
     return {"new_attachments": created, "auto_imported": auto_imported,
             "requires_review": reviewed, "pending": status(database)["pending"],
@@ -947,7 +1065,9 @@ def sync_inbox(database, *, allow_auto_import: bool = True) -> dict:
             "failed_messages": failed_messages,
             "retryable_errors": retryable_errors,
             "quarantined_messages": quarantined_messages,
-            "checkpoint_advanced": checkpoint_advanced}
+            "checkpoint_advanced": checkpoint_advanced,
+            "deferred_attachments": deferred_attachments,
+            "incomplete_search": incomplete_search}
 
 
 
@@ -1007,9 +1127,12 @@ def approve_notice(database, notice_id: int, *, username: str) -> dict:
         if row["status"] != "pending" or not row["attachment_bytes"]:
             raise GmailTransportError("Вложение недоступно для импорта")
         filename, raw = row["filename"], bytes(row["attachment_bytes"])
-    from services.epg_excel import import_parsed_epg, initialize_epg_imports
+    from services.epg_excel import (
+        import_parsed_epg, initialize_epg_imports, preview_parsed_epg,
+    )
     parsed = _parse_notice(row)
     initialize_epg_imports(database)
+    preview = preview_parsed_epg(database, parsed)
     # If the editor already approved a more recently received supplier file
     # for any overlapping day on this SAME channel, reject this older file.
     # Manual per-event review is still possible, without reverting an entire
@@ -1025,10 +1148,29 @@ def approve_notice(database, notice_id: int, *, username: str) -> dict:
             (parsed.channel, row["received_at"], *parsed.scope_dates),
         ).fetchone()
     if newer_mail:
-        raise GmailTransportError(
-            "Более новое расписание этого канала уже загружено. "
-            "Старый файл нельзя применять поверх него."
+        # This is a successful no-op, not a user error. The current schedule
+        # is already newer, so close the stale notice and keep the accepted
+        # snapshot untouched.
+        reviewed_at = datetime.now(KZ_TIMEZONE).isoformat()
+        reason = (
+            "Более новое расписание уже загружено. "
+            "Устаревшее письмо закрыто без изменения текущей сетки."
         )
+        with database._connect() as conn:
+            conn.execute(
+                "UPDATE gmail_notices SET status='superseded',"
+                "attachment_bytes=NULL,reason=?,reviewed_by=?,reviewed_at=? "
+                "WHERE id=? AND status='pending'",
+                (reason, username, reviewed_at, notice_id),
+            )
+        return {
+            "status": "superseded",
+            "channel": parsed.channel,
+            "live_events": 0,
+            "dates": list(parsed.scope_dates),
+            "applied": False,
+            "message": reason,
+        }
     outcome = import_parsed_epg(database, parsed)
     _remember_format_mapping(
         database, fingerprint=str(row["format_fingerprint"] or ""),
@@ -1043,6 +1185,13 @@ def approve_notice(database, notice_id: int, *, username: str) -> dict:
             (parsed.content_hash, username, datetime.now(KZ_TIMEZONE).isoformat(),
              notice_id),
         )
+    outcome = dict(outcome)
+    outcome["changes"] = dict(preview.get("counts") or {})
+    outcome["applied"] = outcome.get("status") in ("imported", "partial_review")
+    outcome["message"] = (
+        "Почтовая сетка принята как более точный источник: "
+        "совпавшие события актуализированы, отсутствующие добавлены."
+    )
     return outcome
 
 

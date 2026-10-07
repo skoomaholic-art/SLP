@@ -139,6 +139,85 @@ class GmailOfflineTests(unittest.TestCase):
         self.assertFalse(next(x for x in gmail.list_notices(self.db)
                               if x["id"] == pending["id"])["has_attachment"])
 
+    def test_older_pending_notice_closes_as_superseded_after_newer_import(self):
+        def workbook_at(excel_time):
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet["C3"] = "30 сентября"
+            sheet["B4"] = "AST"
+            sheet["B5"] = excel_time
+            sheet["C5"] = "LIVE. Футбол. АПЛ, 6 тур, Команда А - Команда Б"
+            stream = BytesIO()
+            workbook.save(stream)
+            workbook.close()
+            return stream.getvalue()
+
+        old_blob = workbook_at(0.50)
+        new_blob = workbook_at(0.55)
+        old_id, new_id = "abcde1234581", "abcde1234582"
+
+        def envelope(message_id, attachment_id, blob, millis):
+            return {
+                "id": message_id,
+                "internalDate": str(millis),
+                "snippet": "EPG Setanta",
+                "payload": {
+                    "headers": [
+                        {"name": "Subject", "value": "EPG Setanta Sports 2 Kazakhstan"},
+                        {"name": "From", "value": "Supplier <supplier@example.test>"},
+                    ],
+                    "parts": [{
+                        "filename": "EPG Setanta Sports 2 Kazakhstan 29.09.26 - 05.10.26_MEDIA.xlsx",
+                        "body": {"size": len(blob), "attachmentId": attachment_id},
+                    }],
+                },
+            }
+
+        messages = {
+            old_id: envelope(old_id, "old-grid", old_blob, 1790812800000),
+            new_id: envelope(new_id, "new-grid", new_blob, 1790816400000),
+        }
+        attachments = {"old-grid": old_blob, "new-grid": new_blob}
+
+        def fake_api(url, token, payload=None):
+            if "messages?" in url:
+                return {"messages": [{"id": old_id}, {"id": new_id}]}
+            if "/attachments/" in url:
+                for attachment_id, blob in attachments.items():
+                    if attachment_id in url:
+                        return {
+                            "data": base64.urlsafe_b64encode(blob).decode().rstrip("=")
+                        }
+            for message_id, value in messages.items():
+                if message_id in url:
+                    return value
+            raise AssertionError(url)
+
+        with patch.dict("os.environ", {"SPORT_GMAIL_AUTO_IMPORT": "false"}), \
+             patch.object(gmail, "_access_token", return_value="token"), \
+             patch.object(gmail, "_json_api", side_effect=fake_api):
+            gmail.sync_inbox(self.db)
+
+        notices = [
+            row for row in gmail.list_notices(self.db)
+            if row["status"] == "pending"
+        ]
+        self.assertEqual(len(notices), 2)
+        newer = max(notices, key=lambda row: row["received_at"])
+        older = min(notices, key=lambda row: row["received_at"])
+        applied = gmail.approve_notice(self.db, newer["id"], username="Editor")
+        self.assertEqual(applied["status"], "imported")
+
+        stale = gmail.approve_notice(self.db, older["id"], username="Editor")
+        self.assertEqual(stale["status"], "superseded")
+        self.assertFalse(stale["applied"])
+        stored = next(
+            row for row in gmail.list_notices(self.db)
+            if row["id"] == older["id"]
+        )
+        self.assertEqual(stored["status"], "superseded")
+        self.assertFalse(stored["has_attachment"])
+
     def test_checkpoint_waits_for_retryable_message_then_advances(self):
         good_id, bad_id = "abcde1234501", "abcde1234502"
         good = {

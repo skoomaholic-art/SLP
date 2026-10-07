@@ -363,3 +363,162 @@ cloud resource was created. Existing Telegram production is unchanged.
   are not accepted until the supplier revision is reconciled. It does
   not claim that old matches remain current indefinitely.
 - Gmail OAuth, scheduler and temporary Render deployment remain untouched.
+
+## 2026-10-05 - iptvX: provider LIVE! icon is now the live evidence
+
+- **Original symptom:** iptvX events could not be told apart as live or
+  repeat. On `epg.iptvx.one/id/<tvg-id>` the provider marks direct broadcasts
+  with a `LIVE!` icon (`live.png`) inside the programme row; a repeat of the
+  same match carries the identical title without the icon.
+- **Root cause:** `parse_iptvx_page()` read rows with `get_text()`, which drops
+  the `<img>`; every match-like row then became `live_state="candidate"` with
+  `is_live_broadcast=True`, so repeats entered the LIVE schedule.
+- **Changed:** `services/iptvx_sources.py` walks each day in document order
+  (independent of `<p>`/`<li>`/`<div>`/table/`<br>` layout), records the icon
+  per row and stores marked rows as `live_state="live"`,
+  `live_evidence_method="iptvx_live_icon"`, confidence `high`. When a page has
+  at least one mark, unmarked rows on that page are counted as
+  `unmarked_repeats` and not stored. A page with no marks at all keeps the
+  previous candidate behaviour. `IPTVX_LIVE_MARKER_POLICY=off` restores the old
+  behaviour for unmarked rows. Live studio shows the provider also marks
+  (`КХЛ. Подробно`, `На связи`, ...) are excluded.
+- **Changed:** KHL ids were swapped. `kxl` is "КХЛ ТВ | КХЛ | KHL" and now maps
+  to `KHL PRIME`; `kxl-hd` maps to `KHL HD` (page titles checked 2026-10-05).
+- **Verification:** `cloudrun_tests` 129 passed, `tests` 175 passed, compile
+  clean. New regression rows are copied from the real Setanta Sports and KHL
+  pages of 28 Sep - 5 Oct 2026.
+- **Still open / NOT verified:** the raw HTML of the pages was not available to
+  the agent (only rendered text), so the layout-independent reader is proven on
+  four synthetic layouts, not on a captured page. Run
+  `PYTHONPATH=. python scripts/check_iptvx_live.py` from a host that can reach
+  the site: every channel must show `LIVE!` > 0 on a week with broadcasts.
+  The XMLTV path (`parse_iptvx_xml`, diagnostics only) is unchanged. The feed
+  covers the current week only, so the upcoming horizon shrinks to almost zero
+  shortly before the provider's weekly refresh. Background `iptvx-refresh`
+  still answers 503 without GCS. No deployment, no Telegram bot change.
+
+## 2026-10-05 - source cards show Excel and parsing separately
+
+- **Original symptom:** cards read "Данные получены с Excel + парсинга" with
+  one timestamp, so the editor could not tell which source feeds the grid.
+- **Root cause:** "Excel" was shown whenever any file had ever been imported
+  (`imported_at` set), regardless of whether it covers the current 7 days, and
+  the single timestamp was the newer of the two signals.
+- **Changed:** `cloudrun_ui/index.html` renders two indicators per channel,
+  Excel and Парсинг, each lit only when it has events in the current window,
+  each with its own event count and time; stale file, awaiting supplier, error
+  and "no LIVE events" are distinct states. No server change.
+- **Changed:** `services/free_apps_script.py` turns the bare
+  `Apps Script: unauthorized` into a message naming the cause (bridge key
+  mismatch or wrong script URL). The mismatch itself is configuration in Secret
+  Manager / Script Properties and is NOT fixed by code.
+- **Verification:** `cloudrun_tests` 129 passed, `tests` 175 passed, page
+  script passes `node --check`. Not checked in a browser.
+
+## 2026-10-06 - export no longer depends on the Drive bridge being up
+
+- **Original symptom:** banner `Ошибка #201: Почта/Drive: Google Apps Script
+  недоступен: HTTPError` and «Выгрузить Excel» produced no file.
+- **Root cause:** `/api/export` loads the approved template on every click
+  (local path -> GCS -> Apps Script). With no template in GCS and the bridge
+  failing, `load_template()` raised 503, so a storage outage blocked a table
+  whose data lives entirely in the SLP database. The bridge error also hid the
+  HTTP status, so the cause could not be read from the banner.
+- **Changed:** `cloudrun_web.py` keeps the last approved template read or
+  uploaded in this process and reuses it when storage fails (`cached`); with no
+  copy at all it exports the same events on a plain built-in 25-column sheet
+  (`builtin`). The response carries `X-SLP-Template` and the UI states plainly
+  when the approved layout was not used. `services/free_apps_script.py` reports
+  `HTTP <code>` with the likely cause (403 access, 404 wrong /exec URL, 429
+  quota, 5xx).
+- **Verification:** `cloudrun_tests` 133 passed (4 new in
+  `test_export_resilience.py`), `tests` 175 passed.
+- **Not fixed by code:** the bridge itself. The built-in export does not
+  contain rows and approved translations that exist only inside the template.
+
+## 2026-10-06 - «Запросить расписание» works through the Apps Script bridge
+
+- **Original symptom:** in bridge mode the button was always disabled:
+  `/api/gmail/status` hard-coded `send_enabled=False` and the script could only
+  read mail.
+- **Changed (script):** `SLP_Free_Gmail_Drive.gs` gains signed
+  `op=capabilities` (GET) and `op=send_request` (POST, body covered by the
+  HMAC). Recipients come only from Script Properties `SLP_REQUEST_Q_TO`,
+  `SLP_REQUEST_SETANTA_TO`, `SLP_REQUEST_TEST_TO`; `SLP_REQUEST_MODE` defaults
+  to `test` (all letters to the test address, `[ТЕСТ]` subject). Single-use
+  request id, 10-minute per-supplier limit, `all` = two letters with a
+  per-supplier result. Existing operations untouched.
+- **Changed (Python):** `services/free_apps_script.py` adds
+  `ScriptClient.capabilities()/send_request()`, a stored capability check
+  (`free_bridge_send`), `send_schedule_request()` writing the existing
+  `gmail_requests` journal (test letters get status `test` and never show as
+  awaiting), readable error texts, and reply matching for supplier files that
+  arrive through the bridge.
+- **Changed (backend/UI):** `POST /api/gmail/request` routes to the bridge when
+  it is enabled (production mode requires admin); direct Gmail path unchanged.
+  `/api/gmail/status` returns `send_enabled` from the last signed capabilities
+  answer plus `send_reason`, `capabilities`, `send_targets`. The button title
+  shows the reason; the result names supplier, period, recipient and subject.
+- **Verification:** archive includes Node bridge tests for the real `.gs` source
+  plus Python backend/UI regression coverage.
+- **NOT verified:** nothing was sent through production. The deployed script
+  must be updated and its properties set by the owner. No supplier must receive
+  a letter until test mode is confirmed.
+
+
+## Schedule self-check, wider ESPN cross-check, startup restore retry (2026-10-07, branch feature/schedule-anomaly-check)
+
+- **Original symptom:** a wrong time or a leftover test row reached the
+  schedule unnoticed (20-hour basketball broadcast, `ЧМ-2032`, «тест» rows,
+  day/month swapped); the ESPN cross-check covered 10 leagues and only the
+  first two days; one temporary Apps Script error at boot crashed the process.
+- **Changed (new):** `services/schedule_anomalies.py` — read-only rules over
+  the merged schedule: `duration_too_long`, `duration_too_short`,
+  `channel_overlap`, `duplicate_slot`, `same_fixture_different_time`,
+  `test_label`, `impossible_year`, `date_swap_suspect`. Durations are judged
+  only when the end time is known, never for an estimated end.
+- **Changed (backend/UI):** `GET /api/anomalies` (signed-in users; default
+  period starts yesterday with no upper bound); the collect result carries a
+  `schedule_anomalies` summary; new «Проверка расписания» panel in the web UI.
+  Findings never change the schedule.
+- **Changed (validation):** `ESPN_FEEDS` grew from 10 to 26 feeds (domestic
+  cups, Conference League, Nations League, UEFA WC qualifying, Portugal,
+  Netherlands, Scotland, MLS, Saudi Pro League as `ksa.1`). Requests run
+  concurrently (limit 8), cover up to 8 days including the previous calendar
+  day, and a feed is asked only for days that carry that sport.
+- **Changed (startup):** `FreeDriveError.transient` marks network, 5xx and 429
+  failures; `_restore_drive_snapshot()` retries those twice (2 s, 5 s). A
+  persistent outage or a configuration fault still stops startup: the app is
+  never started with an empty database.
+- **Verification:** `compileall` clean; `cloudrun_tests` 177 passed, `tests`
+  175 passed; local `uvicorn cloudrun_web:app` on a throwaway SQLite file:
+  `/api/anomalies` returned 401 signed-out and the expected four findings
+  signed-in, and the UI panel rendered them in headless Chromium. ESPN slugs
+  were checked one by one against the live scoreboard endpoint.
+- **NOT verified:** nothing was deployed. The rules have not been run against
+  the production database, so the real false-positive rate is unknown. The
+  ESPN request volume per collect grows (up to 26 feeds x 8 days) and was not
+  measured against the live API from Cloud Run.
+
+## Collection applies supplier mail (2026-10-07, branch feature/collect-applies-supplier-mail)
+
+- **Owner's instruction:** one collection = open sources and APIs, then mail
+  with supplier tables replacing the open-source rows (the tables are more
+  current), then a check against public sports data; only the 14 registered
+  channels.
+- **Gap found:** the order and the 14-channel limit were already in place, but
+  every mail scan ran with `allow_auto_import=False`, so supplier tables never
+  replaced anything until a person approved each file by hand. This reverses
+  the "keep mail review-only" decision of commit `9382b35`.
+- **Changed:** `_run_collection(apply_supplier_mail=...)`; `/api/collect`
+  passes `True` for editor/admin and `False` for other roles. New
+  `gmail.auto_apply_pending()` applies files already stored by the background
+  scan, oldest first, through the existing `_safe_auto_apply` guards. The
+  scheduled 15-minute scan and the "check mail" button still only store files.
+- **Still requires a person:** the first file in a new QAZSPORT/SPORT+ layout,
+  ambiguous matches, a grid that drops every LIVE of a day, cancellation
+  letters. `SPORT_GMAIL_AUTO_IMPORT=false` switches all automatic imports off.
+- **Verification:** `cloudrun_tests` 184 passed, `tests` 175 passed, including
+  an end-to-end bridge test on a built workbook and an order test of the run.
+- **NOT verified:** not deployed; not run against the production mailbox, so
+  how many stored files will be applied on the first collection is unknown.

@@ -4,8 +4,10 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SLP - Спортивное расписание</title>
 <meta name="theme-color" content="#0e121b">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png">
 <link rel="icon" type="image/png" sizes="192x192" href="/assets/app-icon.png">
-<link rel="apple-touch-icon" href="/assets/app-icon.png">
+<link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
 <style>
 :root{color-scheme:dark;--bg:#0e121b;--card:#171e2b;--line:#2c3545;--muted:#a1aec1;--text:#eef2f7;--accent:#41dcc2;--danger:#f5a38f}
 *{box-sizing:border-box}body{background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;margin:0}
@@ -15,7 +17,9 @@ button:disabled{opacity:.46;cursor:not-allowed}input,select{border:1px solid #36
 header{padding:19px 5%;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:16px}
 .brand{display:flex;align-items:center;gap:10px;font-size:22px;font-weight:850;letter-spacing:.1em}
 .brand span{color:var(--accent)}
-.app-icon{width:46px;height:46px;object-fit:contain;background:#000;border:1px solid #334153;border-radius:12px;flex:none}
+.app-icon{width:46px;height:46px;object-fit:contain;flex:none}
+.login-logo{display:block;width:190px;height:190px;margin:0 auto 6px;object-fit:contain;
+ filter:drop-shadow(0 0 1px rgba(150,215,255,.75)) drop-shadow(0 0 10px rgba(40,140,255,.25))}
 .profile{display:flex;align-items:center;gap:9px;min-width:0}
 .who{color:var(--muted);font-size:13px;overflow-wrap:anywhere}
 .user-avatar,.avatar-fallback{height:42px;width:42px;flex:none;border-radius:50%;object-fit:cover;border:2px solid #465970;background:#1a2836}
@@ -34,7 +38,9 @@ h1{font-size:30px;margin:0 0 7px}h2{font-size:19px;margin:0 0 12px}.subtitle,.mu
 .week{text-align:center;color:var(--muted);font-size:12px}
 .day{padding:10px 0;min-height:46px;border:1px solid transparent;background:#1d2938;border-radius:8px;color:var(--text);position:relative;text-align:center}
 .day.has:after{content:"";width:5px;height:5px;display:block;border-radius:50%;background:var(--accent);margin:1px auto -6px}
-.day.selected{border-color:var(--accent)}.day.blank{background:transparent}
+.day.today{background:#253748;font-weight:800;box-shadow:inset 0 0 0 1px #8ea7bd}
+.day.selected{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.day.blank{background:transparent}
 .toolbar{margin:14px 0}.filters input{max-width:280px}.filters select{width:auto;min-width:170px}
 .badge{font-size:11px;letter-spacing:.02em;background:#233c4d;color:#d5e4f0;padding:4px 8px;border-radius:6px}
 .badge.live{background:#14564d;color:#a8ffec}.badge.past{background:#303a48;color:#c1ccda}
@@ -54,6 +60,14 @@ h1{font-size:30px;margin:0 0 7px}h2{font-size:19px;margin:0 0 12px}.subtitle,.mu
 .source-text{min-width:0;overflow-wrap:anywhere}
 .source-state{color:var(--muted);font-size:12px}
 .source-state.ok{color:var(--accent)}
+.source-chip{display:flex;align-items:baseline;gap:6px;font-size:12px;line-height:1.5;color:var(--muted)}
+.source-chip b{font-weight:600;min-width:56px}
+.source-dot{flex:0 0 7px;width:7px;height:7px;border-radius:50%;background:var(--line);align-self:center}
+.source-chip.off{opacity:.6}
+.source-chip.on{color:var(--accent)}.source-chip.on .source-dot{background:var(--accent)}
+.source-chip.warn{color:#e8c66a}.source-chip.warn .source-dot{background:#e8c66a}
+.source-chip.stale{color:#e8c66a}.source-chip.stale .source-dot{background:transparent;border:1px solid #e8c66a}
+.source-chip.bad{color:var(--danger)}.source-chip.bad .source-dot{background:var(--danger)}
 details.sources{margin:16px 0}
 details.sources summary{cursor:pointer;font-weight:700;font-size:16px}
 .import-row{display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin-top:15px}
@@ -69,12 +83,21 @@ details.sources summary{cursor:pointer;font-weight:700;font-size:16px}
 .mail-icon{display:inline-block;background:#0e2732;color:var(--accent);border-radius:7px;padding:4px 7px;font-weight:750}
 .mail-notice-count{border-radius:9px;padding:3px 7px;background:#4e3628;color:#ffddb4}
 .notification-list{display:grid;gap:8px;margin-top:10px}
-.notification-item{border:1px solid var(--line);border-radius:9px;padding:9px;background:#101b29}
+.notification-item{border:1px solid var(--line);border-radius:9px;padding:11px;background:#101b29;transition:.18s ease}
+.notification-item.read{background:#171b22;border-color:#333a45;opacity:.72}
+.notification-item.applied{background:#171b22;border-color:#38463d;opacity:.72}
+.notification-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.notification-actions button,.notification-actions a{font-size:12px;padding:6px 9px}
+.notification-source{display:inline-flex;align-items:center;text-decoration:none}
 .notification-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
 .notification-title{font-weight:750}
 .notification-time{color:var(--muted);font-size:11px;white-space:nowrap}
 .notification-message{color:var(--muted);font-size:12px;margin-top:4px}
 .notification-item.attention{border-color:#8d6434}
+.notification-item.warning{border-color:#a8792f}
+.anomaly-meta{color:var(--text);font-size:12px;margin-top:6px}
+.anomaly-kind{display:inline-block;font-size:11px;border-radius:6px;padding:2px 7px;margin-right:6px;background:#2a3344;color:#d5e4f0}
+.notification-item.error .anomaly-kind{background:#4a2327;color:#ffc9c2}
 .notification-item.error,.notification-item.critical{border-color:#934444}
 .notification-count{display:inline-grid;place-items:center;min-width:22px;height:22px;padding:0 6px;
  border-radius:99px;background:#d94b4b;color:white;font-size:11px;margin-left:6px}
@@ -90,6 +113,9 @@ details.sources summary{cursor:pointer;font-weight:700;font-size:16px}
 .template-bar input{width:min(100%,400px)}
 
 footer{margin:25px 0;color:var(--muted);font-size:12px}
+#message{white-space:pre-line}
+.collection-quote{display:block;width:100%;margin-top:14px;font-style:italic;line-height:1.55;text-align:center}
+.collection-quote .quote-author{display:block;margin-top:5px;text-align:center}
 </style>
 </head>
 <body>
@@ -100,6 +126,7 @@ footer{margin:25px 0;color:var(--muted);font-size:12px}
 </header>
 <main>
 <section class="card hide" id="login">
+<img class="login-logo" src="/assets/logo.png" width="190" height="190" alt="Skoomaholic Dev">
 <h1>Вход в систему</h1><p class="subtitle">Спортивное расписание, календарь и архив</p>
 <form id="loginForm"><label for="loginName">Логин</label><input id="loginName" autocomplete="username" required>
 <label for="loginPassword">Пароль</label><input id="loginPassword" type="password" autocomplete="current-password" required>
@@ -119,6 +146,11 @@ footer{margin:25px 0;color:var(--muted);font-size:12px}
 <details class="card sources" id="notificationPanel">
 <summary>Уведомления <span id="notificationCounter" class="notification-count hide"></span></summary>
 <div id="notifications" class="notification-list"><p class="muted-small">Загружаю изменения...</p></div>
+</details>
+<details class="card sources" id="anomalyPanel">
+<summary>Проверка расписания <span id="anomalyCounter" class="notification-count hide"></span></summary>
+<p id="anomalyStatus" class="muted-small">Проверяю расписание...</p>
+<div id="anomalies" class="notification-list"></div>
 </details>
 <details class="card sources" id="gmailPanel">
 <summary><span class="mail-icon">✉ Gmail</span> Почта и обновления <span id="mailCounter" class="mail-notice-count hide"></span></summary>
@@ -164,8 +196,8 @@ footer{margin:25px 0;color:var(--muted);font-size:12px}
 <div class="calendar-tools"><h2 style="margin:0;flex:1">Календарь</h2><button id="prevMonth" aria-label="Предыдущий месяц">‹</button><button id="nextMonth" aria-label="Следующий месяц">›</button></div>
 <div id="month" style="font-weight:700;margin-top:7px"></div>
 <div id="days" class="days"></div>
-<button id="allDates">Показать весь архив</button>
-<p class="muted-small">Список справа фильтруется по выбранной дате. Зелёная точка означает, что есть сохранённые LIVE-события.</p>
+<button id="allDates">Все даты</button>
+<p class="muted-small">Текущий день выделен визуально и не ограничивает список. По умолчанию показаны события за все сохранённые даты. Нажатие на день включает фильтр. Зелёная точка означает, что есть LIVE-события.</p>
 </section>
 <section class="card">
 <h2>События и архив</h2>
@@ -182,7 +214,7 @@ footer{margin:25px 0;color:var(--muted);font-size:12px}
 <div id="events" class="events"></div>
 </section>
 </div>
-<footer>Данные поступают только из подтверждённых источников. При отсутствии почтовых файлов частичный сбор требует подтверждения. Веб-сервис не запускает Telegram-бота.</footer>
+<footer>Данные поступают только из подтверждённых источников. Gmail-уведомления не блокируют сбор сайтов и API. Веб-сервис не запускает Telegram-бота.</footer>
 </section>
 </main>
 <script src="/assets/logos.js"></script>
@@ -190,7 +222,7 @@ footer{margin:25px 0;color:var(--muted);font-size:12px}
 "use strict";
 const $=id=>document.getElementById(id);
 const state={all:[],date:"",month:new Date(),logged:false,archive:false,
- gmailConnected:false,gmailAdmin:false,gmailSend:false,gmailMode:"test",gmailTestTo:"",mailPoll:null};
+ gmailConnected:false,gmailAdmin:false,gmailSend:false,gmailMode:"test",gmailTestTo:"",mailPoll:null,bridgeInitialSyncDone:false};
 const kzToday=()=>new Intl.DateTimeFormat("sv-SE",{timeZone:"Asia/Almaty",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
 const iso=(y,m,d)=>[y,String(m).padStart(2,"0"),String(d).padStart(2,"0")].join("-");
 function msg(text,kind=""){const n=$("message");n.textContent=text;n.className="notice "+kind}
@@ -232,6 +264,7 @@ async function load(){
   const status=await api("/api/sources");
   renderSources(status);
   await loadNotifications();
+  await loadAnomalies();
   await loadMailStatus();
   await loadTemplateStatus();
  }catch(e){msg(e.message,"error")}
@@ -252,64 +285,103 @@ function channelPill(channel){
  const name=document.createElement("span");name.className="channel-label";name.textContent=channel;
  chip.append(name);return chip;
 }
+function sourceStamp(value){
+ const raw=String(value||"").trim();
+ if(!raw)return "";
+ const match=raw.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+ if(!match)return "";
+ return match[3]+"."+match[2]+"."+match[1].slice(2)+" | "+match[4]+":"+match[5];
+}
+function latestSourceStamp(...values){
+ const available=values.filter(Boolean);
+ if(!available.length)return "";
+ return available.sort((a,b)=>{
+  const at=Date.parse(a)||0,bt=Date.parse(b)||0;
+  return bt-at;
+ })[0];
+}
+function plural(n,one,few,many){
+ const a=Math.abs(n)%100,b=a%10;
+ return n+" "+(a>10&&a<20?many:b===1?one:b>=2&&b<=4?few:many);
+}
 function renderSources(data){
  const node=$("sources");node.replaceChildren();
  const grid=document.createElement("div");grid.className="source-grid";
- for(const item of [...(data.websites||[]),...(data.excel||[])]){
+ const combined=new Map();
+ for(const item of (data.websites||[])){
+  combined.set(item.channel,{channel:item.channel,web:item,excel:item.official_excel||null});
+ }
+ for(const item of (data.excel||[])){
+  const entry=combined.get(item.channel)||{channel:item.channel,web:null,excel:null};
+  entry.excel=item;combined.set(item.channel,entry);
+ }
+
+ for(const entry of combined.values()){
+  const web=entry.web||{},excel=entry.excel||null;
+  // Two independent signals, shown separately so it is always visible which
+  // one actually feeds the current 7-day grid. "On" means events in the
+  // current window, not merely "a file was imported once".
+  const parsingCount=Number(web.event_count||0);
+  const excelCount=Number((excel&&excel.live_events)||0);
+  const excelInWindow=!!(excel&&excel.imported_at&&(
+   excelCount>0||excel.status==="ready"||excel.status==="partial"||
+   (!excel.status&&(excel.coverage||[]).length>0)
+  ));
+
   const row=document.createElement("div");row.className="source-item";
-  const logo=channelLogo(item.channel);
-  if(logo)row.append(logo);
+  const logo=channelLogo(entry.channel);if(logo)row.append(logo);
   const info=document.createElement("div");info.className="source-text";
-  const name=document.createElement("strong");name.textContent=item.channel;
-  const state=document.createElement("div");
-  const labels={
-   ready:"Актуальный Excel",partial:"Excel покрывает часть недели",
-   awaiting_approval:"Получен по почте - ждёт подтверждения",
-   awaiting_response:"Запрос отправлен - ожидается ответ",
-   outdated:"Excel устарел",missing:"Excel не получен",
-   ok:"Источник обработан",warning:"Обработан с предупреждением",
-   error:"Ошибка источника",not_checked:"Источник ещё не проверялся"
+  const name=document.createElement("strong");name.textContent=entry.channel;info.append(name);
+
+  const chip=(label,mode,detail,title)=>{
+   const line=document.createElement("div");
+   line.className="source-chip "+mode;
+   const dot=document.createElement("span");dot.className="source-dot";
+   const tag=document.createElement("b");tag.textContent=label;
+   const text=document.createElement("span");text.textContent=detail;
+   line.append(dot,tag,text);
+   if(title)line.title=title;
+   return line;
   };
-  state.textContent=labels[item.status]||item.status;
-  state.className="source-state"+(["ok","ready"].includes(item.status)?" ok":"");
-  if(["awaiting_approval","awaiting_response"].includes(item.status))state.style.color="#ffbf69";
-  info.append(name,state);
-  if(item.coverage?.length){
-   const note=document.createElement("div");note.className="muted-small";
-   note.textContent=item.coverage[0]+" - "+item.coverage.at(-1)+
-     ", LIVE: "+(item.live_events??0);info.append(note);
+
+  let excelChip;
+  if(excelInWindow){
+   const stamp=sourceStamp(excel.imported_at);
+   excelChip=chip("Excel","on",
+    plural(excelCount,"событие","события","событий")+(stamp?" · "+stamp:""),
+    excel.filename||"");
+  }else if(excel&&excel.imported_at){
+   const stamp=sourceStamp(excel.imported_at);
+   excelChip=chip("Excel","stale","файл устарел"+(stamp?" · "+stamp:""),
+    (excel.filename||"")+" — не покрывает ближайшие 7 дней");
+  }else if(excel&&(excel.status==="awaiting_response"||excel.status==="awaiting_approval")){
+   excelChip=chip("Excel","stale",
+    excel.status==="awaiting_approval"?"ждёт подтверждения":"ждём ответ поставщика","");
+  }else{
+   excelChip=chip("Excel","off",web.supplier_expected||excel?"нет файла":"не используется","");
   }
-  if(item.official_excel){
-   const note=document.createElement("div");note.className="muted-small";
-   const file=item.official_excel,dates=file.coverage||[];
-   note.textContent="Excel поставщика: "+(dates.length?
-     dates[0]+" - "+dates.at(-1)+", LIVE: "+file.live_events:
-     "нет покрытия выбранной недели");
-   info.append(note);
+
+  let parsingChip;
+  const checked=sourceStamp(web.checked_at);
+  if(parsingCount>0){
+   parsingChip=chip("Парсинг",web.error_reason?"warn":"on",
+    plural(parsingCount,"событие","события","событий")+(checked?" · "+checked:""),
+    web.error_reason||(web.guide_sources||[]).join(", "));
+  }else if(web.error_reason||web.status==="error"){
+   parsingChip=chip("Парсинг","bad","ошибка"+(checked?" · "+checked:""),
+    web.error_reason||"источник не ответил");
+  }else if(web.checked_at){
+   parsingChip=chip("Парсинг","off","нет LIVE-событий"+(checked?" · "+checked:""),
+    (web.guide_sources||[]).join(", "));
+  }else{
+   parsingChip=chip("Парсинг","off","не проверялся","");
   }
+
+  info.append(excelChip,parsingChip);
   row.append(info);grid.append(row);
  }
  node.append(grid);
- const mail=document.createElement("p");mail.className="muted-small";
- mail.textContent=data.gmail_connected?(data.auto_import?
-   "Gmail подключён. Однозначные расписания обрабатываются автоматически.":
-   "Gmail подключён. Для автоматического импорта нужно постоянное хранилище."):
-   "Gmail пока не подключён. Файлы загружаются вручную.";node.append(mail);
- const ai=document.createElement("p");ai.className="muted-small";
- const aiStatus=data.ai||{};
- ai.textContent="Обработка: сначала правила. AI_MAIL "+(aiStatus.mail_local_ready?"подключён":"не подключён")+
-   ", AI_EDITOR "+(aiStatus.editor_local_ready?"подключён":"не подключён")+".";
- node.append(ai);
- if(data.mail_request && !data.mail_request.enabled){
-  const request=document.createElement("p");request.className="muted-small";
-  request.textContent="Почтовые запросы пока отключены. Тестовый получатель: "+
-    (data.mail_request.test_to||"не настроен")+
-    ". После запуска отправки рабочий адрес будет доступен для поля «Копия».";
-  node.append(request);
- }
 }
-
-
 
 async function loadTemplateStatus(){
  if(!state.gmailAdmin)return;
@@ -325,69 +397,168 @@ async function loadNotifications(){
  try{
   const response=await api("/api/notifications?limit=80");
   const items=response.notifications||[];
-  const actionable=items.filter(x=>["attention","warning","error","critical"].includes(x.level));
-  $("notificationCounter").textContent=String(actionable.length);
-  $("notificationCounter").classList.toggle("hide",!actionable.length);
+  const unread=Number(response.unread_count||0);
+  $("notificationCounter").textContent=String(unread);
+  $("notificationCounter").classList.toggle("hide",!unread);
   const root=$("notifications");root.replaceChildren();
+
+  const markCardRead=(card,item)=>{
+   if(item.read)return;
+   item.read=true;item.status="read";
+   card.classList.add("read");
+   const current=Math.max(0,Number($("notificationCounter").textContent||0)-1);
+   $("notificationCounter").textContent=String(current);
+   $("notificationCounter").classList.toggle("hide",!current);
+   api("/api/notifications/"+item.id+"/read","POST",{}).catch(()=>{});
+  };
+
   for(const item of items){
    const card=document.createElement("article");
-   card.className="notification-item "+(item.level||"info");
+   card.className="notification-item "+(item.level||"attention")+
+    (item.read?" read":"")+(item.status==="applied"?" applied":"");
+
    const top=document.createElement("div");top.className="notification-top";
    const title=document.createElement("div");title.className="notification-title";
    title.textContent=item.title||"Изменение";
    const when=document.createElement("div");when.className="notification-time";
-   when.textContent=(item.created_at||"").slice(0,16).replace("T"," ");
+   when.textContent=(item.updated_at||item.created_at||"").slice(0,16).replace("T"," ");
    top.append(title,when);
+
    const message=document.createElement("div");message.className="notification-message";
    message.textContent=item.message||"";
    card.append(top,message);
-   if(item.action==="gmail"){
-    card.style.cursor="pointer";
-    card.addEventListener("click",()=>{$("gmailPanel").open=true;$("gmailPanel").scrollIntoView({behavior:"smooth",block:"nearest"})});
-   }else if(item.action==="archive"){
-    card.style.cursor="pointer";
-    card.addEventListener("click",async()=>{
-     if(!state.archive){state.archive=true;$("archiveToggle").setAttribute("aria-pressed","true");
-      $("archiveToggle").textContent="Показать текущее расписание";
-      $("archiveExport").classList.remove("hide");$("archiveNote").classList.remove("hide");await load();}
-    });
-   }else if(item.action==="sources"){
-    card.style.cursor="pointer";
-    card.addEventListener("click",()=>{$("sourcesPanel").open=true;$("sourcesPanel").scrollIntoView({behavior:"smooth",block:"nearest"})});
+
+   const actions=document.createElement("div");actions.className="notification-actions";
+   if(item.source_url){
+    const source=document.createElement("a");
+    source.className="notification-source";
+    source.href=item.source_url;source.target="_blank";source.rel="noopener noreferrer";
+    source.textContent="Источник"+(item.source_name?" · "+item.source_name:"");
+    source.addEventListener("click",()=>markCardRead(card,item));
+    actions.append(source);
    }
+   if(item.can_apply){
+    const apply=document.createElement("button");
+    apply.type="button";apply.textContent="Применить изменения в расписании";
+    apply.addEventListener("click",async event=>{
+     event.stopPropagation();apply.disabled=true;
+     try{
+      await api("/api/notifications/"+item.id+"/apply","POST",{});
+      msg("Изменения применены к расписанию.","success");
+      await load();
+     }catch(e){msg(e.message,"error");apply.disabled=false}
+    });
+    actions.append(apply);
+   }else if(item.status==="applied"){
+    const applied=document.createElement("span");
+    applied.className="muted-small";applied.textContent="Изменение применено";
+    actions.append(applied);
+   }
+   if(actions.childNodes.length)card.append(actions);
+
+   card.addEventListener("click",event=>{
+    if(event.target.closest("button,a"))return;
+    markCardRead(card,item);
+   });
    root.append(card);
   }
-  if(!items.length){const empty=document.createElement("p");empty.className="muted-small";
-   empty.textContent="Новых изменений и ошибок источников нет.";root.append(empty)}
+  if(!items.length){
+   const empty=document.createElement("p");empty.className="muted-small";
+   empty.textContent="Важных изменений нет. Всё тихо.";
+   root.append(empty);
+  }
  }catch(e){
   const root=$("notifications");root.textContent=e.message;
+ }
+}
+
+const ANOMALY_KINDS={
+ duration_too_long:"Слишком длинный эфир",
+ duration_too_short:"Слишком короткий эфир",
+ channel_overlap:"Наложение на канале",
+ duplicate_slot:"Возможный дубль",
+ same_fixture_different_time:"Один матч в разное время",
+ test_label:"Тестовая запись",
+ impossible_year:"Неверный год",
+ date_swap_suspect:"День и месяц перепутаны?"
+};
+async function loadAnomalies(){
+ const root=$("anomalies"),status=$("anomalyStatus"),counter=$("anomalyCounter");
+ try{
+  const response=await api("/api/anomalies");
+  const items=response.anomalies||[];
+  const levels=(response.summary||{}).levels||{};
+  const serious=Number(levels.error||0)+Number(levels.warning||0);
+  counter.textContent=String(serious);
+  counter.classList.toggle("hide",!serious);
+  root.replaceChildren();
+  const checked=Number(response.checked_events||0);
+  status.textContent=items.length
+   ?"Проверено событий: "+checked+". Нужно посмотреть: "+items.length+". Расписание не изменено — это только подсказки."
+   :"Проверено событий: "+checked+". Подозрительных эфиров не найдено.";
+  for(const item of items){
+   const card=document.createElement("article");
+   card.className="notification-item "+(item.level||"attention");
+   const top=document.createElement("div");top.className="notification-top";
+   const title=document.createElement("div");title.className="notification-title";
+   title.textContent=item.title||"Событие";
+   const when=document.createElement("div");when.className="notification-time";
+   when.textContent=String(item.date||"").split("-").reverse().join(".")+" "+(item.time||"");
+   top.append(title,when);
+   const meta=document.createElement("div");meta.className="anomaly-meta";
+   const kind=document.createElement("span");kind.className="anomaly-kind";
+   kind.textContent=ANOMALY_KINDS[item.kind]||"Проверьте эфир";
+   meta.append(kind,document.createTextNode(item.channel||""));
+   const message=document.createElement("div");message.className="notification-message";
+   message.textContent=item.message||"";
+   card.append(top,meta,message);
+   root.append(card);
+  }
+ }catch(e){
+  root.replaceChildren();counter.classList.add("hide");
+  status.textContent="Проверка расписания недоступна: "+e.message;
  }
 }
 
 async function loadMailStatus(){
  const status=await api("/api/gmail/status");
  state.gmailConnected=status.connected;
+ state.gmailBridge=!!status.bridge_mode;
  state.gmailSend=status.send_enabled&&status.connected;
  state.gmailTestTo=status.connected?"" : "";
  state.gmailMode=status.mail_mode||"test";
- $("mailStatus").textContent= !status.configured?
-  "Gmail OAuth пока не настроен. Необходимы секреты клиента, ключ шифрования и постоянное GCS-хранилище.":
-  status.connected?(status.auto_import?
-   "Gmail подключён ("+status.email+"). Подтверждённые Excel загружаются автоматически; противоречия отправляются на проверку.":
-   "Gmail подключён ("+status.email+"). Автоматический импорт ожидает постоянное GCS-хранилище."):
+ $("mailStatus").textContent= status.bridge_mode?
+  (!status.connected?
+   "Бесплатный Apps Script указан, но его работа ещё не подтверждена. Запусти setup в Apps Script и нажми Проверить почту.":
+   !status.archiver_active?
+   "Связь с Google Drive подтверждена, но ежечасный сбор Gmail не подтверждён. Проверь запуск setup и журнал Apps Script.":
+   "Gmail и ежечасный сбор Apps Script подтверждены. Новые EPG попадают в уведомления. В расписание они входят только после твоего подтверждения."):
+  !status.configured?
+  "Gmail OAuth пока не настроен. Нужны секреты клиента и постоянное хранилище.":
+  status.connected?
+   "Gmail подключён ("+status.email+"). Новые Excel ждут ручного подтверждения и после принятия имеют приоритет над совпавшими данными с сайтов.":
   "OAuth настроен, но владелец ещё не авторизовал Gmail.";
- $("gmailConnect").classList.toggle("hide",!status.configured||!state.gmailAdmin);
- $("mailCheck").classList.toggle("hide",!status.connected);
+ $("gmailConnect").classList.toggle("hide",status.bridge_mode||!status.configured||!state.gmailAdmin);
+ $("mailCheck").classList.toggle("hide",!status.connected&&!status.bridge_mode);
  $("request").disabled=!state.gmailSend;
  $("request").title=state.gmailSend?
   (state.gmailMode==="production"?"Отправка подтверждённому поставщику":"Отправка на тестовый адрес"):
-  "Ожидает подключения Gmail и разрешения отправки";
- $("requestTo").textContent=(state.gmailMode==="production"?"Режим PRODUCTION. Получатель берётся из конфигурации: ":"Тестовый получатель: ")+
-  (state.gmailTestTo||"alexandr.petrossov@fmedia.kz");
+  (status.send_reason||"Ожидает подключения Gmail и разрешения отправки");
+ $("requestTo").textContent=status.bridge_mode?
+  (state.gmailMode==="production"?
+   "Боевой режим: письмо уйдёт поставщику. Адрес берётся из свойств Apps Script.":
+   "Тестовый режим: письмо уйдёт на тестовый адрес из свойств Apps Script, поставщик его не получит.")+
+   (status.send_enabled&&status.send_reason?" "+status.send_reason+".":""):
+  (state.gmailMode==="production"?"Режим PRODUCTION. Получатель берётся из конфигурации: ":"Тестовый получатель: ")+
+   (state.gmailTestTo||"alexandr.petrossov@fmedia.kz");
  if(status.connected)await loadMailNotices();
+ if(status.bridge_mode&&!state.bridgeInitialSyncDone){
+   state.bridgeInitialSyncDone=true;
+   await checkGmail(true);
+ }
  if(status.connected&&!state.mailPoll){
-  // Check new inbox messages only while an authorized editor has the page open.
-  // A separate authenticated Cloud Scheduler trigger is needed for 24/7 checks.
+  // Apps Script archives Gmail each hour even while SLP is closed.
+  // Pull the archive into the web UI every 15 minutes while it is open.
   state.mailPoll=setInterval(async()=>{
    if(document.hidden||!state.logged)return;
    await checkGmail(true);
@@ -437,7 +608,7 @@ async function loadMailNotices(){
     }catch(e){diff.textContent=e.message}
     finally{preview.disabled=false}
    });
-   const approve=document.createElement("button");approve.textContent="Загрузить в расписание";
+   const approve=document.createElement("button");approve.textContent="Добавить в расписание";
    approve.addEventListener("click",()=>manageNotice(notice.id,"approve"));
    controls.append(preview,approve);
    item.append(diff);
@@ -454,24 +625,40 @@ async function loadMailNotices(){
 }
 async function manageNotice(id,action){
  if(action==="dismiss"&&!confirm("Закрыть уведомление?"))return;
+ if(action==="approve")msg("Применяю данные из письма к текущему расписанию...");
  try{
   const result=await api("/api/gmail/notices/"+id+"/"+action,"POST",{});
-  msg(action==="approve"?
-   "Расписание загружено: "+result.channel+". LIVE: "+result.live_events:
-   "Уведомление закрыто.","success");
+  if(action==="approve"&&result.status==="superseded"){
+   msg(result.message||"Устаревшее письмо закрыто. Используется более новое расписание.","success");
+  }else if(action==="approve"&&result.status==="partial_review"){
+   const changes=result.changes||{};
+   msg("Почтовая сетка применена частично: "+result.channel+
+     ". Новых событий: "+(changes.new||0)+
+     ". Обновлено времени: "+(changes.time_changed||0)+
+     ". Не применены даты: "+((result.held_dates||[]).join(", ")||"нужна проверка")+".","warn");
+  }else if(action==="approve"){
+   const changes=result.changes||{};
+   msg("Успех. Почтовая сетка применена: "+result.channel+
+     ". Новых событий: "+(changes.new||0)+
+     ". Обновлено времени: "+(changes.time_changed||0)+
+     ". Почта теперь имеет приоритет для совпавших событий.","success");
+  }else{
+   msg("Уведомление закрыто.","success");
+  }
   await load();
- }catch(e){msg(e.message,"error")}
+ }catch(e){
+  msg((action==="approve"?"Не удалось применить данные из письма: ":"")+e.message,"error");
+ }
 }
 async function checkGmail(silent=false){
- if(!state.gmailConnected)return;
+ if(!state.gmailConnected&&!state.gmailBridge)return;
  $("mailCheck").disabled=true;
  try{
   const result=await api("/api/gmail/sync","POST",{});
   if(!silent||result.new_attachments)msg("Новых вложений: "+result.new_attachments+
-     ". Автоматически загружено: "+result.auto_imported+
-     ". Требуют проверки: "+result.requires_review+".","success");
-  if(result.auto_imported){await load();}
-  else await loadMailNotices();
+     ". В уведомлениях на проверку: "+result.requires_review+".","success");
+  await loadMailNotices();
+  if(state.gmailBridge&&!state.gmailConnected)await loadMailStatus();
  }catch(e){if(!silent)msg(e.message,"error")}
  finally{$("mailCheck").disabled=false}
 }
@@ -483,10 +670,22 @@ function renderCalendar(){
  const root=$("days");root.replaceChildren();
  for(const label of ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"]){const n=document.createElement("div");n.className="week";n.textContent=label;root.append(n)}
  for(let i=0;i<start;i++){const n=document.createElement("div");n.className="day blank";root.append(n)}
+ const today=kzToday();
  for(let day=1;day<=days;day++){
-  const key=iso(y,m+1,day),btn=document.createElement("button");btn.className="day"+(counts.has(key)?" has":"")+(state.date===key?" selected":"");
+  const key=iso(y,m+1,day),btn=document.createElement("button");
+  btn.className="day"+(counts.has(key)?" has":"")+(key===today?" today":"")+(state.date===key?" selected":"");
   btn.textContent=day;btn.addEventListener("click",()=>{state.date=key;renderCalendar();renderEvents()});root.append(btn);
  }
+}
+function eventMeta(ev){
+ const title=String(ev.title||"").toLocaleLowerCase("ru-RU");
+ const sport=String(ev.sport||"").trim();
+ const sportKey=sport.toLocaleLowerCase("ru-RU");
+ const sportAlreadyInTitle=!!sportKey&&(
+   title.includes(sportKey)||
+   (sportKey==="борьба"&&title.includes("борьба"))
+ );
+ return [sportAlreadyInTitle?"":sport,ev.tournament].filter(Boolean).join(" · ");
 }
 function makeEvent(ev){
  const outer=document.createElement("article");outer.className="event";
@@ -495,7 +694,7 @@ function makeEvent(ev){
  const flag=document.createElement("span");flag.className="badge "+ev.status;flag.textContent=ev.archived?"Нет в актуальной сетке":ev.status==="past"?"Прошло":ev.status==="live"?"Сейчас LIVE":"Скоро";
  top.append(time,flag);
  const title=document.createElement("div");title.className="name";title.textContent=ev.title;
- const label=document.createElement("div");label.className="muted-small";label.textContent=[ev.sport,ev.tournament].filter(Boolean).join(" · ");
+ const label=document.createElement("div");label.className="muted-small";label.textContent=eventMeta(ev);
  const ch=document.createElement("div");ch.className="channel";
  for(const channel of ev.channels)ch.append(channelPill(channel));
  outer.append(top,title,label,ch);
@@ -603,7 +802,7 @@ function renderEvents(){
  const channels=[...new Set(state.all.flatMap(e=>e.channels))].sort(),saved=$("channel").value;
  const selector=$("channel");selector.replaceChildren(new Option("Все каналы",""));
  channels.forEach(c=>selector.add(new Option(c,c)));selector.value=saved;
- const data=filtered();$("count").textContent=(state.date?state.date.split("-").reverse().join("."):"Весь архив")+" · Событий: "+data.length;
+ const data=filtered();$("count").textContent=(state.date?state.date.split("-").reverse().join("."):"Все даты")+" · Событий: "+data.length;
  for(const event of data)root.append(makeEvent(event));
  if(!data.length){const n=document.createElement("p");n.className="muted";n.textContent="Событий пока нет. Соберите расписание или выберите другую дату.";root.append(n)}
 }
@@ -613,38 +812,138 @@ $("loginForm").addEventListener("submit",async event=>{
    $("loginMessage").textContent="";$("loginPassword").value="";showApp(data.user);
  }catch(e){$("loginMessage").textContent=e.message}
 });
+const COLLECTION_QUOTES=[
+ ["Я терпел неудачи снова и снова. Именно поэтому я добился успеха.","Майкл Джордан"],
+ ["Ты не реализуешь сто процентов бросков, которые не делаешь.","Уэйн Гретцки"],
+ ["Ненавидел каждую минуту тренировок, но говорил себе: не сдавайся.","Мухаммед Али"],
+ ["Чемпионы продолжают играть, пока не сделают как надо.","Билли Джин Кинг"],
+ ["Я тренировался четыре года, чтобы пробежать девять секунд.","Усэйн Болт"],
+ ["Удача тут ни при чём. За результатом стоят годы работы.","Серена Уильямс"],
+ ["Талант без работы ничего не значит.","Криштиану Роналду"],
+ ["Чем больше мечтаешь, тем дальше заходишь.","Майкл Фелпс"],
+ ["Трудно победить человека, который никогда не сдаётся.","Бейб Рут"],
+ ["Нужно бороться, чтобы осуществить мечту.","Лионель Месси"],
+ ["Не считай дни. Сделай так, чтобы дни считались.","Мухаммед Али"],
+ ["Самое важное - пытаться вдохновлять людей становиться лучше.","Коби Брайант"],
+ ["Нет оправдания тому, чтобы кто-то работал больше тебя.","Дерек Джитер"],
+ ["Каким бы хорошим ты ни был, всегда можно стать лучше.","Тайгер Вудс"],
+ ["Я всегда верил, что если вложить работу, результат придёт.","Майкл Джордан"],
+ ["Давление - это привилегия.","Билли Джин Кинг"],
+ ["Успех - не случайность. Это тяжёлая работа и настойчивость.","Пеле"],
+ ["Каждый день - возможность стать немного лучше.","Роджер Федерер"],
+ ["Нужно принимать трудные моменты и продолжать работать.","Рафаэль Надаль"],
+ ["Сила рождается, когда продолжаешь идти после неудачи.","Новак Джокович"],
+ ["Не бойся неудачи. Это часть пути к успеху.","Леброн Джеймс"],
+ ["Работа начинается там, где заканчиваются оправдания.","Стефен Карри"],
+ ["Если хочешь быть лучшим, нужно делать то, чего другие не делают.","Майкл Фелпс"],
+ ["Победа начинается с веры в то, что она возможна.","Симона Байлз"],
+ ["Главное - никогда не переставать бросать себе вызов.","Линдси Вонн"],
+ ["Я всегда стараюсь превратить давление в энергию.","Наоми Осака"],
+ ["Никогда не сдавайся, каким бы трудным ни был путь.","Льюис Хэмилтон"],
+ ["Чтобы выиграть, сначала нужно поверить, что можешь.","Айртон Сенна"],
+ ["Скорость ничего не значит без контроля.","Валентино Росси"],
+ ["Чем тяжелее борьба, тем ценнее победа.","Рафаэль Надаль"],
+ ["Ты соревнуешься прежде всего с самим собой.","Роджер Федерер"],
+ ["Настоящий чемпион поднимается после падения.","Мэнни Пакьяо"],
+ ["Нужно быть готовым работать, когда никто не смотрит.","Сидни Кросби"],
+ ["Каждая тренировка - это ещё один шаг к цели.","Кэти Ледеки"],
+ ["Сомнения исчезают только после работы.","Элиуд Кипчоге"],
+ ["Пределы существуют, пока ты в них веришь.","Арманд Дюплантис"]
+]
+function showCollectionMessage(technical,extra=""){
+ const n=$("message");n.replaceChildren();n.className="notice";
+ const tech=document.createElement("div");tech.textContent=technical;n.append(tech);
+ if(extra){
+  const more=document.createElement("div");more.style.marginTop="14px";more.textContent=extra;n.append(more);
+ }
+}
+function showCollectionQuote(technical,quote,author){
+ const n=$("message");n.replaceChildren();n.className="notice";
+ const tech=document.createElement("div");tech.textContent=technical;n.append(tech);
+ const em=document.createElement("em");em.className="collection-quote";
+ const quoteLine=document.createElement("span");const cleanQuote=String(quote||"").replace(/\.+$/,"");quoteLine.textContent="«"+cleanQuote+"»";em.append(quoteLine);
+ const authorLine=document.createElement("span");authorLine.className="quote-author";
+ authorLine.textContent="(с) "+author;em.append(authorLine);n.append(em);
+}
+function startCollectTicker(){
+ let index=0,current="Собираю расписание, подождите немного",detail="";
+ let stopped=false;
+ const paint=()=>{
+  if(stopped)return;
+  const technical=detail?current+"\n"+detail:current;
+  const [quote,author]=COLLECTION_QUOTES[index%COLLECTION_QUOTES.length];
+  showCollectionQuote(technical,quote,author);
+ };
+ const flip=setInterval(()=>{index++;paint()},12000);
+ const poll=setInterval(async()=>{
+  try{
+   const status=await api("/api/collect/status");
+   current=status.message||current;detail=status.detail||"";
+   paint();
+  }catch(e){}
+ },3000);
+ paint();
+ return ()=>{
+  stopped=true;clearInterval(flip);clearInterval(poll);
+ };
+}
 $("collect").addEventListener("click",async()=>{
- msg("Собираю источники, это может занять несколько минут...");
  $("collect").disabled=true;
+ const stopTicker=startCollectTicker();
  try{
-  let result;
-  try{result=await api("/api/collect","POST",{allow_partial:false})}
-  catch(e){
-   if(e.status!==409)throw e;
-   if(e.detail?.requires_approval){
-    const pending=(e.detail?.pending_channels||[]).join(", ");
-    $("gmailPanel").open=true;
-    await loadMailNotices();
-    msg("Получены новые расписания: "+pending+". Сначала подтвердите загрузку в разделе Gmail.","error");
-    $("gmailPanel").scrollIntoView({behavior:"smooth",block:"nearest"});
-    return;
+  let started=false;
+  for(let attempt=0;attempt<8;attempt++){
+   try{
+    await api("/api/collect","POST",{allow_partial:true});
+    started=true;break;
+   }catch(e){
+    if(e.status!==429)throw e;
+    showCollectionMessage("Cloud Run занят, повторяю запуск...","Сбор не отменён");
+    await new Promise(resolve=>setTimeout(resolve,Math.min(6000,1200*(attempt+1))));
    }
-   const missing=(e.detail?.missing_channels||[]).join(", ");
-   if(!confirm("Нет актуальных Excel: "+missing+". Собрать по доступным источникам?")){msg("Сбор отменён");return}
-   result=await api("/api/collect","POST",{allow_partial:true});
   }
-  msg("Сбор завершён. Записей источников: "+result.event_count+
-      (result.durable_storage?". Архив сохранён.":". ВНИМАНИЕ: архив временный, постоянное хранилище не подключено."),"success");
+  if(!started)throw new Error("Cloud Run занят. Попробуйте ещё раз через несколько секунд.");
+  let result=null;
+  for(let attempt=0;attempt<500;attempt++){
+   await new Promise(resolve=>setTimeout(resolve,3000));
+   let status;
+   try{
+    status=await api("/api/collect/status");
+   }catch(e){
+    if(e.status===429)continue;
+    throw e;
+   }
+   if(!status.running&&status.result){
+    result=status.result;
+    break;
+   }
+  }
+  if(!result)throw new Error("Сбор выполняется слишком долго. Статус сохранён, обновите страницу позже.");
+  if(result.ok){
+   msg(result.summary_message||
+     ("Расписание собрано: "+(result.week_event_count||0)+" событий на этой неделе"),"success");
+  }else{
+   msg(result.summary_message||
+     ("Ошибка #599: "+((result.errors||[])[0]||"неизвестная ошибка")),"error");
+  }
   await load();
- }catch(e){msg(e.message,"error")}finally{$("collect").disabled=false}
+ }catch(e){
+  msg("Сбор не завершён: "+e.message,"error");
+ }finally{
+  stopTicker();
+  $("collect").disabled=false;
+ }
 });
 $("export").addEventListener("click",async()=>{
  const url="/api/export"+(state.date?"?start="+encodeURIComponent(state.date)+"&end="+encodeURIComponent(state.date):"");
  try{
   const res=await fetch(url,{credentials:"same-origin"});
   if(!res.ok){const o=await res.json().catch(()=>({}));throw new Error(o.detail||"Ошибка выгрузки")}
+  const origin=res.headers.get("X-SLP-Template")||"approved";
   const blob=await res.blob(),href=URL.createObjectURL(blob),a=document.createElement("a");
   a.href=href;a.download="sport_epg_schedule.xlsx";a.click();setTimeout(()=>URL.revokeObjectURL(href),1000);
+  if(origin==="builtin")msg("Таблица выгружена в простом виде: утверждённый шаблон недоступен (хранилище не отвечает или шаблон не загружен). События актуальные, но оформление и строки, которые хранились в шаблоне, не подтянуты.","error");
+  else if(origin==="cached")msg("Таблица выгружена по ранее загруженной копии шаблона: хранилище сейчас не отвечает.","");
  }catch(e){msg(e.message,"error")}
 });
 
@@ -736,11 +1035,24 @@ $("requestConfirm").addEventListener("click",async()=>{
  };
  if(!period_start||!period_end){msg("Укажите период расписания.","error");return}
  if(!confirm("Отправить запрос "+labels[category]+
-   " с подключённого Gmail на выбранный период?"))return;
+   " с подключённого Gmail на выбранный период?"+
+   (state.gmailBridge?(state.gmailMode==="production"?
+    "\n\nБоевой режим: письмо получит поставщик.":
+    "\n\nТестовый режим: письмо придёт только на тестовый адрес."):"")))return;
  $("requestConfirm").disabled=true;
  try{
   const result=await api("/api/gmail/request","POST",{category,period_start,period_end});
-  msg("Gmail подтвердил отправку: "+result.subject+" → "+result.to,"success");
+  if(result.transport==="apps_script"){
+   const ru=v=>String(v||"").replace(/^(\d{4})-(\d{2})-(\d{2})$/,"$3.$2.$1");
+   const period=ru(result.period_start)+"-"+ru(result.period_end);
+   const lines=(result.results||[]).map(item=>item.sent?
+    item.label+" · "+period+" → "+item.to:
+    item.label+": не отправлено ("+(item.error||"ошибка")+")");
+   msg((result.mode==="test"?"Тестовый запрос отправлен: ":"Запрос отправлен: ")+
+    lines.join("; ")+". Тема: "+result.subject,result.partial?"error":"success");
+  }else{
+   msg("Gmail подтвердил отправку: "+result.subject+" → "+result.to,"success");
+  }
   $("mailRequestPanel").classList.add("hide");
  }catch(e){msg(e.message,"error")}
  finally{$("requestConfirm").disabled=false}

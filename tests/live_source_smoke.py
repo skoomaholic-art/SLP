@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
+
+import aiohttp
 
 from parsers.championat import get_championat_calendar
 from parsers.qazsport_complete import get_qazsport_schedule_complete
@@ -11,6 +13,7 @@ from parsers.sportplus_cached import (
 )
 from services.event_contract import validate_sport_event
 from services.live_evidence import event_is_live_broadcast
+from services.iptvx_sources import (MAX_XML_BYTES, XML_URL, page_url_for, parse_iptvx_page, parse_iptvx_xml)
 from services.time_logic import KZ_TIMEZONE, get_event_status
 
 
@@ -18,7 +21,66 @@ async def main() -> None:
     now = datetime.now(KZ_TIMEZONE)
     today = now.date()
 
-    qazsport, sportplus, sportplus_dates, championat = await asyncio.gather(
+    async def fetch_iptvx():
+        timeout = aiohttp.ClientTimeout(total=60)
+        headers = {
+            "User-Agent": "Mozilla/5.0 SLP-live-smoke/2.0",
+            "Accept": "application/xml,text/xml,*/*",
+        }
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(XML_URL, allow_redirects=True) as response:
+                if response.status != 200:
+                    raise RuntimeError(f"iptvX XMLTV returned HTTP {response.status}")
+                raw = await response.read()
+                if not raw or len(raw) > MAX_XML_BYTES:
+                    raise RuntimeError(
+                        f"iptvX XMLTV invalid size: {len(raw) if raw else 0}"
+                    )
+        return parse_iptvx_xml(raw)
+
+    async def fetch_iptvx_pages():
+        timeout = aiohttp.ClientTimeout(total=45)
+        headers = {
+            "User-Agent": "Mozilla/5.0 SLP-live-smoke/2.0",
+            "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        }
+        required = {
+            "Q LEAGUE": "q-sport-ext",
+            "Q ARENA": "qsport-kz",
+            "EUROSPORT 1": "eurosport1",
+            "EUROSPORT 2": "eurosport2",
+            "viju+ Sport": "viasat-sport",
+            "МАТЧ! ПЛАНЕТА": "match-planeta",
+        }
+        result = {}
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async def load(channel, page_id):
+                async with session.get(page_url_for(channel), allow_redirects=True) as response:
+                    if response.status != 200:
+                        raise RuntimeError(
+                            f"iptvX page {page_id} returned HTTP {response.status}"
+                        )
+                    raw = await response.read()
+                events, meta = parse_iptvx_page(
+                    raw,
+                    channel=channel,
+                    page_id=page_id,
+                    source_url=page_url_for(channel),
+                )
+                current = [
+                    event for event in events
+                    if today.isoformat() <= str(event.get("date") or "")
+                    <= (today + timedelta(days=8)).isoformat()
+                ]
+                if not current:
+                    raise RuntimeError(
+                        f"iptvX page {page_id} has no current sports candidates"
+                    )
+                result[channel] = len(current)
+            await asyncio.gather(*(load(ch, pid) for ch, pid in required.items()))
+        return result
+
+    qazsport, sportplus, sportplus_dates, championat, iptvx, iptvx_pages = await asyncio.gather(
         get_qazsport_schedule_complete(today, include_current_live=True),
         get_sportplus_schedule_cached(today),
         get_sportplus_available_dates(today),
@@ -28,6 +90,8 @@ async def main() -> None:
             lookahead_days=1,
             force_refresh=True,
         ),
+        fetch_iptvx(),
+        fetch_iptvx_pages(),
     )
 
     if not qazsport:
@@ -40,6 +104,27 @@ async def main() -> None:
         raise RuntimeError(
             f"Championat match center returned no events; errors={championat.errors[:5]}"
         )
+
+    iptvx_events, iptvx_stats = iptvx
+    required_iptvx = (
+        "Q LEAGUE",
+        "Q ARENA",
+        "EUROSPORT 1",
+        "EUROSPORT 2",
+        "viju+ Sport",
+        "МАТЧ! ПЛАНЕТА",
+    )
+    missing = [
+        channel
+        for channel in required_iptvx
+        if not (iptvx_stats.get("channels", {}).get(channel, {}).get("programmes", 0))
+    ]
+    if missing:
+        raise RuntimeError(
+            "iptvX XMLTV missing current programmes for: " + ", ".join(missing)
+        )
+    if not iptvx_events:
+        raise RuntimeError("iptvX XMLTV produced no SLP sports candidates")
 
     sources = {
         "Qazsport": qazsport,
@@ -70,6 +155,20 @@ async def main() -> None:
         1 for event in championat.events
         if str(event.get("date") or "") == today.isoformat()
     )
+    print(
+        "iptvX pages: " + ", ".join(
+            f"{channel}={count}" for channel, count in sorted(iptvx_pages.items())
+        )
+    )
+
+    print(
+        "iptvX XML diagnostic: "
+        f"mapped={iptvx_stats.get('mapped', 0)} "
+        f"candidates={len(iptvx_events)} "
+        f"explicit_live={iptvx_stats.get('explicit_live', 0)} "
+        f"required_channels={len(required_iptvx)}"
+    )
+
     print(
         "Championat: "
         f"events={len(championat.events)} today={today_rows} "

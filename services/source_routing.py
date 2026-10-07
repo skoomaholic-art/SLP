@@ -33,12 +33,15 @@ def _fallbacks(
     for value in extra:
         if value and value not in result:
             result.append(value)
+    if channel.iptvx_id and "iptvx_xmltv" not in result:
+        result.append("iptvx_xmltv")
     if channel.vsetv_id is not None and "vsetv_live_badge" not in result:
         result.append("vsetv_live_badge")
     guide = _guide_transport(channel)
     if include_guide and channel.tvplus_id and guide not in result:
         result.append(guide)
     return tuple(result)
+
 
 
 ROUTES = {
@@ -184,6 +187,8 @@ def runtime_source_names(channel: Channel) -> tuple[str, ...]:
         names.append("sportplus")
     if channel.vsetv_id is not None:
         names.append("web_vsetv_" + str(channel.vsetv_id))
+    if channel.iptvx_id:
+        names.append("web_iptvx_" + channel.iptvx_id)
     if channel.tvplus_id:
         names.append("tvguide")
     return tuple(names)
