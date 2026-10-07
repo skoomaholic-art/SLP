@@ -54,6 +54,7 @@ from services.epg_excel import (MAX_WORKBOOK_BYTES, InvalidEPG, import_parsed_ep
                                initialize_epg_imports,
                                parse_epg_xlsx, parse_epg_xlsx_channels,
                                parse_supported_epg_channels, preview_parsed_epg)
+from services.schedule_anomalies import find_schedule_anomalies, summarize_anomalies
 from services.schedule_merge import same_sporting_event, normalize_match_text
 from services.schedule_service import ScheduleService, is_user_event
 from services.time_logic import KZ_TIMEZONE, get_scheduled_datetimes
@@ -416,6 +417,34 @@ class BucketSnapshot:
             Path(backup_path).unlink(missing_ok=True)
 
 
+# Pauses before repeating a startup restore that failed for a temporary
+# reason. Three attempts cover the short Apps Script outages seen in practice
+# while keeping startup well inside the platform's boot timeout.
+STARTUP_RESTORE_RETRY_DELAYS = (2.0, 5.0)
+
+
+def _restore_drive_snapshot():
+    """Restore the Drive backup, retrying only temporary bridge failures.
+
+    The app must not come up with an empty database and look healthy, so a
+    restore that keeps failing still stops startup. A short Google-side
+    outage, however, no longer crashes the process on the first attempt.
+    """
+    import logging
+    log = logging.getLogger("uvicorn.error")
+    for attempt, delay in enumerate((*STARTUP_RESTORE_RETRY_DELAYS, None), 1):
+        try:
+            return freebridge.FreeDriveSnapshot(DB_PATH)
+        except freebridge.FreeDriveError as exc:
+            if delay is None or not getattr(exc, "transient", False):
+                raise
+            log.warning(
+                "SLP Drive restore attempt %d failed (%s); retrying in %.0f s",
+                attempt, exc, delay,
+            )
+            time.sleep(delay)
+
+
 def _prepare_primary_storage():
     """Prefer GCS on Google Cloud while keeping Apps Script as mail transport.
 
@@ -427,12 +456,12 @@ def _prepare_primary_storage():
     if GCS_BUCKET:
         bucket = BucketSnapshot(GCS_BUCKET)
         if bucket.generation == 0 and freebridge.enabled():
-            drive = freebridge.FreeDriveSnapshot(DB_PATH)
+            drive = _restore_drive_snapshot()
             if not getattr(drive, "initialized_empty", False) and DB_PATH.exists():
                 bucket.save()
         return bucket
     if freebridge.enabled():
-        return freebridge.FreeDriveSnapshot(DB_PATH)
+        return _restore_drive_snapshot()
     return None
 
 
@@ -755,6 +784,33 @@ def archive(request: Request, start: str = "", end: str = ""):
         "note": "Доступны сохранённые версии источников. Полный журнал "
                 "каждого изменения одного и того же поля ещё не подключён.",
     }
+
+
+def schedule_anomalies(database: SLPDatabase, start: str = "", end: str = "") -> dict:
+    """Self-check of the current schedule; read-only, never edits events.
+
+    Without an explicit period the check starts yesterday and has no upper
+    bound, so a row that landed months away by mistake is still inspected.
+    """
+    now = datetime.now(KZ_TIMEZONE)
+    first = start or (now.date() - timedelta(days=1)).isoformat()
+    rows = event_rows(database, first, end)
+    findings = find_schedule_anomalies(rows, now=now)
+    return {
+        "anomalies": findings,
+        "summary": summarize_anomalies(findings),
+        "checked_events": len(rows),
+        "period": {"start": first, "end": end},
+        "checked_at": now.isoformat(timespec="seconds"),
+        "timezone": "Asia/Almaty",
+    }
+
+
+@app.get("/api/anomalies")
+def anomalies(request: Request, start: str = "", end: str = ""):
+    current_user(request)
+    _validate_period(start, end)
+    return schedule_anomalies(request.app.state.database, start, end)
 
 
 def _source_status(request: Request) -> dict:
@@ -1672,6 +1728,15 @@ async def _run_collection(application: FastAPI) -> dict:
             except Exception as exc:
                 result["source_warnings"].append(
                     "Проверка спортивных API: " + type(exc).__name__
+                )
+
+            try:
+                result["schedule_anomalies"] = schedule_anomalies(
+                    database
+                )["summary"]
+            except Exception as exc:
+                result["source_warnings"].append(
+                    "Проверка аномалий: " + type(exc).__name__
                 )
 
             _set_collect_progress(

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from difflib import SequenceMatcher
+import asyncio
 import os
 
 import aiohttp
@@ -18,18 +19,48 @@ from services.time_logic import KZ_TIMEZONE
 THESPORTSDB_KEY = os.getenv("THESPORTSDB_API_KEY", "3").strip() or "3"
 TIMEOUT_SECONDS = 12
 
+# Leagues and cups carried by the SLP channel line-up. The list follows the
+# ESPN public scoreboard slugs used by the sports-api project; every slug was
+# checked against the live endpoint (Saudi Pro League is "ksa.1", not "sau.1").
 ESPN_FEEDS = (
     ("soccer", "eng.1"),
-    ("soccer", "uefa.champions"),
-    ("soccer", "uefa.europa"),
-    ("soccer", "ger.1"),
     ("soccer", "esp.1"),
     ("soccer", "ita.1"),
+    ("soccer", "ger.1"),
     ("soccer", "fra.1"),
+    ("soccer", "por.1"),
+    ("soccer", "ned.1"),
+    ("soccer", "sco.1"),
+    ("soccer", "usa.1"),
+    ("soccer", "ksa.1"),
+    ("soccer", "eng.fa"),
+    ("soccer", "eng.league_cup"),
+    ("soccer", "esp.copa_del_rey"),
+    ("soccer", "ita.coppa_italia"),
+    ("soccer", "ger.dfb_pokal"),
+    ("soccer", "fra.coupe_de_france"),
+    ("soccer", "uefa.champions"),
+    ("soccer", "uefa.europa"),
+    ("soccer", "uefa.europa.conf"),
+    ("soccer", "uefa.super_cup"),
+    ("soccer", "uefa.nations"),
+    ("soccer", "fifa.worldq.uefa"),
+    ("soccer", "fifa.cwc"),
     ("basketball", "nba"),
     ("hockey", "nhl"),
     ("racing", "f1"),
 )
+
+# Which ESPN sport a Russian SLP sport label belongs to. A feed is requested
+# only for days that actually carry a candidate of that sport.
+ESPN_SPORT_MARKERS = {
+    "soccer": ("футбол",),
+    "basketball": ("баскетбол",),
+    "hockey": ("хоккей",),
+    "racing": ("формула", "автоспорт", "мотоспорт", "гонк"),
+}
+ESPN_MAX_DAYS = 8
+ESPN_CONCURRENCY = 8
 
 CANCELLED_MARKERS = ("cancelled", "canceled", "отмен")
 POSTPONED_MARKERS = ("postponed", "suspended", "перенес", "перенос", "отлож")
@@ -156,50 +187,115 @@ async def _thesportsdb_events(session, dates: list[str]) -> list[dict]:
     return result
 
 
-async def _espn_events(session, dates: list[str]) -> list[dict]:
-    result = []
-    for day in dates[:2]:
-        compact = day.replace("-", "")
+def _espn_sport_for(label: str) -> str:
+    lowered = str(label or "").casefold()
+    for sport, markers in ESPN_SPORT_MARKERS.items():
+        if any(marker in lowered for marker in markers):
+            return sport
+    return "other"
+
+
+def _espn_sports_by_date(candidates: list[dict]) -> dict[str, set[str]]:
+    """Days and sports to request, including the previous calendar day.
+
+    ESPN files a fixture under its local (US) date, so a match that starts
+    after midnight in Almaty is listed one day earlier there.
+    """
+    result: dict[str, set[str]] = {}
+    for event in candidates:
+        try:
+            day = date.fromisoformat(str(event.get("date") or ""))
+        except ValueError:
+            continue
+        label = str(event.get("sport") or "").strip()
+        sport = _espn_sport_for(label) if label else ""
+        for target in (day - timedelta(days=1), day):
+            result.setdefault(target.isoformat(), set()).add(sport)
+    return result
+
+
+def _espn_requests(
+    dates: list[str], sports_by_date: dict[str, set[str]] | None,
+) -> list[tuple[str, str, str]]:
+    """(day, sport, league) triples worth asking ESPN about.
+
+    ``sports_by_date`` maps a day to the ESPN sports present in the SLP
+    schedule that day; an empty string in the set means "sport unknown, ask
+    every feed". Without the mapping every feed is requested for every day.
+    """
+    requests = []
+    for day in dates[:ESPN_MAX_DAYS]:
+        wanted = None if sports_by_date is None else sports_by_date.get(day, set())
         for sport, league in ESPN_FEEDS:
-            url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/scoreboard"
+            if wanted is None or sport in wanted or "" in wanted:
+                requests.append((day, sport, league))
+    return requests
+
+
+async def _espn_events(
+    session, dates: list[str],
+    sports_by_date: dict[str, set[str]] | None = None,
+) -> list[dict]:
+    limiter = asyncio.Semaphore(ESPN_CONCURRENCY)
+
+    async def fetch(day: str, sport: str, league: str) -> list[dict]:
+        compact = day.replace("-", "")
+        url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/scoreboard"
+        async with limiter:
             data = await _get_json(session, url, {"dates": compact})
-            for raw in (data or {}).get("events") or []:
-                competitions = raw.get("competitions") or [{}]
-                competitors = (competitions[0] or {}).get("competitors") or []
-                home = next(
-                    (item for item in competitors if item.get("homeAway") == "home"),
-                    competitors[0] if competitors else {},
-                )
-                away = next(
-                    (item for item in competitors if item.get("homeAway") == "away"),
-                    competitors[1] if len(competitors) > 1 else {},
-                )
-                status = (raw.get("status") or {}).get("type") or {}
-                links = raw.get("links") or []
-                source_url = next(
-                    (
-                        str(link.get("href") or "")
-                        for link in links
-                        if str(link.get("href") or "").startswith("http")
-                    ),
-                    "",
-                )
-                if not source_url:
-                    source_url = f"{url}?dates={compact}"
-                result.append({
-                    "provider": "espn_public",
-                    "id": str(raw.get("id") or ""),
-                    "home": (home.get("team") or {}).get("displayName") or "",
-                    "away": (away.get("team") or {}).get("displayName") or "",
-                    "start_at": raw.get("date") or "",
-                    "status": status.get("state") or "",
-                    "status_detail": " ".join(
-                        str(status.get(key) or "")
-                        for key in ("name", "detail", "shortDetail")
-                    ).strip(),
-                    "league": league,
-                    "source_url": source_url,
-                })
+        result = []
+        for raw in (data or {}).get("events") or []:
+            competitions = raw.get("competitions") or [{}]
+            competitors = (competitions[0] or {}).get("competitors") or []
+            home = next(
+                (item for item in competitors if item.get("homeAway") == "home"),
+                competitors[0] if competitors else {},
+            )
+            away = next(
+                (item for item in competitors if item.get("homeAway") == "away"),
+                competitors[1] if len(competitors) > 1 else {},
+            )
+            status = (raw.get("status") or {}).get("type") or {}
+            links = raw.get("links") or []
+            source_url = next(
+                (
+                    str(link.get("href") or "")
+                    for link in links
+                    if str(link.get("href") or "").startswith("http")
+                ),
+                "",
+            )
+            if not source_url:
+                source_url = f"{url}?dates={compact}"
+            result.append({
+                "provider": "espn_public",
+                "id": str(raw.get("id") or ""),
+                "home": (home.get("team") or {}).get("displayName") or "",
+                "away": (away.get("team") or {}).get("displayName") or "",
+                "start_at": raw.get("date") or "",
+                "status": status.get("state") or "",
+                "status_detail": " ".join(
+                    str(status.get(key) or "")
+                    for key in ("name", "detail", "shortDetail")
+                ).strip(),
+                "league": league,
+                "source_url": source_url,
+            })
+        return result
+
+    batches = await asyncio.gather(*(
+        fetch(day, sport, league)
+        for day, sport, league in _espn_requests(dates, sports_by_date)
+    ))
+    seen: set[tuple[str, str]] = set()
+    result = []
+    for batch in batches:
+        for item in batch:
+            identity = (item["league"], item["id"])
+            if item["id"] and identity in seen:
+                continue
+            seen.add(identity)
+            result.append(item)
     return result
 
 
@@ -325,7 +421,10 @@ async def validate_events_with_public_apis(events: list[dict]) -> dict:
     headers = {"User-Agent": "Mozilla/5.0 SLP/2.0", "Accept": "application/json"}
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
         thesportsdb = await _thesportsdb_events(session, expanded)
-        espn = await _espn_events(session, dates)
+        sports_by_date = _espn_sports_by_date(candidates)
+        espn = await _espn_events(
+            session, sorted(sports_by_date), sports_by_date
+        )
 
     external = thesportsdb + espn
     matches = []
